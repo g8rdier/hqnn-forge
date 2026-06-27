@@ -1,0 +1,9 @@
+# Core runtime
+torch>=2.2
+pennylane==0.38.0
+autoray>=0.6.7,<0.7   # PennyLane 0.38 incompatible with autoray>=0.7 (NumpyMimic removed)
+numpy>=1.26
+
+# Optional but strongly recommended: enables adjoint differentiation (CPU)
+# Install with: pip install pennylane-lightning
+# pennylane-lightning>=0.38

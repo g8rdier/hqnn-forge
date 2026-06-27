@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hqnn-forge"
+version = "0.1.0"
+description = "Parameter-efficient Hybrid Quantum Neural Networks for imbalanced tabular classification."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "HQNN-Forge Contributors" }]
+keywords = [
+    "quantum machine learning",
+    "hybrid quantum neural network",
+    "PennyLane",
+    "PyTorch",
+    "NISQ",
+    "fraud detection",
+    "imbalanced classification",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+
+dependencies = [
+    "torch>=2.2",
+    "pennylane>=0.38",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+lightning = [
+    "pennylane-lightning>=0.38",  # enables adjoint diff on CPU
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov",
+    "black",
+    "ruff",
+    "mypy",
+]
+examples = [
+    "scikit-learn",   # only used for synthetic dataset generation in examples
+    "matplotlib",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["hqnn_forge*"]
+
+[tool.ruff]
+line-length = 99
+target-version = "py310"
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+strict = false
