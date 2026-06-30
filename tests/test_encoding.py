@@ -169,7 +169,9 @@ class TestRestrictedVarianceInit:
 
     def test_mean_approximately_zero(self) -> None:
         """Initialised weights should be zero-mean."""
-        tensor = torch.empty(4, 8, 3)
+        torch.manual_seed(42)
+        # Increased sample size for mathematical determinism
+        tensor = torch.empty(40, 8, 3)
         restricted_normal_init_(tensor, n_qubits=8, n_layers=4)
         assert abs(tensor.mean().item()) < 0.1
 
