@@ -123,3 +123,32 @@ class TestInitStrategies:
             diff_method="parameter-shift", init_strategy="block_local",
         )
         assert model is not None
+
+
+class TestEncodingTypes:
+    def test_angle_encoding(self) -> None:
+        model = HybridBinaryClassifier(
+            n_input_features=4, n_qubits=4, n_layers=1,
+            use_classical_encoder=False, device_name="default.qubit",
+            diff_method="parameter-shift", encoding_type="angle",
+        )
+        x = torch.randn(2, 4)
+        out = model(x)
+        assert out.shape == (2, 1)
+
+    def test_iqp_encoding(self) -> None:
+        model = HybridBinaryClassifier(
+            n_input_features=4, n_qubits=4, n_layers=1,
+            use_classical_encoder=False, device_name="default.qubit",
+            diff_method="parameter-shift", encoding_type="iqp",
+        )
+        x = torch.randn(2, 4)
+        out = model(x)
+        assert out.shape == (2, 1)
+
+    def test_invalid_encoding(self) -> None:
+        with pytest.raises(ValueError, match="Unsupported encoding_type"):
+            HybridBinaryClassifier(
+                n_input_features=4, n_qubits=4, n_layers=1,
+                encoding_type="unknown_encoding"
+            )

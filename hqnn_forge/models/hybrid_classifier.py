@@ -64,6 +64,7 @@ import torch
 import torch.nn as nn
 
 from hqnn_forge.encoding.angle_embedding import QuantumEncodingLayer
+from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.initializers.restricted_variance import (
     apply_restricted_init,
     restricted_normal_init_,
@@ -95,6 +96,8 @@ class HybridBinaryClassifier(nn.Module):
         Gradient method.  Default: ``"adjoint"``.
     init_strategy:
         ``"restricted"`` or ``"block_local"``.  Default: ``"restricted"``.
+    encoding_type:
+        Type of quantum embedding to use: ``"angle"`` or ``"iqp"``. Default: ``"angle"``.
 
     Attributes
     ----------
@@ -124,6 +127,7 @@ class HybridBinaryClassifier(nn.Module):
         device_name: str = "lightning.qubit",
         diff_method: str = "adjoint",
         init_strategy: str = "restricted",
+        encoding_type: str = "angle",
     ) -> None:
         super().__init__()
 
@@ -147,12 +151,23 @@ class HybridBinaryClassifier(nn.Module):
             self.classical_encoder = nn.Identity()
 
         # ── Quantum encoding layer ────────────────────────────────────────
-        self.quantum_layer = QuantumEncodingLayer(
-            n_qubits=n_qubits,
-            n_layers=n_layers,
-            device_name=device_name,
-            diff_method=diff_method,
-        )
+        if encoding_type == "angle":
+            self.quantum_layer = QuantumEncodingLayer(
+                n_qubits=n_qubits,
+                n_layers=n_layers,
+                device_name=device_name,
+                diff_method=diff_method,
+            )
+        elif encoding_type == "iqp":
+            self.quantum_layer = IQPEncodingLayer(
+                n_qubits=n_qubits,
+                n_layers=n_layers,
+                n_repeats=1,
+                device_name=device_name,
+                diff_method=diff_method,
+            )
+        else:
+            raise ValueError(f"Unsupported encoding_type: {encoding_type}")
 
         # ── Dropout ───────────────────────────────────────────────────────
         self.dropout = nn.Dropout(p=dropout_p) if dropout_p > 0.0 else nn.Identity()
