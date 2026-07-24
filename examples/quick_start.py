@@ -3,7 +3,11 @@ examples/quick_start.py
 ========================
 End-to-end demo: synthetic imbalanced dataset → PCA → HQNN → Focal Loss.
 
-This script demonstrates a complete training loop using hqnn-forge.
+This script demonstrates a complete training loop using hqnn-forge, training
+both the serial ``HybridBinaryClassifier`` and the parallel-topology
+``ParallelHybridClassifier`` side by side so their parameter counts and
+hold-out accuracy can be compared directly.
+
 Requires the `scikit-learn` and `matplotlib` optional dependencies:
 
     pip install "hqnn-forge[examples]"
@@ -28,7 +32,7 @@ import torch
 import torch.optim as optim
 
 # ── hqnn-forge imports ────────────────────────────────────────────────────
-from hqnn_forge.models          import HybridBinaryClassifier
+from hqnn_forge.models          import HybridBinaryClassifier, ParallelHybridClassifier
 from hqnn_forge.preprocessing   import PCANormalizer
 from hqnn_forge.utils           import FocalLoss, compute_class_weights
 
@@ -50,6 +54,7 @@ N_RAW_FEATURES    = 20    # raw feature dimensionality
 N_PCA_COMPONENTS  = 8     # PCA output = n_qubits
 N_QUBITS          = 8
 N_LAYERS          = 2
+CLASSICAL_HIDDEN_DIM = 16  # ParallelHybridClassifier MLP branch width
 BATCH_SIZE        = 16
 N_EPOCHS          = 10
 LR                = 0.02
@@ -121,12 +126,95 @@ print()
 
 
 # ---------------------------------------------------------------------------
-# 3. Build model
+# 3-5. Build, train, and evaluate a model — shared by both architectures
 # ---------------------------------------------------------------------------
-print(f"[3/5] Building HybridBinaryClassifier "
-      f"({N_QUBITS} qubits, {N_LAYERS} VQC layers) …")
+def train_and_evaluate(model: torch.nn.Module, model_name: str) -> dict:
+    """Train `model` for N_EPOCHS and report hold-out metrics."""
+    print(f"[3/5] Building {model_name} ({model.count_parameters()} trainable params) …")
+    print()
 
-model = HybridBinaryClassifier(
+    loss_fn   = FocalLoss(alpha=0.25, gamma=2.0)
+    optimizer = optim.Adam(model.parameters(), lr=LR)
+
+    cw = compute_class_weights(y_train)
+    print(f"[4/5] Imbalance info | neg weight: {cw[0]:.3f}, pos weight: {cw[1]:.3f}")
+    print()
+
+    print(f"[5/5] Training {model_name} …")
+    print("-" * 60)
+
+    dataset_size = len(X_train)
+
+    for epoch in range(1, N_EPOCHS + 1):
+        model.train()
+        perm       = torch.randperm(dataset_size)
+        epoch_loss = 0.0
+        n_batches  = 0
+
+        t0 = time.perf_counter()
+        for start in range(0, dataset_size, BATCH_SIZE):
+            idx  = perm[start : start + BATCH_SIZE]
+            xb   = X_train[idx]
+            yb   = y_train[idx]
+
+            optimizer.zero_grad()
+            logits = model(xb).squeeze(-1)      # (batch,)
+            loss   = loss_fn(logits, yb)
+            loss.backward()
+            optimizer.step()
+
+            epoch_loss += loss.item()
+            n_batches  += 1
+
+        elapsed = time.perf_counter() - t0
+
+        # ── Epoch stats ───────────────────────────────────────────────
+        model.eval()
+        with torch.no_grad():
+            train_probs = model.predict_proba(X_train)
+            train_preds = (train_probs >= 0.5).long()
+            train_acc   = (train_preds == y_train.long()).float().mean().item()
+            avg_loss    = epoch_loss / n_batches
+
+        print(
+            f"Epoch {epoch:2d}/{N_EPOCHS} | "
+            f"Loss: {avg_loss:.4f} | "
+            f"Train Acc: {train_acc:.3f} | "
+            f"Time: {elapsed:.1f}s"
+        )
+
+    print("-" * 60)
+
+    # ── Hold-out evaluation ─────────────────────────────────────────────
+    model.eval()
+    with torch.no_grad():
+        test_preds = model.predict(X_test, threshold=0.5)
+        test_acc   = (test_preds == y_test.long()).float().mean().item()
+
+        neg_mask  = (y_test == 0)
+        pos_mask  = (y_test == 1)
+        neg_acc   = (test_preds[neg_mask] == 0).float().mean().item() if neg_mask.any() else float("nan")
+        pos_acc   = (test_preds[pos_mask] == 1).float().mean().item() if pos_mask.any() else float("nan")
+
+    print()
+    print(f"Hold-out evaluation ({model_name}):")
+    print(f"  Overall accuracy : {test_acc:.3f}")
+    print(f"  Negative (maj.)  : {neg_acc:.3f}")
+    print(f"  Positive (min.)  : {pos_acc:.3f}  ← key metric for fraud detection")
+    print()
+
+    return {
+        "params": model.count_parameters(),
+        "test_acc": test_acc,
+        "neg_acc": neg_acc,
+        "pos_acc": pos_acc,
+    }
+
+
+print("=" * 60)
+print("  Model 1/2: HybridBinaryClassifier (serial topology)")
+print("=" * 60)
+serial_model = HybridBinaryClassifier(
     n_input_features=N_PCA_COMPONENTS,
     n_qubits=N_QUBITS,
     n_layers=N_LAYERS,
@@ -135,90 +223,35 @@ model = HybridBinaryClassifier(
     diff_method="parameter-shift",
     init_strategy="restricted",
 )
-print(f"    Total trainable parameters: {model.count_parameters()}")
-print()
+serial_results = train_and_evaluate(serial_model, "HybridBinaryClassifier")
+
+print("=" * 60)
+print("  Model 2/2: ParallelHybridClassifier (parallel topology)")
+print("=" * 60)
+parallel_model = ParallelHybridClassifier(
+    n_input_features=N_PCA_COMPONENTS,
+    n_qubits=N_QUBITS,
+    n_layers=N_LAYERS,
+    classical_hidden_dim=CLASSICAL_HIDDEN_DIM,
+    use_classical_encoder=False,
+    device_name="default.qubit",
+    diff_method="parameter-shift",
+    init_strategy="restricted",
+)
+parallel_results = train_and_evaluate(parallel_model, "ParallelHybridClassifier")
 
 
 # ---------------------------------------------------------------------------
-# 4. Loss, optimiser, class weights
+# Side-by-side comparison
 # ---------------------------------------------------------------------------
-loss_fn   = FocalLoss(alpha=0.25, gamma=2.0)
-optimizer = optim.Adam(model.parameters(), lr=LR)
-
-# Pre-compute class weights for informational use
-cw = compute_class_weights(y_train)
-print(f"[4/5] Imbalance info | neg weight: {cw[0]:.3f}, pos weight: {cw[1]:.3f}")
-print()
-
-
-# ---------------------------------------------------------------------------
-# 5. Training loop
-# ---------------------------------------------------------------------------
-print("[5/5] Training …")
+print("=" * 60)
+print("  Comparison")
+print("=" * 60)
+print(f"{'Metric':<20}{'Serial (Hybrid)':>20}{'Parallel (PHNN)':>20}")
 print("-" * 60)
-
-dataset_size = len(X_train)
-indices      = torch.arange(dataset_size)
-
-for epoch in range(1, N_EPOCHS + 1):
-    model.train()
-    perm       = torch.randperm(dataset_size)
-    epoch_loss = 0.0
-    n_batches  = 0
-
-    t0 = time.perf_counter()
-    for start in range(0, dataset_size, BATCH_SIZE):
-        idx  = perm[start : start + BATCH_SIZE]
-        xb   = X_train[idx]
-        yb   = y_train[idx]
-
-        optimizer.zero_grad()
-        logits = model(xb).squeeze(-1)      # (batch,)
-        loss   = loss_fn(logits, yb)
-        loss.backward()
-        optimizer.step()
-
-        epoch_loss += loss.item()
-        n_batches  += 1
-
-    elapsed = time.perf_counter() - t0
-
-    # ── Epoch stats ───────────────────────────────────────────────────
-    model.eval()
-    with torch.no_grad():
-        train_probs = model.predict_proba(X_train)
-        train_preds = (train_probs >= 0.5).long()
-        train_acc   = (train_preds == y_train.long()).float().mean().item()
-        avg_loss    = epoch_loss / n_batches
-
-    print(
-        f"Epoch {epoch:2d}/{N_EPOCHS} | "
-        f"Loss: {avg_loss:.4f} | "
-        f"Train Acc: {train_acc:.3f} | "
-        f"Time: {elapsed:.1f}s"
-    )
-
-print("-" * 60)
-
-
-# ---------------------------------------------------------------------------
-# Hold-out evaluation
-# ---------------------------------------------------------------------------
-model.eval()
-with torch.no_grad():
-    test_preds = model.predict(X_test, threshold=0.5)
-    test_acc   = (test_preds == y_test.long()).float().mean().item()
-
-    # Per-class accuracy
-    neg_mask  = (y_test == 0)
-    pos_mask  = (y_test == 1)
-    neg_acc   = (test_preds[neg_mask] == 0).float().mean().item() if neg_mask.any() else float("nan")
-    pos_acc   = (test_preds[pos_mask] == 1).float().mean().item() if pos_mask.any() else float("nan")
-
-print()
-print("Hold-out evaluation:")
-print(f"  Overall accuracy : {test_acc:.3f}")
-print(f"  Negative (maj.)  : {neg_acc:.3f}")
-print(f"  Positive (min.)  : {pos_acc:.3f}  ← key metric for fraud detection")
+print(f"{'Trainable params':<20}{serial_results['params']:>20}{parallel_results['params']:>20}")
+print(f"{'Overall accuracy':<20}{serial_results['test_acc']:>20.3f}{parallel_results['test_acc']:>20.3f}")
+print(f"{'Negative (maj.)':<20}{serial_results['neg_acc']:>20.3f}{parallel_results['neg_acc']:>20.3f}")
+print(f"{'Positive (min.)':<20}{serial_results['pos_acc']:>20.3f}{parallel_results['pos_acc']:>20.3f}")
 print()
 print("Demo complete.  See hqnn_forge/ for full library source.")
