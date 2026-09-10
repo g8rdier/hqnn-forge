@@ -19,11 +19,13 @@ N_QUBITS = 4
 N_LAYERS = 2
 N_RAW_FEATURES = 12
 CLASSICAL_HIDDEN_DIM = 6
+FIXTURE_SEED = 0
 
 
 @pytest.fixture(scope="module")
 def classifier() -> ParallelHybridClassifier:
     """Small ParallelHybridClassifier for unit tests."""
+    torch.manual_seed(FIXTURE_SEED)
     return ParallelHybridClassifier(
         n_input_features=N_RAW_FEATURES,
         n_qubits=N_QUBITS,
@@ -38,8 +40,12 @@ def classifier() -> ParallelHybridClassifier:
 
 @pytest.fixture
 def random_raw_batch() -> torch.Tensor:
-    """Random raw-feature batch, shape (BATCH, N_RAW_FEATURES)."""
-    return torch.randn(BATCH, N_RAW_FEATURES)
+    """Seeded raw-feature batch, shape (BATCH, N_RAW_FEATURES).
+
+    Seeded so the non-zero gradient assertions check the same draw every run.
+    """
+    generator = torch.Generator().manual_seed(FIXTURE_SEED)
+    return torch.randn(BATCH, N_RAW_FEATURES, generator=generator)
 
 
 class TestForwardShape:
@@ -147,6 +153,24 @@ class TestGradientFlow:
         assert quantum_weights.grad is not None
         assert torch.any(quantum_weights.grad != 0)
 
+    def test_gradients_reach_classical_encoder(
+        self, classifier: ParallelHybridClassifier, random_raw_batch: torch.Tensor
+    ) -> None:
+        """
+        The encoder's only path to the loss runs back through the circuit, so
+        this also checks that *input* gradients cross the quantum layer — not
+        just gradients w.r.t. its weights.
+        """
+        classifier.zero_grad()
+        out = classifier(random_raw_batch)
+        out.sum().backward()
+
+        encoder_params = list(classifier.classical_encoder.parameters())
+        assert encoder_params, "fixture must build with use_classical_encoder=True"
+        for param in encoder_params:
+            assert param.grad is not None
+            assert torch.any(param.grad != 0)
+
     def test_gradients_reach_head(
         self, classifier: ParallelHybridClassifier, random_raw_batch: torch.Tensor
     ) -> None:
@@ -185,13 +209,20 @@ class TestEncoderBypass:
 
 # Wider/deeper than the shared fixture: each layer holds n_qubits * 3 weights,
 # and at 4 qubits the per-layer std estimate is far too noisy to distinguish the
-# two strategies without flaking (cf. #21).  At 16 qubits / 8 layers the
-# first-to-last std ratio separates cleanly: measured over 2000 seeds,
-# restricted stays below 1.55 and block_local above 1.73.
+# two strategies without flaking (cf. #21).
+#
+# The strategies are told apart by the slope of log(std_l) against log(l + 1),
+# fitted over all layers: 0 for restricted, -0.5 for block_local.  A first/last
+# std ratio uses only two layers and its spread overlaps a fixed threshold (0.3%
+# of seeds at 16 qubits / 8 layers).  At 16 qubits / 16 layers the slope has
+# sd 0.034 under either strategy, so the +/-0.25 band sits ~7 sd out — no failures
+# over 500 000 simulated draws — and, being half the gap between the targets, a
+# model that ignores init_strategy cannot pass both tests.  The margin, not
+# INIT_SEED, is what keeps these stable when __init__ changes re-roll the RNG.
 INIT_N_QUBITS = 16
-INIT_N_LAYERS = 8
+INIT_N_LAYERS = 16
 INIT_SEED = 0
-DECAY_THRESHOLD = 1.5
+SLOPE_TOLERANCE = 0.25
 
 
 def _build_for_init(strategy: str) -> ParallelHybridClassifier:
@@ -207,16 +238,20 @@ def _build_for_init(strategy: str) -> ParallelHybridClassifier:
     )
 
 
-def _per_layer_std(model: ParallelHybridClassifier) -> list[float]:
-    w = model.quantum_layer.qlayer.weights.data
-    return [w[i].std().item() for i in range(w.shape[0])]
+def _log_std_slope(model: ParallelHybridClassifier) -> float:
+    """Least-squares slope of log(per-layer std) against log(layer_index + 1)."""
+    w = model.quantum_layer.qlayer.weights.data.double()
+    y = torch.log(w.flatten(start_dim=1).std(dim=1))
+    x = torch.log(torch.arange(1, w.shape[0] + 1, dtype=torch.float64))
+    x, y = x - x.mean(), y - y.mean()
+    return ((x * y).sum() / (x * x).sum()).item()
 
 
 class TestInitStrategies:
     def test_restricted_variance_is_flat_across_layers(self) -> None:
-        """``restricted`` uses one shared sigma, so per-layer std must not decay."""
-        stds = _per_layer_std(_build_for_init("restricted"))
-        assert stds[0] / stds[-1] < DECAY_THRESHOLD
+        """``restricted`` uses one shared sigma, so log-std has zero slope in depth."""
+        slope = _log_std_slope(_build_for_init("restricted"))
+        assert abs(slope) < SLOPE_TOLERANCE
 
     def test_restricted_matches_documented_sigma(self) -> None:
         """sigma = pi / sqrt(n_qubits * n_layers), per the initializer docstring."""
@@ -226,10 +261,12 @@ class TestInitStrategies:
         assert actual == pytest.approx(expected, rel=0.25)
 
     def test_block_local_variance_decays_with_depth(self) -> None:
-        """``block_local`` uses sigma_l = pi / sqrt(n_qubits * (l + 1)) — decaying."""
-        stds = _per_layer_std(_build_for_init("block_local"))
-        assert stds[0] > stds[-1]
-        assert stds[0] / stds[-1] > DECAY_THRESHOLD
+        """
+        ``block_local`` uses sigma_l = pi / sqrt(n_qubits * (l + 1)), i.e.
+        log(sigma_l) = const - 0.5 * log(l + 1): slope -0.5 in depth.
+        """
+        slope = _log_std_slope(_build_for_init("block_local"))
+        assert abs(slope + 0.5) < SLOPE_TOLERANCE
 
     def test_strategies_produce_different_weights(self) -> None:
         """
