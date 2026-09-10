@@ -6,6 +6,8 @@ Unit tests for hqnn_forge.models.ParallelHybridClassifier.
 
 from __future__ import annotations
 
+import math
+
 import pytest
 import torch
 
@@ -83,6 +85,28 @@ class TestParameterCount:
     def test_positive_count(self, classifier: ParallelHybridClassifier) -> None:
         assert classifier.count_parameters() > 0
 
+    def test_exact_count(self, classifier: ParallelHybridClassifier) -> None:
+        """
+        Pin the exact parameter count, block by block.  An inequality against
+        the serial model passes for almost any MLP width, so it would not catch
+        a mis-sized head or a wrongly wired branch — this does.
+        """
+        branch = (
+            N_RAW_FEATURES * CLASSICAL_HIDDEN_DIM + CLASSICAL_HIDDEN_DIM       # Linear 1
+            + CLASSICAL_HIDDEN_DIM * CLASSICAL_HIDDEN_DIM + CLASSICAL_HIDDEN_DIM  # Linear 2
+        )
+        encoder = N_RAW_FEATURES * N_QUBITS + N_QUBITS
+        quantum = N_LAYERS * N_QUBITS * 3
+        head    = (CLASSICAL_HIDDEN_DIM + N_QUBITS) * 1 + 1
+
+        expected = branch + encoder + quantum + head
+        assert expected == 207, "test constants drifted from the documented config"
+        assert classifier.count_parameters() == expected
+
+    def test_head_consumes_both_branches(self, classifier: ParallelHybridClassifier) -> None:
+        """The head must be wired to the *concatenated* width, not one branch."""
+        assert classifier.head.in_features == CLASSICAL_HIDDEN_DIM + N_QUBITS
+
     def test_exceeds_serial_classifier(self, classifier: ParallelHybridClassifier) -> None:
         """Parallel topology adds an MLP branch, so it must have strictly more
         parameters than the equivalent serial HybridBinaryClassifier."""
@@ -159,22 +183,62 @@ class TestEncoderBypass:
         assert out.shape == (2, 1)
 
 
-class TestInitStrategies:
-    def test_restricted_strategy(self) -> None:
-        model = ParallelHybridClassifier(
-            n_input_features=4, n_qubits=4, n_layers=2,
-            use_classical_encoder=False, device_name="default.qubit",
-            diff_method="parameter-shift", init_strategy="restricted",
-        )
-        assert model is not None
+# Wider/deeper than the shared fixture: each layer holds n_qubits * 3 weights,
+# and at 4 qubits the per-layer std estimate is far too noisy to distinguish the
+# two strategies without flaking (cf. #21).  At 16 qubits / 8 layers the
+# first-to-last std ratio separates cleanly: measured over 2000 seeds,
+# restricted stays below 1.55 and block_local above 1.73.
+INIT_N_QUBITS = 16
+INIT_N_LAYERS = 8
+INIT_SEED = 0
+DECAY_THRESHOLD = 1.5
 
-    def test_block_local_strategy(self) -> None:
-        model = ParallelHybridClassifier(
-            n_input_features=4, n_qubits=4, n_layers=2,
-            use_classical_encoder=False, device_name="default.qubit",
-            diff_method="parameter-shift", init_strategy="block_local",
-        )
-        assert model is not None
+
+def _build_for_init(strategy: str) -> ParallelHybridClassifier:
+    torch.manual_seed(INIT_SEED)
+    return ParallelHybridClassifier(
+        n_input_features=INIT_N_QUBITS,
+        n_qubits=INIT_N_QUBITS,
+        n_layers=INIT_N_LAYERS,
+        use_classical_encoder=False,
+        device_name="default.qubit",
+        diff_method="parameter-shift",
+        init_strategy=strategy,
+    )
+
+
+def _per_layer_std(model: ParallelHybridClassifier) -> list[float]:
+    w = model.quantum_layer.qlayer.weights.data
+    return [w[i].std().item() for i in range(w.shape[0])]
+
+
+class TestInitStrategies:
+    def test_restricted_variance_is_flat_across_layers(self) -> None:
+        """``restricted`` uses one shared sigma, so per-layer std must not decay."""
+        stds = _per_layer_std(_build_for_init("restricted"))
+        assert stds[0] / stds[-1] < DECAY_THRESHOLD
+
+    def test_restricted_matches_documented_sigma(self) -> None:
+        """sigma = pi / sqrt(n_qubits * n_layers), per the initializer docstring."""
+        model = _build_for_init("restricted")
+        expected = math.pi / math.sqrt(INIT_N_QUBITS * INIT_N_LAYERS)
+        actual = model.quantum_layer.qlayer.weights.data.std().item()
+        assert actual == pytest.approx(expected, rel=0.25)
+
+    def test_block_local_variance_decays_with_depth(self) -> None:
+        """``block_local`` uses sigma_l = pi / sqrt(n_qubits * (l + 1)) — decaying."""
+        stds = _per_layer_std(_build_for_init("block_local"))
+        assert stds[0] > stds[-1]
+        assert stds[0] / stds[-1] > DECAY_THRESHOLD
+
+    def test_strategies_produce_different_weights(self) -> None:
+        """
+        Wiring check: identical seeds, different strategy — the weights must
+        differ.  If ``init_strategy`` were silently ignored these would match.
+        """
+        restricted = _build_for_init("restricted").quantum_layer.qlayer.weights.data
+        block_local = _build_for_init("block_local").quantum_layer.qlayer.weights.data
+        assert not torch.allclose(restricted, block_local)
 
 
 class TestEncodingTypes:

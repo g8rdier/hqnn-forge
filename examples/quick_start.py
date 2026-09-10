@@ -129,7 +129,15 @@ print()
 # 3-5. Build, train, and evaluate a model — shared by both architectures
 # ---------------------------------------------------------------------------
 def train_and_evaluate(model: torch.nn.Module, model_name: str) -> dict:
-    """Train `model` for N_EPOCHS and report hold-out metrics."""
+    """
+    Train `model` for N_EPOCHS and report hold-out metrics.
+
+    Re-seeds first so that every model sees the *same* shuffled batch order —
+    without this the second model trains on a different permutation and the
+    comparison below would confound architecture with batch-order noise.
+    """
+    torch.manual_seed(SEED)
+
     print(f"[3/5] Building {model_name} ({model.count_parameters()} trainable params) …")
     print()
 
@@ -214,6 +222,7 @@ def train_and_evaluate(model: torch.nn.Module, model_name: str) -> dict:
 print("=" * 60)
 print("  Model 1/2: HybridBinaryClassifier (serial topology)")
 print("=" * 60)
+torch.manual_seed(SEED)
 serial_model = HybridBinaryClassifier(
     n_input_features=N_PCA_COMPONENTS,
     n_qubits=N_QUBITS,
@@ -223,11 +232,11 @@ serial_model = HybridBinaryClassifier(
     diff_method="parameter-shift",
     init_strategy="restricted",
 )
-serial_results = train_and_evaluate(serial_model, "HybridBinaryClassifier")
 
 print("=" * 60)
 print("  Model 2/2: ParallelHybridClassifier (parallel topology)")
 print("=" * 60)
+torch.manual_seed(SEED)
 parallel_model = ParallelHybridClassifier(
     n_input_features=N_PCA_COMPONENTS,
     n_qubits=N_QUBITS,
@@ -238,6 +247,16 @@ parallel_model = ParallelHybridClassifier(
     diff_method="parameter-shift",
     init_strategy="restricted",
 )
+
+# The parallel model builds more classical layers before its quantum init runs,
+# so seeding alone leaves the two topologies with different quantum weights.
+# Copy them across so the only difference that remains is the architecture.
+with torch.no_grad():
+    parallel_model.quantum_layer.qlayer.weights.copy_(
+        serial_model.quantum_layer.qlayer.weights
+    )
+
+serial_results   = train_and_evaluate(serial_model, "HybridBinaryClassifier")
 parallel_results = train_and_evaluate(parallel_model, "ParallelHybridClassifier")
 
 
@@ -253,5 +272,10 @@ print(f"{'Trainable params':<20}{serial_results['params']:>20}{parallel_results[
 print(f"{'Overall accuracy':<20}{serial_results['test_acc']:>20.3f}{parallel_results['test_acc']:>20.3f}")
 print(f"{'Negative (maj.)':<20}{serial_results['neg_acc']:>20.3f}{parallel_results['neg_acc']:>20.3f}")
 print(f"{'Positive (min.)':<20}{serial_results['pos_acc']:>20.3f}{parallel_results['pos_acc']:>20.3f}")
+print("-" * 60)
+print(f"Both models trained from seed {SEED} with a shared quantum-branch init")
+print("and identical batch ordering, so the gap above reflects topology rather")
+print("than initialisation noise.  This is still a single run on synthetic data:")
+print("average over several seeds before drawing conclusions from it.")
 print()
 print("Demo complete.  See hqnn_forge/ for full library source.")

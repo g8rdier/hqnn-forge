@@ -42,10 +42,14 @@ Design Notes
   ``ParallelHybridClassifier.count_parameters()`` against an equivalently
   configured ``HybridBinaryClassifier`` to quantify the trade-off.
 
-* The quantum branch mirrors ``HybridBinaryClassifier`` exactly (same
+* The quantum branch mirrors ``HybridBinaryClassifier`` in *topology* (same
   classical encoder + ``QuantumEncodingLayer`` / ``IQPEncodingLayer`` choice,
-  same barren-plateau-safe initialisation), so results are directly
-  comparable between the two architectures.
+  same barren-plateau-safe initialisation scheme).  Note that seeding the two
+  architectures identically does **not** give them identical quantum weights:
+  this model builds more classical layers before the quantum init runs, so it
+  draws from a different RNG state.  To compare the two topologies fairly,
+  copy the quantum weights across after construction — see
+  ``examples/quick_start.py``.
 
 * The classical branch is a small two-layer MLP (``classical_hidden_dim``
   units) with ReLU activations.
@@ -212,9 +216,21 @@ class ParallelHybridClassifier(nn.Module):
 
     # ------------------------------------------------------------------
     def _initialise_weights(self) -> None:
-        """Apply restricted-variance init to quantum weights; Xavier to classical."""
-        # Classical layers: Xavier uniform (standard for linear + Tanh/ReLU)
-        for module in self.modules():
+        """
+        Initialise each block with the scheme derived for its non-linearity:
+        He for the ReLU branch, Xavier for the Tanh encoder and linear head,
+        restricted-variance for the quantum weights.
+        """
+        # Classical MLP branch: He/Kaiming — derived for ReLU, which Xavier
+        # under-scales by sqrt(2) per layer.
+        for module in self.classical_branch.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.kaiming_uniform_(module.weight, nonlinearity="relu")
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+
+        # Tanh encoder and linear head: Xavier uniform.
+        for module in (*self.classical_encoder.modules(), self.head):
             if isinstance(module, nn.Linear):
                 nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
