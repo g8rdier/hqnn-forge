@@ -116,6 +116,27 @@ class TestErrors:
         with pytest.raises(ValueError, match="n_features"):
             pca.fit(X_small)
 
+    # Warnings as errors: on too few rows, np.cov/eigh warn and then raise LinAlgError
+    # (a ValueError subclass), so the check must fire before any of that
+    @pytest.mark.filterwarnings("error")
+    @pytest.mark.parametrize("n_rows", [0, 1, N_COMPONENTS])
+    def test_too_few_samples(self, n_rows: int) -> None:
+        pca = PCANormalizer(n_components=N_COMPONENTS)
+        X = np.random.default_rng(0).standard_normal((n_rows, N_FEATURES))
+        with pytest.raises(
+            ValueError,
+            match=rf"n_samples={n_rows} <= n_components={N_COMPONENTS}\..*at least {N_COMPONENTS + 1} samples",
+        ):
+            pca.fit(X)
+
+    def test_minimum_samples_fit_has_nonzero_variance(self) -> None:
+        X = np.random.default_rng(0).standard_normal((N_COMPONENTS + 1, N_FEATURES))
+        pca = PCANormalizer(n_components=N_COMPONENTS).fit(X)
+        # Degenerate components fall back to std_ == 1e-8; every one must be far above it
+        assert pca.std_.shape == (N_COMPONENTS,)
+        assert np.all(pca.std_ > 0.1)
+        np.testing.assert_allclose(pca.std_, np.sqrt(pca.explained_variance_) + 1e-8, rtol=1e-10)
+
     def test_fit_1d_input(self) -> None:
         pca = PCANormalizer(n_components=N_COMPONENTS)
         with pytest.raises(ValueError, match=rf"2-D input.*got shape \({N_FEATURES},\).*reshape\(1, -1\)"):
