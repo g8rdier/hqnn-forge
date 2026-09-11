@@ -66,7 +66,9 @@ classical_hidden_dim:
     Width of the classical MLP branch.
 use_classical_encoder:
     If ``True`` (default), prepend a ``Linear + Tanh`` to project input to
-    ``n_qubits`` dims for the quantum branch.
+    ``n_qubits`` dims for the quantum branch.  If ``False``, input must already
+    lie in (-π, π) (e.g. ``PCANormalizer(scale_to_pi=True)``); the quantum
+    branch then passes it to the circuit unscaled.
 device_name:
     PennyLane device.
 diff_method:
@@ -112,7 +114,8 @@ class ParallelHybridClassifier(nn.Module):
         Width of the classical MLP branch.  Default: 16.
     use_classical_encoder:
         Prepend ``Linear(n_input_features → n_qubits) + Tanh`` to the quantum
-        branch.  Default: True.
+        branch.  Default: True.  If ``False``, input must already lie in
+        (-π, π); it is not rescaled.
     dropout_p:
         Dropout probability applied to the fused branch outputs.  Default: 0.0.
     device_name:
@@ -163,6 +166,7 @@ class ParallelHybridClassifier(nn.Module):
         self.n_layers             = n_layers
         self.classical_hidden_dim = classical_hidden_dim
         self.init_strategy        = init_strategy
+        self.use_classical_encoder = use_classical_encoder
 
         # ── Classical branch (MLP) ────────────────────────────────────────
         self.classical_branch = nn.Sequential(
@@ -267,8 +271,11 @@ class ParallelHybridClassifier(nn.Module):
         classical_out = self.classical_branch(x)   # (B, classical_hidden_dim)
 
         # Quantum branch: classical projection + activation
-        q = self.classical_encoder(x)               # (B, n_qubits), values ∈ (-1, 1)
-        q = q * torch.pi                             # scale into (-π, π)
+        q = self.classical_encoder(x)               # (B, n_qubits)
+        # Tanh output (-1, 1) → (-π, π).  Bypassed input is already in (-π, π);
+        # scaling it again would alias angles mod 2π.
+        if self.use_classical_encoder:
+            q = q * torch.pi
         quantum_out = self.quantum_layer(q)          # (B, n_qubits), values ∈ [-1, 1]
 
         # Fuse branches
