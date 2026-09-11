@@ -17,3 +17,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - HybridBinaryClassifier end-to-end model
 - Smoke tests for quantum encoding layer
 - Quick-start example for training
+
+### Removed
+- `requirements.txt`; `pyproject.toml` is now the only place dependencies are declared

@@ -31,13 +31,13 @@ classifiers = [
 
 dependencies = [
     "torch>=2.2",
-    "pennylane>=0.38",
+    "pennylane>=0.42",  # 0.38-0.41 break with autoray>=0.7 (NumpyMimic removed)
     "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
 lightning = [
-    "pennylane-lightning>=0.38",  # enables adjoint diff on CPU
+    "pennylane-lightning>=0.42",  # enables adjoint diff on CPU
 ]
 dev = [
     "pytest>=8.0",
