@@ -50,6 +50,21 @@ class TestTransformOutput:
         result = fitted_pca.transform(training_data)
         assert result.dtype == torch.float32
 
+    def test_matches_golden_values(
+        self, fitted_pca: PCANormalizer, held_out_data: np.ndarray
+    ) -> None:
+        # Pins the actual numbers, not just the shape, so a refactor of the
+        # conversion or projection path cannot quietly change the encoding
+        expected = torch.tensor(
+            [
+                [0.26675245, -1.63643660, 2.29188750, -3.09272840],
+                [3.00168420, 0.01153241, 2.76722460, -2.86429880],
+                [2.91354400, 1.08601160, 3.04996010, 1.35583290],
+            ]
+        )
+        result = fitted_pca.transform(held_out_data)[:3]
+        torch.testing.assert_close(result, expected, atol=1e-6, rtol=0.0)
+
 class TestScaleToPi:
     def test_values_within_pi(self, fitted_pca: PCANormalizer, training_data: np.ndarray) -> None:
         result = fitted_pca.transform(training_data)
@@ -103,6 +118,44 @@ class TestExplainedVarianceRatio:
     def test_sums_to_approximately_one(self, fitted_pca: PCANormalizer) -> None:
         ratio_sum = fitted_pca.explained_variance_ratio_.sum()
         assert 0.0 < ratio_sum <= 1.0 + 1e-6
+
+class TestInputNotModified:
+    """
+    fit/transform convert with ``np.asarray``, so X_arr can share memory with the
+    caller's array.  Every step must allocate rather than write in place.
+    """
+
+    def test_fit_leaves_input_unchanged(self, training_data: np.ndarray) -> None:
+        pristine = training_data.copy()
+        PCANormalizer(n_components=N_COMPONENTS).fit(training_data)
+        np.testing.assert_array_equal(training_data, pristine)
+
+    def test_transform_leaves_input_unchanged(
+        self, fitted_pca: PCANormalizer, held_out_data: np.ndarray
+    ) -> None:
+        pristine = held_out_data.copy()
+        fitted_pca.transform(held_out_data)
+        np.testing.assert_array_equal(held_out_data, pristine)
+
+    def test_non_contiguous_float32_input_unchanged(self) -> None:
+        # float32 forces a dtype conversion and the strided slice makes the input
+        # non-contiguous, so the converting path is exercised as well as the
+        # zero-copy float64 one above
+        rng = np.random.default_rng(2)
+        X = rng.standard_normal((N_SAMPLES, 2 * N_FEATURES)).astype(np.float32)[:, ::2]
+        assert X.dtype == np.float32 and not X.flags["C_CONTIGUOUS"]
+
+        pristine = X.copy()
+        PCANormalizer(n_components=N_COMPONENTS).fit_transform(X)
+        np.testing.assert_array_equal(X, pristine)
+
+
+class TestCopyOptionRemoved:
+    def test_copy_keyword_rejected(self) -> None:
+        # `copy` never had an effect; it was removed rather than deprecated
+        with pytest.raises(TypeError, match="copy"):
+            PCANormalizer(n_components=N_COMPONENTS, copy=True)  # type: ignore[call-arg]
+
 
 class TestErrors:
     def test_transform_before_fit(self) -> None:

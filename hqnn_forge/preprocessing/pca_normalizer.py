@@ -49,8 +49,6 @@ class PCANormalizer:
         If ``True`` (default), rescale standardised components into ``[-π, π]``
         via ``tanh(x) * π`` before returning.  Ensures valid angle-embedding
         range without hard clipping.
-    copy:
-        If ``True`` (default), operate on copies of the input data.
 
     Attributes
     ----------
@@ -84,11 +82,9 @@ class PCANormalizer:
         n_components: int = 8,
         *,
         scale_to_pi: bool = True,
-        copy: bool = True,
     ) -> None:
         self.n_components = n_components
         self.scale_to_pi  = scale_to_pi
-        self.copy         = copy
 
         # Populated by fit()
         self.mean_: Optional[npt.NDArray[np.float64]] = None
@@ -121,11 +117,11 @@ class PCANormalizer:
             ``n_samples <= n_components`` (centred data then has rank below
             ``n_components``, so some components have zero variance).
         """
-        X_arr: npt.NDArray[np.float64] = np.array(X, dtype=np.float64)
-        if self.copy:
-            X_arr = X_arr.copy()
-
+        # asarray, not array: float64 input is used as-is rather than copied, so
+        # X_arr may share memory with the caller.  Never write into it in place.
+        X_arr: npt.NDArray[np.float64] = np.asarray(X, dtype=np.float64)
         self._check_2d(X_arr)
+
         n_samples, n_features = X_arr.shape
         if n_features < self.n_components:
             raise ValueError(
@@ -200,11 +196,11 @@ class PCANormalizer:
         """
         self._check_is_fitted()
 
-        X_arr: npt.NDArray[np.float64] = np.array(X, dtype=np.float64)
-        if self.copy:
-            X_arr = X_arr.copy()
-
+        # asarray, not array: float64 input is used as-is rather than copied, so
+        # X_arr may share memory with the caller.  Never write into it in place.
+        X_arr: npt.NDArray[np.float64] = np.asarray(X, dtype=np.float64)
         self._check_2d(X_arr)
+
         if X_arr.shape[1] != self.mean_.shape[0]:  # type: ignore[union-attr]
             raise ValueError(
                 f"Input has {X_arr.shape[1]} features but PCANormalizer was "
