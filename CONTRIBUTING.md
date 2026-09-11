@@ -29,6 +29,10 @@ intentional.
     expected outcomes (for features).
 *   **Exception:** Trivial fixes (typos, obvious broken links) may skip the issue and go
     directly to a branch and PR.
+*   **Order doesn't matter:** Issues can be worked, edited, or commented on in whatever order
+    the work actually requires — there's no need to process them in creation order. The only
+    real constraint is the reverse: don't reference an issue number in a commit, PR, or another
+    issue before that issue exists.
 
 ### 2. Branch Naming
 
