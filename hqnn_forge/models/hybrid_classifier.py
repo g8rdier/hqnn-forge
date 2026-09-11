@@ -26,10 +26,10 @@ Architecture
 Design Notes
 ------------
 * The classical encoder projects arbitrary-width input to ``n_qubits`` dims
-  and applies ``tanh`` to soft-clip values into (-1, 1), which are then
-  implicitly rescaled by the quantum layer's angle embedding.  If ``PCANormalizer``
-  with ``scale_to_pi=True`` is used upstream, you can set ``use_classical_encoder=False``
-  to skip this step.
+  and applies ``tanh`` to soft-clip values into (-1, 1), which ``forward`` then
+  scales by π into (-π, π).  If ``PCANormalizer`` with ``scale_to_pi=True`` is
+  used upstream, set ``use_classical_encoder=False`` to skip both steps: bypassed
+  input reaches the circuit unscaled, so it must already lie in (-π, π).
 
 * The quantum layer is initialised with ``restricted_normal_init_`` immediately
   after construction to avoid barren plateaus.
@@ -46,7 +46,8 @@ n_layers:
     Number of variational layers in the quantum circuit.
 use_classical_encoder:
     If ``True`` (default), prepend a ``Linear + Tanh`` to project input to
-    ``n_qubits`` dims.  Set ``False`` if input is already n_qubits-dim.
+    ``n_qubits`` dims.  Set ``False`` if input is already n_qubits-dim and
+    already in (-π, π); it is then passed to the circuit unscaled.
 device_name:
     PennyLane device.
 diff_method:
@@ -88,6 +89,7 @@ class HybridBinaryClassifier(nn.Module):
         VQC ansatz layers.  Default: 2.
     use_classical_encoder:
         Prepend ``Linear(n_input_features → n_qubits) + Tanh``.  Default: True.
+        If ``False``, input must already lie in (-π, π); it is not rescaled.
     dropout_p:
         Dropout probability applied after the quantum layer.  Default: 0.0.
     device_name:
@@ -135,6 +137,7 @@ class HybridBinaryClassifier(nn.Module):
         self.n_qubits         = n_qubits
         self.n_layers         = n_layers
         self.init_strategy    = init_strategy
+        self.use_classical_encoder = use_classical_encoder
 
         # ── Classical encoder ─────────────────────────────────────────────
         if use_classical_encoder:
@@ -214,10 +217,12 @@ class HybridBinaryClassifier(nn.Module):
             for probabilities, or pass directly to ``FocalLoss``.
         """
         # Classical projection + activation
-        x = self.classical_encoder(x)        # (B, n_qubits), values ∈ (-1, 1)
+        x = self.classical_encoder(x)        # (B, n_qubits)
 
-        # Scale into (-π, π) for angle embedding
-        x = x * torch.pi                     # (B, n_qubits)
+        # Tanh output (-1, 1) → (-π, π).  Bypassed input is already in (-π, π);
+        # scaling it again would alias angles mod 2π.
+        if self.use_classical_encoder:
+            x = x * torch.pi
 
         # Quantum feature map
         x = self.quantum_layer(x)            # (B, n_qubits), values ∈ [-1, 1]

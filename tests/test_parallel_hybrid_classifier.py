@@ -182,6 +182,19 @@ class TestGradientFlow:
         assert torch.any(classifier.head.weight.grad != 0)
 
 
+def _circuit_input(model: torch.nn.Module, x: torch.Tensor) -> torch.Tensor:
+    """Run a forward pass and return the tensor handed to the quantum layer."""
+    captured: list[torch.Tensor] = []
+    handle = model.quantum_layer.register_forward_pre_hook(
+        lambda _module, args: captured.append(args[0].detach())
+    )
+    try:
+        model(x)
+    finally:
+        handle.remove()
+    return captured[0]
+
+
 class TestEncoderBypass:
     def test_mismatched_dims_raises(self) -> None:
         with pytest.raises(ValueError, match="n_input_features"):
@@ -205,6 +218,25 @@ class TestEncoderBypass:
         x = torch.randn(2, 4)
         out = model(x)
         assert out.shape == (2, 1)
+
+    def test_bypassed_input_reaches_circuit_unscaled(self) -> None:
+        """Bypassed input is already in (-π, π); a second π factor aliases angles mod 2π."""
+        model = ParallelHybridClassifier(
+            n_input_features=4,
+            n_qubits=4,
+            n_layers=1,
+            use_classical_encoder=False,
+            device_name="default.qubit",
+            diff_method="parameter-shift",
+        )
+        x = torch.linspace(-3.0, 3.0, 8).reshape(2, 4)
+        torch.testing.assert_close(_circuit_input(model, x), x)
+
+    def test_encoder_output_scaled_by_pi(
+        self, classifier: ParallelHybridClassifier, random_raw_batch: torch.Tensor
+    ) -> None:
+        expected = classifier.classical_encoder(random_raw_batch).detach() * torch.pi
+        torch.testing.assert_close(_circuit_input(classifier, random_raw_batch), expected)
 
 
 # Wider/deeper than the shared fixture: each layer holds n_qubits * 3 weights,
