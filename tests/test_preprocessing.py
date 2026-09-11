@@ -137,6 +137,20 @@ class TestErrors:
         assert np.all(pca.std_ > 0.1)
         np.testing.assert_allclose(pca.std_, np.sqrt(pca.explained_variance_) + 1e-8, rtol=1e-10)
 
+    # Warnings as errors: with a single row np.cov/eigh warn and then raise
+    # LinAlgError (a ValueError subclass), so the check must fire before any of that
+    @pytest.mark.filterwarnings("error")
+    @pytest.mark.parametrize("n_rows", [N_SAMPLES, 1])
+    @pytest.mark.parametrize("n_components", [0, -1])
+    def test_non_positive_n_components(self, n_components: int, n_rows: int) -> None:
+        pca = PCANormalizer(n_components=n_components)
+        X = np.random.default_rng(0).standard_normal((n_rows, N_FEATURES))
+        with pytest.raises(
+            ValueError,
+            match=rf"n_components={n_components} < 1\..*positive",
+        ):
+            pca.fit(X)
+
     def test_fit_1d_input(self) -> None:
         pca = PCANormalizer(n_components=N_COMPONENTS)
         with pytest.raises(ValueError, match=rf"2-D input.*got shape \({N_FEATURES},\).*reshape\(1, -1\)"):
