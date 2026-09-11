@@ -26,6 +26,10 @@ Notes
 * Eigendecomposition uses ``numpy.linalg.eigh`` (symmetric covariance matrix),
   which is numerically more stable than ``numpy.linalg.eig`` for this use case.
 * Only the top ``n_components`` eigenvectors (by eigenvalue magnitude) are kept.
+* Eigenvector signs are canonicalised so that the largest-magnitude entry of
+  each component is positive.  ``eigh`` gives no guarantee about which of the
+  two valid signs it returns, so without this the fitted basis -- and every
+  encoded feature -- would differ between LAPACK builds and platforms.
 """
 
 from __future__ import annotations
@@ -57,7 +61,11 @@ class PCANormalizer:
         Per-feature mean computed during ``fit``.
     components_ : np.ndarray, shape (n_components, n_features)
         Principal component matrix (rows = eigenvectors, sorted by descending
-        explained variance).
+        explained variance).  Each row's sign is canonicalised so its
+        largest-magnitude entry is positive, making ``components_`` -- and
+        therefore ``transform`` -- a deterministic function of the input data
+        rather than of the LAPACK build.  This is part of the public contract;
+        the convention matches scikit-learn's ``svd_flip``.
     explained_variance_ : np.ndarray, shape (n_components,)
         Eigenvalues corresponding to retained components.
     std_ : np.ndarray, shape (n_components,)
@@ -173,9 +181,25 @@ class PCANormalizer:
 
         self.explained_variance_ = eigenvalues[: self.n_components]
         # rows = components (shape: n_components × n_features)
-        self.components_ = eigenvectors[:, : self.n_components].T
+        components = eigenvectors[:, : self.n_components].T
 
-        # 5. Project training data → compute per-component std for standardisation
+        # 5. Canonicalise the sign of each component.  eigh returns eigenvectors
+        # up to an arbitrary sign, so another LAPACK build may hand back a
+        # component negated -- components_ and the encoded features would not be
+        # reproducible across platforms.  Convention (matching scikit-learn's
+        # svd_flip): the largest-magnitude entry of each component is positive.
+        # Well defined whenever a component has one clearly largest entry;
+        # ambiguous only if its two largest are equal to within the ~1e-15 spread
+        # between builds, far below the ~1% margin realistic data leaves.
+        # np.sign cannot return 0 here: the largest-magnitude entry of a
+        # unit-norm vector is at least 1/sqrt(n_features).
+        leading = np.abs(components).argmax(axis=1)
+        signs   = np.sign(components[np.arange(components.shape[0]), leading])
+        # Out-of-place: components is a non-contiguous view over the full
+        # (n_features, n_features) eigenvector matrix, which this also drops
+        self.components_ = components * signs[:, np.newaxis]
+
+        # 6. Project training data → compute per-component std for standardisation
         projections = X_centered @ self.components_.T          # (n_samples, n_components)
         self.std_   = projections.std(axis=0, ddof=1) + 1e-8  # avoid div-by-zero
 

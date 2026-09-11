@@ -41,23 +41,6 @@ class TestFitAttributes:
         for i in range(len(ev) - 1):
             assert ev[i] >= ev[i + 1]
 
-def _component_signs(pca: PCANormalizer) -> torch.Tensor:
-    """
-    Per-component ±1 normalising the arbitrary eigenvector sign, as a row vector
-    broadcastable over a transform output of shape (n_samples, n_components).
-
-    ``fit`` keeps whatever sign ``np.linalg.eigh`` returns, which is not part of
-    the library's contract: another LAPACK build or platform may return a
-    component negated, flipping that output column with nothing actually wrong.
-    Convention here: the largest-magnitude entry of each component is positive.
-    That is only well defined while the fixture stays unambiguous, which
-    TestGoldenFixtureIsWellConditioned asserts.
-    """
-    components = pca.components_
-    leading = np.abs(components).argmax(axis=1)
-    signs = np.sign(components[np.arange(components.shape[0]), leading])
-    return torch.tensor(signs, dtype=torch.float32)
-
 class TestTransformOutput:
     def test_output_shape(self, fitted_pca: PCANormalizer, training_data: np.ndarray) -> None:
         result = fitted_pca.transform(training_data)
@@ -72,8 +55,8 @@ class TestTransformOutput:
     ) -> None:
         # Pins the actual numbers, not just the shape, so a refactor of the
         # conversion or projection path cannot quietly change the encoding.
-        # Signs are normalised first (see _component_signs): everything else
-        # about the encoding stays pinned to 1e-6.
+        # Signs need no normalisation here: fit canonicalises them, so these
+        # values are pinned as-is to 1e-6 on any platform.
         expected = torch.tensor(
             [
                 [0.26675245, -1.63643660, 2.29188750, 3.09272840],
@@ -81,13 +64,40 @@ class TestTransformOutput:
                 [2.91354400, 1.08601160, 3.04996010, -1.35583290],
             ]
         )
-        result = fitted_pca.transform(held_out_data)[:3] * _component_signs(fitted_pca)
+        result = fitted_pca.transform(held_out_data)[:3]
         torch.testing.assert_close(result, expected, atol=1e-6, rtol=0.0)
+
+    def test_components_have_positive_leading_entry(self, fitted_pca: PCANormalizer) -> None:
+        # The documented sign convention, asserted directly: it is what makes
+        # components_ and the golden values above reproducible across platforms
+        components = fitted_pca.components_
+        leading = np.abs(components).argmax(axis=1)
+        assert np.all(components[np.arange(components.shape[0]), leading] > 0)
+
+    def test_negated_eigenvectors_give_identical_fit(
+        self, fitted_pca: PCANormalizer, training_data: np.ndarray,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # The signs cannot be made to differ on one machine, so stand in for a
+        # LAPACK build that returns the other (equally valid) eigenvectors.  This
+        # is the property the convention exists for; the assertion above only
+        # checks the convention is self-consistent, not that it is reached from
+        # both starting points.
+        real_eigh = np.linalg.eigh
+
+        def flipped_eigh(a):  # type: ignore[no-untyped-def]
+            eigenvalues, eigenvectors = real_eigh(a)
+            return eigenvalues, -eigenvectors
+
+        monkeypatch.setattr(np.linalg, "eigh", flipped_eigh)
+        flipped = PCANormalizer(n_components=N_COMPONENTS, scale_to_pi=True).fit(training_data)
+
+        np.testing.assert_allclose(flipped.components_, fitted_pca.components_)
 
 class TestGoldenFixtureIsWellConditioned:
     """
-    test_matches_golden_values and _component_signs both assume the fixture is
-    unambiguous: well-separated eigenvalues, and one clearly largest entry per
+    test_matches_golden_values and fit's sign convention both assume the fixture
+    is unambiguous: well-separated eigenvalues, and one clearly largest entry per
     component.  Assert that directly, so a future change to the fixture fails
     here with a stated reason rather than as an inscrutable golden mismatch on
     someone else's platform.
@@ -117,8 +127,8 @@ class TestGoldenFixtureIsWellConditioned:
         margins = (magnitudes[:, -1] - magnitudes[:, -2]) / magnitudes[:, -1]
         assert margins.min() > 0.001, (
             f"a component's two largest entries are nearly equal (smallest "
-            f"relative margin {margins.min():.2%}), so which entry "
-            f"_component_signs keys on is itself build-dependent"
+            f"relative margin {margins.min():.2%}), so which entry fit keys "
+            f"its sign convention on is itself build-dependent"
         )
 
 class TestScaleToPi:
