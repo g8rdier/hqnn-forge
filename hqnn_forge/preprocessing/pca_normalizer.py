@@ -256,9 +256,11 @@ class PCANormalizer:
         # 1-D input is ambiguous (one sample or one feature), so reject it
         # rather than guess a reshape
         if X_arr.ndim != 2:
+            # The reshape hint only fits 1-D input; for higher ndim it would mislead
+            hint = "  For a single sample, use X.reshape(1, -1)." if X_arr.ndim == 1 else ""
             raise ValueError(
                 f"Expected 2-D input of shape (n_samples, n_features), got "
-                f"shape {X_arr.shape}.  For a single sample, use X.reshape(1, -1)."
+                f"shape {X_arr.shape}.{hint}"
             )
 
     # ------------------------------------------------------------------
