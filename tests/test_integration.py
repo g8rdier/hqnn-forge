@@ -11,7 +11,7 @@ import pytest
 import torch
 import torch.optim as optim
 
-from hqnn_forge.models import HybridBinaryClassifier
+from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
 from hqnn_forge.preprocessing import PCANormalizer
 from hqnn_forge.utils import FocalLoss, compute_class_weights
 
@@ -100,3 +100,30 @@ class TestEndToEndPipeline:
         assert probs.min().item() >= 0.0 - 1e-6
         assert probs.max().item() <= 1.0 + 1e-6
         assert probs.shape == (len(X_test_np),)
+
+    @pytest.mark.parametrize("model_cls", [HybridBinaryClassifier, ParallelHybridClassifier])
+    def test_pca_scaled_angles_stay_within_pi(
+        self,
+        synthetic_dataset: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+        model_cls: type[torch.nn.Module],
+    ) -> None:
+        """PCANormalizer(scale_to_pi=True) output must reach a bypassed circuit within ±π."""
+        X_train_np, _, _, _ = synthetic_dataset
+        X_train = PCANormalizer(n_components=N_QUBITS, scale_to_pi=True).fit_transform(X_train_np)
+
+        model = model_cls(
+            n_input_features=N_QUBITS, n_qubits=N_QUBITS, n_layers=N_LAYERS,
+            use_classical_encoder=False, device_name="default.qubit",
+            diff_method="parameter-shift",
+        )
+
+        captured: list[torch.Tensor] = []
+        handle = model.quantum_layer.register_forward_pre_hook(
+            lambda _module, args: captured.append(args[0].detach())
+        )
+        try:
+            model(X_train)
+        finally:
+            handle.remove()
+
+        assert captured[0].abs().max().item() <= torch.pi
