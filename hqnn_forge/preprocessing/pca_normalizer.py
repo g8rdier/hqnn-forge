@@ -116,12 +116,13 @@ class PCANormalizer:
         Raises
         ------
         ValueError
-            If ``n_features < n_components``.
+            If ``X`` is not 2-D, or if ``n_features < n_components``.
         """
         X_arr: npt.NDArray[np.float64] = np.array(X, dtype=np.float64)
         if self.copy:
             X_arr = X_arr.copy()
 
+        self._check_2d(X_arr)
         n_samples, n_features = X_arr.shape
         if n_features < self.n_components:
             raise ValueError(
@@ -183,7 +184,8 @@ class PCANormalizer:
         RuntimeError
             If ``fit`` has not been called.
         ValueError
-            If input feature dimension doesn't match training data.
+            If ``X`` is not 2-D, or if its feature dimension doesn't match
+            training data.
         """
         self._check_is_fitted()
 
@@ -191,6 +193,7 @@ class PCANormalizer:
         if self.copy:
             X_arr = X_arr.copy()
 
+        self._check_2d(X_arr)
         if X_arr.shape[1] != self.mean_.shape[0]:  # type: ignore[union-attr]
             raise ValueError(
                 f"Input has {X_arr.shape[1]} features but PCANormalizer was "
@@ -245,6 +248,19 @@ class PCANormalizer:
         if not self.is_fitted_:
             raise RuntimeError(
                 "PCANormalizer is not fitted.  Call .fit(X_train) first."
+            )
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _check_2d(X_arr: npt.NDArray[np.float64]) -> None:
+        # 1-D input is ambiguous (one sample or one feature), so reject it
+        # rather than guess a reshape
+        if X_arr.ndim != 2:
+            # The reshape hint only fits 1-D input; for higher ndim it would mislead
+            hint = "  For a single sample, use X.reshape(1, -1)." if X_arr.ndim == 1 else ""
+            raise ValueError(
+                f"Expected 2-D input of shape (n_samples, n_features), got "
+                f"shape {X_arr.shape}.{hint}"
             )
 
     # ------------------------------------------------------------------

@@ -115,3 +115,24 @@ class TestErrors:
         X_small = np.random.randn(50, 5)
         with pytest.raises(ValueError, match="n_features"):
             pca.fit(X_small)
+
+    def test_fit_1d_input(self) -> None:
+        pca = PCANormalizer(n_components=N_COMPONENTS)
+        with pytest.raises(ValueError, match=rf"2-D input.*got shape \({N_FEATURES},\).*reshape\(1, -1\)"):
+            pca.fit(np.zeros(N_FEATURES))
+
+    def test_fit_3d_input(self) -> None:
+        pca = PCANormalizer(n_components=N_COMPONENTS)
+        # Anchored at the end: the 1-D reshape hint must not follow
+        with pytest.raises(ValueError, match=rf"2-D input.*got shape \(2, 3, {N_FEATURES}\)\.$"):
+            pca.fit(np.zeros((2, 3, N_FEATURES)))
+
+    def test_transform_1d_input(self, fitted_pca: PCANormalizer) -> None:
+        with pytest.raises(ValueError, match=rf"2-D input.*got shape \({N_FEATURES},\).*reshape\(1, -1\)"):
+            fitted_pca.transform(np.zeros(N_FEATURES))
+
+    def test_transform_3d_input(self, fitted_pca: PCANormalizer) -> None:
+        # Last axis matches the training features, so this must get the ndim error,
+        # not a misleading feature-count mismatch
+        with pytest.raises(ValueError, match=rf"2-D input.*got shape \(2, 3, {N_FEATURES}\)\.$"):
+            fitted_pca.transform(np.zeros((2, 3, N_FEATURES)))
