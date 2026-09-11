@@ -126,9 +126,9 @@ print()
 
 
 # ---------------------------------------------------------------------------
-# 3-5. Build, train, and evaluate a model — shared by both architectures
+# 3-5. Train and evaluate a model — shared by both architectures
 # ---------------------------------------------------------------------------
-def train_and_evaluate(model: torch.nn.Module, model_name: str) -> dict:
+def train_and_evaluate(model: torch.nn.Module, model_name: str, banner: str) -> dict:
     """
     Train `model` for N_EPOCHS and report hold-out metrics.
 
@@ -138,7 +138,10 @@ def train_and_evaluate(model: torch.nn.Module, model_name: str) -> dict:
     """
     torch.manual_seed(SEED)
 
-    print(f"[3/5] Building {model_name} ({model.count_parameters()} trainable params) …")
+    print("=" * 60)
+    print(f"  {banner}")
+    print("=" * 60)
+    print(f"[3/5] {model_name}: {model.count_parameters()} trainable params")
     print()
 
     loss_fn   = FocalLoss(alpha=0.25, gamma=2.0)
@@ -219,9 +222,6 @@ def train_and_evaluate(model: torch.nn.Module, model_name: str) -> dict:
     }
 
 
-print("=" * 60)
-print("  Model 1/2: HybridBinaryClassifier (serial topology)")
-print("=" * 60)
 torch.manual_seed(SEED)
 serial_model = HybridBinaryClassifier(
     n_input_features=N_PCA_COMPONENTS,
@@ -233,9 +233,6 @@ serial_model = HybridBinaryClassifier(
     init_strategy="restricted",
 )
 
-print("=" * 60)
-print("  Model 2/2: ParallelHybridClassifier (parallel topology)")
-print("=" * 60)
 torch.manual_seed(SEED)
 parallel_model = ParallelHybridClassifier(
     n_input_features=N_PCA_COMPONENTS,
@@ -256,8 +253,14 @@ with torch.no_grad():
         serial_model.quantum_layer.qlayer.weights
     )
 
-serial_results   = train_and_evaluate(serial_model, "HybridBinaryClassifier")
-parallel_results = train_and_evaluate(parallel_model, "ParallelHybridClassifier")
+serial_results = train_and_evaluate(
+    serial_model, "HybridBinaryClassifier",
+    "Model 1/2: HybridBinaryClassifier (serial topology)",
+)
+parallel_results = train_and_evaluate(
+    parallel_model, "ParallelHybridClassifier",
+    "Model 2/2: ParallelHybridClassifier (parallel topology)",
+)
 
 
 # ---------------------------------------------------------------------------
