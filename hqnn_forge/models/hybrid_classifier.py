@@ -71,6 +71,7 @@ from hqnn_forge.initializers.restricted_variance import (
     restricted_normal_init_,
     block_local_init_,
 )
+from hqnn_forge.utils.modes import eval_mode
 
 
 class HybridBinaryClassifier(nn.Module):
@@ -255,15 +256,9 @@ class HybridBinaryClassifier(nn.Module):
             Probability of class 1, shape ``(batch_size,)``, values ∈ [0, 1].
         """
         # no_grad alone leaves nn.Dropout active: it checks self.training, not
-        # grad mode.  Restore per module, since self.train(flag) would overwrite
-        # submodules the caller had put in a different mode.
-        modes = {module: module.training for module in self.modules()}
-        self.eval()
-        try:
+        # grad mode.
+        with eval_mode(self):
             logits = self.forward(x)
-        finally:
-            for module, training in modes.items():
-                module.training = training
         return torch.sigmoid(logits).squeeze(-1)
 
     # ------------------------------------------------------------------
