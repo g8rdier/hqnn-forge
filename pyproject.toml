@@ -31,7 +31,9 @@ classifiers = [
 
 dependencies = [
     "torch>=2.2",
-    "pennylane>=0.42",  # 0.38-0.41 break with autoray>=0.7 (NumpyMimic removed)
+    # floor is the lowest CI-tested version; 0.38 breaks with autoray>=0.7
+    # (NumpyMimic removed) and PennyLane declares no upper bound of its own
+    "pennylane>=0.42",
     "numpy>=1.26",
 ]
 
