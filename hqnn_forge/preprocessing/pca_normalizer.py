@@ -160,6 +160,12 @@ class PCANormalizer:
         """
         Project and standardise (and optionally scale to [-π, π]).
 
+        Only statistics learned in ``fit`` (``mean_``, ``components_``,
+        ``std_``) are used, so each row is encoded independently of the other
+        rows in ``X``.  Standardised output has zero mean and unit variance on
+        the training data; other data keeps its offset from the training
+        distribution.
+
         Parameters
         ----------
         X:
@@ -191,10 +197,11 @@ class PCANormalizer:
                 f"fitted on {self.mean_.shape[0]} features."  # type: ignore[union-attr]
             )
 
-        # Centre → project → standardise
+        # Centre → project → standardise, using training statistics only (no
+        # per-batch mean), so each row's encoding is independent of the batch
         X_centered   = X_arr - self.mean_                            # type: ignore[operator]
         projections  = X_centered @ self.components_.T               # type: ignore[union-attr]
-        standardised = (projections - projections.mean(axis=0)) / self.std_  # type: ignore[operator]
+        standardised = projections / self.std_                       # type: ignore[operator]
 
         if self.scale_to_pi:
             # Soft-clip to (-π, π) preserving relative magnitudes of outliers
