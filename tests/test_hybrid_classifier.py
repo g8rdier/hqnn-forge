@@ -77,6 +77,64 @@ class TestPredict:
         assert preds.dtype == torch.long
 
 
+def _dropout_classifier() -> HybridBinaryClassifier:
+    """Classifier with active dropout, in train mode as left by construction."""
+    torch.manual_seed(0)
+    return HybridBinaryClassifier(
+        n_input_features=N_RAW_FEATURES,
+        n_qubits=N_QUBITS,
+        n_layers=N_LAYERS,
+        dropout_p=0.5,
+        device_name="default.qubit",
+        diff_method="parameter-shift",
+    )
+
+
+class TestInferenceMode:
+    """
+    ``@torch.no_grad()`` does not disable ``nn.Dropout``, which checks
+    ``self.training``.  ``predict_proba`` must switch to eval mode itself and
+    put every submodule back in the mode it found it in.
+    """
+
+    def test_train_mode_matches_eval_forward(self, random_raw_batch: torch.Tensor) -> None:
+        """Repeated calls in train mode give the dropout-free eval probabilities."""
+        model = _dropout_classifier()
+        model.eval()
+        with torch.no_grad():
+            expected = torch.sigmoid(model(random_raw_batch)).squeeze(-1)
+
+        model.train()
+        for _ in range(2):
+            torch.testing.assert_close(model.predict_proba(random_raw_batch), expected)
+
+    def test_restores_train_mode(self, random_raw_batch: torch.Tensor) -> None:
+        model = _dropout_classifier()
+        model.predict_proba(random_raw_batch)
+        assert all(module.training for module in model.modules())
+
+    def test_leaves_eval_mode(self, random_raw_batch: torch.Tensor) -> None:
+        model = _dropout_classifier()
+        model.eval()
+        model.predict_proba(random_raw_batch)
+        assert not any(module.training for module in model.modules())
+
+    def test_preserves_mixed_submodule_modes(self, random_raw_batch: torch.Tensor) -> None:
+        """A blanket ``self.train(was_training)`` restore would re-enable dropout here."""
+        model = _dropout_classifier()
+        model.dropout.eval()
+        model.predict_proba(random_raw_batch)
+        assert model.training
+        assert model.quantum_layer.training
+        assert not model.dropout.training
+
+    def test_restores_mode_when_forward_raises(self) -> None:
+        model = _dropout_classifier()
+        with pytest.raises(RuntimeError):
+            model.predict_proba(torch.randn(BATCH, N_RAW_FEATURES + 1))
+        assert all(module.training for module in model.modules())
+
+
 class TestParameterCount:
     def test_positive_count(self, classifier: HybridBinaryClassifier) -> None:
         assert classifier.count_parameters() > 0

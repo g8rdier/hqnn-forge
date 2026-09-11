@@ -239,6 +239,11 @@ class HybridBinaryClassifier(nn.Module):
         """
         Compute positive-class probabilities (inference mode, no gradients).
 
+        Runs in eval mode whatever mode the model is in, so dropout is off and
+        repeated calls on the same input agree.  Every submodule's ``training``
+        flag is restored afterwards, so calling this mid-training leaves the
+        model exactly as it was.
+
         Parameters
         ----------
         x:
@@ -249,14 +254,23 @@ class HybridBinaryClassifier(nn.Module):
         torch.Tensor
             Probability of class 1, shape ``(batch_size,)``, values ∈ [0, 1].
         """
-        logits = self.forward(x)
+        # no_grad alone leaves nn.Dropout active: it checks self.training, not
+        # grad mode.  Restore per module, since self.train(flag) would overwrite
+        # submodules the caller had put in a different mode.
+        modes = {module: module.training for module in self.modules()}
+        self.eval()
+        try:
+            logits = self.forward(x)
+        finally:
+            for module, training in modes.items():
+                module.training = training
         return torch.sigmoid(logits).squeeze(-1)
 
     # ------------------------------------------------------------------
     @torch.no_grad()
     def predict(self, x: torch.Tensor, threshold: float = 0.5) -> torch.Tensor:
         """
-        Predict binary labels.
+        Predict binary labels.  Runs in eval mode, like ``predict_proba``.
 
         Parameters
         ----------
