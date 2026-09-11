@@ -59,8 +59,9 @@ class TestScaleToPi:
 @pytest.fixture
 def held_out_data() -> np.ndarray:
     # Different seed and a mean offset, so held-out rows differ from the training mean.
+    # Kept small so tanh stays out of saturation and assertions on scaled output bite.
     rng = np.random.default_rng(1)
-    return rng.standard_normal((30, N_FEATURES)) + 3.0
+    return rng.standard_normal((30, N_FEATURES)) + 1.0
 
 class TestTransformUsesFitStatistics:
     """transform must depend only on statistics learned in fit, never on the batch."""
