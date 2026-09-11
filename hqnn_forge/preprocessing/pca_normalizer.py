@@ -50,8 +50,6 @@ class PCANormalizer:
         If ``True`` (default), rescale standardised components into ``[-π, π]``
         via ``tanh(x) * π`` before returning.  Ensures valid angle-embedding
         range without hard clipping.
-    copy:
-        If ``True`` (default), operate on copies of the input data.
 
     Attributes
     ----------
@@ -66,6 +64,14 @@ class PCANormalizer:
         Per-component standard deviation (computed on training projections).
     is_fitted_ : bool
         ``True`` after ``fit`` has been called.
+
+    Notes
+    -----
+    Input is converted with ``np.asarray``, so ``float64`` input is used without
+    copying and ``fit``/``transform`` may hold a view of the caller's buffer for
+    the duration of the call.  Neither method writes into it, and no view of it
+    is kept in the fitted attributes, so the caller is free to modify or discard
+    the array afterwards.
 
     Examples
     --------
@@ -85,11 +91,9 @@ class PCANormalizer:
         n_components: int = 8,
         *,
         scale_to_pi: bool = True,
-        copy: bool = True,
     ) -> None:
         self.n_components = n_components
         self.scale_to_pi  = scale_to_pi
-        self.copy         = copy
 
         # Populated by fit()
         self.mean_: Optional[npt.NDArray[np.float64]] = None
@@ -108,7 +112,8 @@ class PCANormalizer:
         X:
             Training data array-like of shape ``(n_samples, n_features)``.
             ``n_features`` must be ≥ ``n_components`` and ``n_samples`` must
-            be > ``n_components``.
+            be > ``n_components``.  Not copied when already ``float64``, and
+            never modified.
 
         Returns
         -------
@@ -123,11 +128,11 @@ class PCANormalizer:
             (centred data then has rank below ``n_components``, so some
             components have zero variance).
         """
-        X_arr: npt.NDArray[np.float64] = np.array(X, dtype=np.float64)
-        if self.copy:
-            X_arr = X_arr.copy()
-
+        # asarray, not array: float64 input is used as-is rather than copied, so
+        # X_arr may share memory with the caller.  Never write into it in place.
+        X_arr: npt.NDArray[np.float64] = np.asarray(X, dtype=np.float64)
         self._check_2d(X_arr)
+
         n_samples, n_features = X_arr.shape
         # Checked here rather than in __init__ because the attribute can be
         # reassigned afterwards.  Values <= 0 pass both shape checks below and
@@ -193,6 +198,7 @@ class PCANormalizer:
         X:
             Data array-like of shape ``(n_samples, n_features)``.
             Must have the same ``n_features`` as the training data.
+            Not copied when already ``float64``, and never modified.
 
         Returns
         -------
@@ -210,11 +216,11 @@ class PCANormalizer:
         """
         self._check_is_fitted()
 
-        X_arr: npt.NDArray[np.float64] = np.array(X, dtype=np.float64)
-        if self.copy:
-            X_arr = X_arr.copy()
-
+        # asarray, not array: float64 input is used as-is rather than copied, so
+        # X_arr may share memory with the caller.  Never write into it in place.
+        X_arr: npt.NDArray[np.float64] = np.asarray(X, dtype=np.float64)
         self._check_2d(X_arr)
+
         if X_arr.shape[1] != self.mean_.shape[0]:  # type: ignore[union-attr]
             raise ValueError(
                 f"Input has {X_arr.shape[1]} features but PCANormalizer was "

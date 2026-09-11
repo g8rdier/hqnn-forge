@@ -41,6 +41,23 @@ class TestFitAttributes:
         for i in range(len(ev) - 1):
             assert ev[i] >= ev[i + 1]
 
+def _component_signs(pca: PCANormalizer) -> torch.Tensor:
+    """
+    Per-component ±1 normalising the arbitrary eigenvector sign, as a row vector
+    broadcastable over a transform output of shape (n_samples, n_components).
+
+    ``fit`` keeps whatever sign ``np.linalg.eigh`` returns, which is not part of
+    the library's contract: another LAPACK build or platform may return a
+    component negated, flipping that output column with nothing actually wrong.
+    Convention here: the largest-magnitude entry of each component is positive.
+    That is only well defined while the fixture stays unambiguous, which
+    TestGoldenFixtureIsWellConditioned asserts.
+    """
+    components = pca.components_
+    leading = np.abs(components).argmax(axis=1)
+    signs = np.sign(components[np.arange(components.shape[0]), leading])
+    return torch.tensor(signs, dtype=torch.float32)
+
 class TestTransformOutput:
     def test_output_shape(self, fitted_pca: PCANormalizer, training_data: np.ndarray) -> None:
         result = fitted_pca.transform(training_data)
@@ -49,6 +66,60 @@ class TestTransformOutput:
     def test_output_dtype(self, fitted_pca: PCANormalizer, training_data: np.ndarray) -> None:
         result = fitted_pca.transform(training_data)
         assert result.dtype == torch.float32
+
+    def test_matches_golden_values(
+        self, fitted_pca: PCANormalizer, held_out_data: np.ndarray
+    ) -> None:
+        # Pins the actual numbers, not just the shape, so a refactor of the
+        # conversion or projection path cannot quietly change the encoding.
+        # Signs are normalised first (see _component_signs): everything else
+        # about the encoding stays pinned to 1e-6.
+        expected = torch.tensor(
+            [
+                [0.26675245, -1.63643660, 2.29188750, 3.09272840],
+                [3.00168420, 0.01153241, 2.76722460, 2.86429880],
+                [2.91354400, 1.08601160, 3.04996010, -1.35583290],
+            ]
+        )
+        result = fitted_pca.transform(held_out_data)[:3] * _component_signs(fitted_pca)
+        torch.testing.assert_close(result, expected, atol=1e-6, rtol=0.0)
+
+class TestGoldenFixtureIsWellConditioned:
+    """
+    test_matches_golden_values and _component_signs both assume the fixture is
+    unambiguous: well-separated eigenvalues, and one clearly largest entry per
+    component.  Assert that directly, so a future change to the fixture fails
+    here with a stated reason rather than as an inscrutable golden mismatch on
+    someone else's platform.
+
+    The thresholds are canaries, not descriptions of the current fixture: they
+    sit several times below what it actually has, so an innocuous tweak won't
+    trip them, and ~12 orders of magnitude above the ~1e-15 spread between
+    LAPACK builds, so tripping one means real ambiguity rather than noise.
+    """
+
+    def test_eigenvalues_are_well_separated(self, training_data: np.ndarray) -> None:
+        # Includes the gap at the cutoff (ev[n_components-1] -> ev[n_components]):
+        # degeneracy there permutes which components are kept at all, and eigh may
+        # return an arbitrarily rotated basis within a degenerate subspace —
+        # neither of which sign normalisation can repair
+        eigenvalues = np.linalg.eigh(np.cov(training_data, rowvar=False))[0][::-1]
+        kept_and_next = eigenvalues[: N_COMPONENTS + 1]
+        gaps = (kept_and_next[:-1] - kept_and_next[1:]) / kept_and_next[:-1]
+        assert gaps.min() > 0.01, (
+            f"fixture eigenvalues are nearly degenerate (smallest relative gap "
+            f"{gaps.min():.2%}), so the component basis is not stable across "
+            f"platforms and the golden values cannot be pinned"
+        )
+
+    def test_sign_convention_is_unambiguous(self, fitted_pca: PCANormalizer) -> None:
+        magnitudes = np.sort(np.abs(fitted_pca.components_), axis=1)
+        margins = (magnitudes[:, -1] - magnitudes[:, -2]) / magnitudes[:, -1]
+        assert margins.min() > 0.001, (
+            f"a component's two largest entries are nearly equal (smallest "
+            f"relative margin {margins.min():.2%}), so which entry "
+            f"_component_signs keys on is itself build-dependent"
+        )
 
 class TestScaleToPi:
     def test_values_within_pi(self, fitted_pca: PCANormalizer, training_data: np.ndarray) -> None:
@@ -103,6 +174,44 @@ class TestExplainedVarianceRatio:
     def test_sums_to_approximately_one(self, fitted_pca: PCANormalizer) -> None:
         ratio_sum = fitted_pca.explained_variance_ratio_.sum()
         assert 0.0 < ratio_sum <= 1.0 + 1e-6
+
+class TestInputNotModified:
+    """
+    fit/transform convert with ``np.asarray``, so X_arr can share memory with the
+    caller's array.  Every step must allocate rather than write in place.
+    """
+
+    def test_fit_leaves_input_unchanged(self, training_data: np.ndarray) -> None:
+        pristine = training_data.copy()
+        PCANormalizer(n_components=N_COMPONENTS).fit(training_data)
+        np.testing.assert_array_equal(training_data, pristine)
+
+    def test_transform_leaves_input_unchanged(
+        self, fitted_pca: PCANormalizer, held_out_data: np.ndarray
+    ) -> None:
+        pristine = held_out_data.copy()
+        fitted_pca.transform(held_out_data)
+        np.testing.assert_array_equal(held_out_data, pristine)
+
+    def test_non_contiguous_float32_input_unchanged(self) -> None:
+        # float32 forces a dtype conversion and the strided slice makes the input
+        # non-contiguous, so the converting path is exercised as well as the
+        # zero-copy float64 one above
+        rng = np.random.default_rng(2)
+        X = rng.standard_normal((N_SAMPLES, 2 * N_FEATURES)).astype(np.float32)[:, ::2]
+        assert X.dtype == np.float32 and not X.flags["C_CONTIGUOUS"]
+
+        pristine = X.copy()
+        PCANormalizer(n_components=N_COMPONENTS).fit_transform(X)
+        np.testing.assert_array_equal(X, pristine)
+
+
+class TestCopyOptionRemoved:
+    def test_copy_keyword_rejected(self) -> None:
+        # `copy` never had an effect; it was removed rather than deprecated
+        with pytest.raises(TypeError, match="copy"):
+            PCANormalizer(n_components=N_COMPONENTS, copy=True)  # type: ignore[call-arg]
+
 
 class TestErrors:
     def test_transform_before_fit(self) -> None:
