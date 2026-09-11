@@ -44,7 +44,8 @@ class PCANormalizer:
     Parameters
     ----------
     n_components:
-        Number of principal components to retain.  Default: 8.
+        Number of principal components to retain.  Must be ≥ 1; ``fit``
+        raises ``ValueError`` otherwise.  Default: 8.
     scale_to_pi:
         If ``True`` (default), rescale standardised components into ``[-π, π]``
         via ``tanh(x) * π`` before returning.  Ensures valid angle-embedding
@@ -117,9 +118,10 @@ class PCANormalizer:
         Raises
         ------
         ValueError
-            If ``X`` is not 2-D, if ``n_features < n_components``, or if
-            ``n_samples <= n_components`` (centred data then has rank below
-            ``n_components``, so some components have zero variance).
+            If ``X`` is not 2-D, if ``n_components < 1``, if
+            ``n_features < n_components``, or if ``n_samples <= n_components``
+            (centred data then has rank below ``n_components``, so some
+            components have zero variance).
         """
         X_arr: npt.NDArray[np.float64] = np.array(X, dtype=np.float64)
         if self.copy:
@@ -127,6 +129,14 @@ class PCANormalizer:
 
         self._check_2d(X_arr)
         n_samples, n_features = X_arr.shape
+        # Checked here rather than in __init__ because the attribute can be
+        # reassigned afterwards.  Values <= 0 pass both shape checks below and
+        # then silently slice off components from the end (-1 keeps all but one)
+        if self.n_components < 1:
+            raise ValueError(
+                f"n_components={self.n_components} < 1.  Provide a positive "
+                f"number of components to retain."
+            )
         if n_features < self.n_components:
             raise ValueError(
                 f"n_features={n_features} < n_components={self.n_components}.  "
