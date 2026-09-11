@@ -50,9 +50,8 @@ def _component_signs(pca: PCANormalizer) -> torch.Tensor:
     the library's contract: another LAPACK build or platform may return a
     component negated, flipping that output column with nothing actually wrong.
     Convention here: the largest-magnitude entry of each component is positive.
-    The choice is stable — components are separated by eigenvalue gaps of 7% or
-    more, and the margin between each component's largest and second-largest
-    entry is ~1%, both far above the ~1e-15 spread between LAPACK builds.
+    That is only well defined while the fixture stays unambiguous, which
+    TestGoldenFixtureIsWellConditioned asserts.
     """
     components = pca.components_
     leading = np.abs(components).argmax(axis=1)
@@ -84,6 +83,43 @@ class TestTransformOutput:
         )
         result = fitted_pca.transform(held_out_data)[:3] * _component_signs(fitted_pca)
         torch.testing.assert_close(result, expected, atol=1e-6, rtol=0.0)
+
+class TestGoldenFixtureIsWellConditioned:
+    """
+    test_matches_golden_values and _component_signs both assume the fixture is
+    unambiguous: well-separated eigenvalues, and one clearly largest entry per
+    component.  Assert that directly, so a future change to the fixture fails
+    here with a stated reason rather than as an inscrutable golden mismatch on
+    someone else's platform.
+
+    The thresholds are canaries, not descriptions of the current fixture: they
+    sit several times below what it actually has, so an innocuous tweak won't
+    trip them, and ~12 orders of magnitude above the ~1e-15 spread between
+    LAPACK builds, so tripping one means real ambiguity rather than noise.
+    """
+
+    def test_eigenvalues_are_well_separated(self, training_data: np.ndarray) -> None:
+        # Includes the gap at the cutoff (ev[n_components-1] -> ev[n_components]):
+        # degeneracy there permutes which components are kept at all, and eigh may
+        # return an arbitrarily rotated basis within a degenerate subspace —
+        # neither of which sign normalisation can repair
+        eigenvalues = np.linalg.eigh(np.cov(training_data, rowvar=False))[0][::-1]
+        kept_and_next = eigenvalues[: N_COMPONENTS + 1]
+        gaps = (kept_and_next[:-1] - kept_and_next[1:]) / kept_and_next[:-1]
+        assert gaps.min() > 0.01, (
+            f"fixture eigenvalues are nearly degenerate (smallest relative gap "
+            f"{gaps.min():.2%}), so the component basis is not stable across "
+            f"platforms and the golden values cannot be pinned"
+        )
+
+    def test_sign_convention_is_unambiguous(self, fitted_pca: PCANormalizer) -> None:
+        magnitudes = np.sort(np.abs(fitted_pca.components_), axis=1)
+        margins = (magnitudes[:, -1] - magnitudes[:, -2]) / magnitudes[:, -1]
+        assert margins.min() > 0.001, (
+            f"a component's two largest entries are nearly equal (smallest "
+            f"relative margin {margins.min():.2%}), so which entry "
+            f"_component_signs keys on is itself build-dependent"
+        )
 
 class TestScaleToPi:
     def test_values_within_pi(self, fitted_pca: PCANormalizer, training_data: np.ndarray) -> None:
