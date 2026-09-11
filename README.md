@@ -68,6 +68,13 @@ hqnn_forge/
 
 ---
 
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the issue/branch/PR workflow, commit conventions,
+and versioning policy this project follows.
+
+---
+
 ## References
 
 - Cerezo et al. (2021) — *Barren plateaus in quantum neural network training landscapes*

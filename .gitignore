@@ -37,6 +37,7 @@ htmlcov/
 
 # Local AI assistant context (dbp rules, agent config) — never commit
 .agents/
+CLAUDE.md
 
 # IDEs
 .idea/
