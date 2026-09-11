@@ -87,6 +87,39 @@ class TestPredict:
         assert preds.dtype == torch.long
 
 
+def _dropout_classifier() -> ParallelHybridClassifier:
+    """Classifier with active dropout, in train mode as left by construction."""
+    torch.manual_seed(FIXTURE_SEED)
+    return ParallelHybridClassifier(
+        n_input_features=N_RAW_FEATURES,
+        n_qubits=N_QUBITS,
+        n_layers=N_LAYERS,
+        classical_hidden_dim=CLASSICAL_HIDDEN_DIM,
+        dropout_p=0.5,
+        device_name="default.qubit",
+        diff_method="parameter-shift",
+    )
+
+
+class TestInferenceMode:
+    """
+    ``@torch.no_grad()`` does not disable ``nn.Dropout``.  Mode handling itself
+    is tested in ``tests/test_modes.py``; this checks ``predict_proba`` uses it.
+    """
+
+    def test_train_mode_matches_eval_forward(self, random_raw_batch: torch.Tensor) -> None:
+        """Repeated calls in train mode give the dropout-free eval probabilities."""
+        model = _dropout_classifier()
+        model.eval()
+        with torch.no_grad():
+            expected = torch.sigmoid(model(random_raw_batch)).squeeze(-1)
+
+        model.train()
+        for _ in range(2):
+            torch.testing.assert_close(model.predict_proba(random_raw_batch), expected)
+        assert all(module.training for module in model.modules())
+
+
 class TestParameterCount:
     def test_positive_count(self, classifier: ParallelHybridClassifier) -> None:
         assert classifier.count_parameters() > 0

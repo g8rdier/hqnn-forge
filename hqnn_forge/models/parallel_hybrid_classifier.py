@@ -91,6 +91,7 @@ from hqnn_forge.initializers.restricted_variance import (
     restricted_normal_init_,
     block_local_init_,
 )
+from hqnn_forge.utils.modes import eval_mode
 
 
 class ParallelHybridClassifier(nn.Module):
@@ -291,6 +292,11 @@ class ParallelHybridClassifier(nn.Module):
         """
         Compute positive-class probabilities (inference mode, no gradients).
 
+        Runs in eval mode whatever mode the model is in, so dropout is off and
+        repeated calls on the same input agree.  Every submodule's ``training``
+        flag is restored afterwards, so calling this mid-training leaves the
+        model exactly as it was.
+
         Parameters
         ----------
         x:
@@ -301,14 +307,17 @@ class ParallelHybridClassifier(nn.Module):
         torch.Tensor
             Probability of class 1, shape ``(batch_size,)``, values ∈ [0, 1].
         """
-        logits = self.forward(x)
+        # no_grad alone leaves nn.Dropout active: it checks self.training, not
+        # grad mode.
+        with eval_mode(self):
+            logits = self.forward(x)
         return torch.sigmoid(logits).squeeze(-1)
 
     # ------------------------------------------------------------------
     @torch.no_grad()
     def predict(self, x: torch.Tensor, threshold: float = 0.5) -> torch.Tensor:
         """
-        Predict binary labels.
+        Predict binary labels.  Runs in eval mode, like ``predict_proba``.
 
         Parameters
         ----------
