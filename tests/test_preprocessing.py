@@ -41,6 +41,24 @@ class TestFitAttributes:
         for i in range(len(ev) - 1):
             assert ev[i] >= ev[i + 1]
 
+def _component_signs(pca: PCANormalizer) -> torch.Tensor:
+    """
+    Per-component ±1 normalising the arbitrary eigenvector sign, as a row vector
+    broadcastable over a transform output of shape (n_samples, n_components).
+
+    ``fit`` keeps whatever sign ``np.linalg.eigh`` returns, which is not part of
+    the library's contract: another LAPACK build or platform may return a
+    component negated, flipping that output column with nothing actually wrong.
+    Convention here: the largest-magnitude entry of each component is positive.
+    The choice is stable — components are separated by eigenvalue gaps of 7% or
+    more, and the margin between each component's largest and second-largest
+    entry is ~1%, both far above the ~1e-15 spread between LAPACK builds.
+    """
+    components = pca.components_
+    leading = np.abs(components).argmax(axis=1)
+    signs = np.sign(components[np.arange(components.shape[0]), leading])
+    return torch.tensor(signs, dtype=torch.float32)
+
 class TestTransformOutput:
     def test_output_shape(self, fitted_pca: PCANormalizer, training_data: np.ndarray) -> None:
         result = fitted_pca.transform(training_data)
@@ -54,15 +72,17 @@ class TestTransformOutput:
         self, fitted_pca: PCANormalizer, held_out_data: np.ndarray
     ) -> None:
         # Pins the actual numbers, not just the shape, so a refactor of the
-        # conversion or projection path cannot quietly change the encoding
+        # conversion or projection path cannot quietly change the encoding.
+        # Signs are normalised first (see _component_signs): everything else
+        # about the encoding stays pinned to 1e-6.
         expected = torch.tensor(
             [
-                [0.26675245, -1.63643660, 2.29188750, -3.09272840],
-                [3.00168420, 0.01153241, 2.76722460, -2.86429880],
-                [2.91354400, 1.08601160, 3.04996010, 1.35583290],
+                [0.26675245, -1.63643660, 2.29188750, 3.09272840],
+                [3.00168420, 0.01153241, 2.76722460, 2.86429880],
+                [2.91354400, 1.08601160, 3.04996010, -1.35583290],
             ]
         )
-        result = fitted_pca.transform(held_out_data)[:3]
+        result = fitted_pca.transform(held_out_data)[:3] * _component_signs(fitted_pca)
         torch.testing.assert_close(result, expected, atol=1e-6, rtol=0.0)
 
 class TestScaleToPi:
