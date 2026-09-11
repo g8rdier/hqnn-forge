@@ -106,7 +106,8 @@ class PCANormalizer:
         ----------
         X:
             Training data array-like of shape ``(n_samples, n_features)``.
-            ``n_features`` must be ≥ ``n_components``.
+            ``n_features`` must be ≥ ``n_components`` and ``n_samples`` must
+            be > ``n_components``.
 
         Returns
         -------
@@ -116,7 +117,9 @@ class PCANormalizer:
         Raises
         ------
         ValueError
-            If ``X`` is not 2-D, or if ``n_features < n_components``.
+            If ``X`` is not 2-D, if ``n_features < n_components``, or if
+            ``n_samples <= n_components`` (centred data then has rank below
+            ``n_components``, so some components have zero variance).
         """
         X_arr: npt.NDArray[np.float64] = np.array(X, dtype=np.float64)
         if self.copy:
@@ -128,6 +131,14 @@ class PCANormalizer:
             raise ValueError(
                 f"n_features={n_features} < n_components={self.n_components}.  "
                 f"Reduce n_components or provide higher-dimensional data."
+            )
+        # Centred data has rank <= n_samples - 1, so fewer rows leave some
+        # kept components with zero variance
+        if n_samples <= self.n_components:
+            raise ValueError(
+                f"n_samples={n_samples} <= n_components={self.n_components}.  "
+                f"Reduce n_components or provide at least "
+                f"{self.n_components + 1} samples."
             )
 
         # 1. Centre the data
