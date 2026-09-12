@@ -24,10 +24,11 @@
 pip install -e ".[lightning,dev]"
 ```
 
-For fastest adjoint differentiation (recommended):
+Adjoint differentiation needs `pennylane-lightning`, which the `lightning` extra above
+installs. To add it to an existing install:
 
 ```bash
-pip install pennylane-lightning
+pip install -e ".[lightning]"
 ```
 
 ---
