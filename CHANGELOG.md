@@ -17,3 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - HybridBinaryClassifier end-to-end model
 - Smoke tests for quantum encoding layer
 - Quick-start example for training
+
+### Changed
+- Raised the `pennylane` and `pennylane-lightning` floors from `>=0.38` to `>=0.42`, the lowest
+  version CI runs; 0.38 is incompatible with `autoray>=0.7`
+
+### Removed
+- `requirements.txt`; `pyproject.toml` is now the only place dependencies are declared
