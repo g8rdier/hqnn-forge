@@ -25,7 +25,7 @@ Notes
 -----
 * Eigendecomposition uses ``numpy.linalg.eigh`` (symmetric covariance matrix),
   which is numerically more stable than ``numpy.linalg.eig`` for this use case.
-* Only the top ``n_components`` eigenvectors (by eigenvalue magnitude) are kept.
+* Only the top ``n_components`` eigenvectors (by descending eigenvalue) are kept.
 * Eigenvector signs are canonicalised so that the largest-magnitude entry of
   each component is positive.  ``eigh`` gives no guarantee about which of the
   two valid signs it returns, so without this the fitted basis -- and every
@@ -70,10 +70,8 @@ class PCANormalizer:
         largest magnitude are resolved by column order, so mirrored feature
         pairs are covered; near-degenerate eigenvalues, however, leave the basis
         itself build-dependent, which no sign convention can repair.
-        The convention matches scikit-learn's ``svd_flip`` with
-        ``u_based_decision=False``.  Note that ``sklearn.decomposition.PCA``
-        uses the default ``u_based_decision=True``, which keys on the left
-        singular vectors instead, so individual rows may differ in sign from it.
+        The convention is the one scikit-learn's ``svd_flip`` applies with
+        ``u_based_decision=False``, reimplemented here rather than depended on.
     explained_variance_ : np.ndarray, shape (n_components,)
         Eigenvalues corresponding to retained components.
     std_ : np.ndarray, shape (n_components,)

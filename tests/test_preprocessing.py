@@ -43,35 +43,9 @@ class TestFitAttributes:
         for i in range(len(ev) - 1):
             assert ev[i] >= ev[i + 1]
 
-class TestTransformOutput:
-    def test_output_shape(self, fitted_pca: PCANormalizer, training_data: np.ndarray) -> None:
-        result = fitted_pca.transform(training_data)
-        assert result.shape == (N_SAMPLES, N_COMPONENTS)
-
-    def test_output_dtype(self, fitted_pca: PCANormalizer, training_data: np.ndarray) -> None:
-        result = fitted_pca.transform(training_data)
-        assert result.dtype == torch.float32
-
-    def test_matches_golden_values(
-        self, fitted_pca: PCANormalizer, held_out_data: np.ndarray
-    ) -> None:
-        # Pins the actual numbers, not just the shape, so a refactor of the
-        # conversion or projection path cannot quietly change the encoding.
-        # Signs need no normalisation here: fit canonicalises them, so these
-        # values are pinned as-is to 1e-6 on any platform.
-        expected = torch.tensor(
-            [
-                [0.26675245, -1.63643660, 2.29188750, 3.09272840],
-                [3.00168420, 0.01153241, 2.76722460, 2.86429880],
-                [2.91354400, 1.08601160, 3.04996010, -1.35583290],
-            ]
-        )
-        result = fitted_pca.transform(held_out_data)[:3]
-        torch.testing.assert_close(result, expected, atol=1e-6, rtol=0.0)
-
     def test_components_have_positive_leading_entry(self, fitted_pca: PCANormalizer) -> None:
         # The documented sign convention, asserted directly: it is what makes
-        # components_ and the golden values above reproducible across platforms.
+        # components_ and the pinned golden values reproducible across platforms.
         # A strict argmax states the property independently of how fit computes
         # it, which is sound precisely because the fixture has one clearly
         # largest entry per component -- guarded by
@@ -138,6 +112,32 @@ class TestTransformOutput:
             perm = np.random.default_rng(seed).permutation(X.shape[0])
             permuted = PCANormalizer(n_components=3, scale_to_pi=True).fit(X[perm]).components_
             np.testing.assert_allclose(permuted, reference, atol=1e-8)
+
+class TestTransformOutput:
+    def test_output_shape(self, fitted_pca: PCANormalizer, training_data: np.ndarray) -> None:
+        result = fitted_pca.transform(training_data)
+        assert result.shape == (N_SAMPLES, N_COMPONENTS)
+
+    def test_output_dtype(self, fitted_pca: PCANormalizer, training_data: np.ndarray) -> None:
+        result = fitted_pca.transform(training_data)
+        assert result.dtype == torch.float32
+
+    def test_matches_golden_values(
+        self, fitted_pca: PCANormalizer, held_out_data: np.ndarray
+    ) -> None:
+        # Pins the actual numbers, not just the shape, so a refactor of the
+        # conversion or projection path cannot quietly change the encoding.
+        # Signs need no normalisation here: fit canonicalises them, so these
+        # values are pinned as-is to 1e-6 on any platform.
+        expected = torch.tensor(
+            [
+                [0.26675245, -1.63643660, 2.29188750, 3.09272840],
+                [3.00168420, 0.01153241, 2.76722460, 2.86429880],
+                [2.91354400, 1.08601160, 3.04996010, -1.35583290],
+            ]
+        )
+        result = fitted_pca.transform(held_out_data)[:3]
+        torch.testing.assert_close(result, expected, atol=1e-6, rtol=0.0)
 
 class TestGoldenFixtureIsWellConditioned:
     """
