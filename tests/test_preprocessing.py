@@ -302,10 +302,15 @@ class TestErrors:
     # 0 by 0, so the check must fire before any component is retained
     @pytest.mark.filterwarnings("error")
     @pytest.mark.parametrize(
-        "name, rank",
-        [("collinear_features", 2), ("duplicated_samples", 2), ("constant", 0)],
+        "name, rank, remedy",
+        [
+            ("collinear_features", 2, r"at most 2"),
+            ("duplicated_samples", 2, r"at most 2"),
+            # Rank 0 gets prose, not "at most 0" -- a value fit() itself rejects
+            ("constant", 0, r"Provide data that varies"),
+        ],
     )
-    def test_rank_below_n_components(self, name: str, rank: int) -> None:
+    def test_rank_below_n_components(self, name: str, rank: int, remedy: str) -> None:
         # Enough rows to clear the n_samples check, but a centred rank below
         # n_components.  Without the guard these fit silently and transform
         # returns ~1e8 (or a saturated +-pi) on the zero-variance components,
@@ -321,7 +326,7 @@ class TestErrors:
         pca = PCANormalizer(n_components=N_COMPONENTS)
         with pytest.raises(
             ValueError,
-            match=rf"rank {rank} < n_components={N_COMPONENTS}\b.*at most {rank}",
+            match=rf"rank {rank} < n_components={N_COMPONENTS}\b.*{remedy}",
         ):
             pca.fit(X)
         # A rejected fit leaves no attribute populated
@@ -337,8 +342,24 @@ class TestErrors:
         pca = PCANormalizer(n_components=N_COMPONENTS).fit(X)
         assert pca.is_fitted_ is True
         assert pca.explained_variance_.max() < 1e-13
-        # and the components carry real variance, not the 1e-8 epsilon
-        assert np.all(pca.std_ > 1e-8)
+        # and the components carry real variance, not the 1e-8 epsilon.
+        # std_ is std + 1e-8, so compare the excess: a true std of 1e-12 would
+        # still clear a bare "> 1e-8" while being 99.99% epsilon
+        assert np.all(pca.std_ - 1e-8 > 1e-8)
+
+    def test_full_rank_at_heterogeneous_scales_still_fits(self) -> None:
+        # Guards the tolerance against living in eigenvalue space.  Thresholding
+        # the covariance eigenvalues relative to their maximum squares the
+        # condition number, so full-rank data whose feature scales differ by
+        # more than ~1e8 gets rejected as rank-deficient
+        X = np.random.default_rng(0).standard_normal((N_SAMPLES, N_FEATURES))
+        X[:, 0] *= 1e9
+        assert np.linalg.matrix_rank(X - X.mean(axis=0)) == N_FEATURES
+
+        pca = PCANormalizer(n_components=N_COMPONENTS).fit(X)
+        assert pca.is_fitted_ is True
+        # every retained component carries real variance, not the 1e-8 epsilon
+        assert np.all(pca.std_ - 1e-8 > 1e-8)
 
     def test_minimum_samples_fit_has_nonzero_variance(self) -> None:
         X = np.random.default_rng(0).standard_normal((N_COMPONENTS + 1, N_FEATURES))
