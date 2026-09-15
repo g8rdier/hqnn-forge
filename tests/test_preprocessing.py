@@ -298,6 +298,48 @@ class TestErrors:
         ):
             pca.fit(X)
 
+    # Warnings as errors: constant data makes explained_variance_ratio_ divide
+    # 0 by 0, so the check must fire before any component is retained
+    @pytest.mark.filterwarnings("error")
+    @pytest.mark.parametrize(
+        "name, rank",
+        [("collinear_features", 2), ("duplicated_samples", 2), ("constant", 0)],
+    )
+    def test_rank_below_n_components(self, name: str, rank: int) -> None:
+        # Enough rows to clear the n_samples check, but a centred rank below
+        # n_components.  Without the guard these fit silently and transform
+        # returns ~1e8 (or a saturated +-pi) on the zero-variance components,
+        # because std_ falls back to the 1e-8 added for division safety
+        rng = np.random.default_rng(0)
+        X = {
+            "collinear_features": rng.standard_normal((N_SAMPLES, 2)) @ rng.standard_normal((2, N_FEATURES)),
+            "duplicated_samples": np.tile(rng.standard_normal((3, N_FEATURES)), (34, 1)),
+            "constant": np.ones((N_SAMPLES, N_FEATURES)),
+        }[name]
+        assert len(X) > N_COMPONENTS, "must clear the n_samples check to reach the rank check"
+
+        pca = PCANormalizer(n_components=N_COMPONENTS)
+        with pytest.raises(
+            ValueError,
+            match=rf"rank {rank} < n_components={N_COMPONENTS}\b.*at most {rank}",
+        ):
+            pca.fit(X)
+        # A rejected fit leaves no attribute populated
+        assert pca.mean_ is None and pca.explained_variance_ is None
+        assert pca.is_fitted_ is False
+
+    def test_full_rank_at_tiny_scale_still_fits(self) -> None:
+        # Guards the tolerance against being absolute.  These eigenvalues are
+        # ~1e-14, below the ~4e-14 an absolute tolerance would need in order to
+        # reject the rank-deficient cases above -- so an absolute threshold
+        # would reject this genuinely full-rank data, and a relative one must not
+        X = 1e-7 * np.random.default_rng(0).standard_normal((N_SAMPLES, N_FEATURES))
+        pca = PCANormalizer(n_components=N_COMPONENTS).fit(X)
+        assert pca.is_fitted_ is True
+        assert pca.explained_variance_.max() < 1e-13
+        # and the components carry real variance, not the 1e-8 epsilon
+        assert np.all(pca.std_ > 1e-8)
+
     def test_minimum_samples_fit_has_nonzero_variance(self) -> None:
         X = np.random.default_rng(0).standard_normal((N_COMPONENTS + 1, N_FEATURES))
         pca = PCANormalizer(n_components=N_COMPONENTS).fit(X)
