@@ -145,6 +145,13 @@ class PCANormalizer:
             duplicated samples, constant data -- which is detected from
             ``numpy.linalg.matrix_rank`` of the centred data, before any
             component is retained.
+
+        Notes
+        -----
+        ``fit`` is all-or-nothing: every check above raises before the first
+        fitted attribute is assigned, so a rejected fit leaves the instance
+        exactly as it found it.  An instance that was already fitted keeps that
+        fit and stays usable; one that was not stays unfitted.
         """
         # asarray, not array: float64 input is used as-is rather than copied, so
         # X_arr may share memory with the caller.  Never write into it in place.
@@ -175,7 +182,10 @@ class PCANormalizer:
             )
 
         # 1. Centre the data.  mean_ is assigned only once the rank check below
-        # has passed, so a rejected fit leaves no attribute populated
+        # has passed -- together with the checks above raising before any other
+        # attribute is written, that makes fit all-or-nothing: a rejected fit
+        # leaves the instance untouched, so a failed re-fit keeps the previous
+        # fit intact and usable rather than half-replacing it
         mean = X_arr.mean(axis=0)
         X_centered = X_arr - mean
 

@@ -333,6 +333,42 @@ class TestErrors:
         assert pca.mean_ is None and pca.explained_variance_ is None
         assert pca.is_fitted_ is False
 
+    @pytest.mark.filterwarnings("error")
+    def test_failed_refit_leaves_previous_fit_intact(self) -> None:
+        # fit is all-or-nothing: every check raises before the first attribute
+        # is assigned, so a rejected re-fit is a no-op rather than a partial
+        # overwrite.  Pinned because the obvious "tidy-up" -- resetting the
+        # fitted attributes at the top of fit -- would silently break it, and
+        # would destroy a working fit in response to one bad batch
+        rng = np.random.default_rng(0)
+        X = rng.standard_normal((N_SAMPLES, N_FEATURES))
+        pca = PCANormalizer(n_components=N_COMPONENTS).fit(X)
+        before = (pca.mean_.copy(), pca.components_.copy(),
+                  pca.explained_variance_.copy(), pca.std_.copy())
+        expected = pca.transform(X)
+
+        # One rejection per data-dependent guard, in declaration order
+        # (the n_components < 1 guard keys off the attribute, not off X)
+        rejected = [
+            rng.standard_normal(N_SAMPLES),                        # not 2-D
+            rng.standard_normal((N_SAMPLES, N_COMPONENTS - 1)),    # too few features
+            rng.standard_normal((N_COMPONENTS, N_FEATURES)),       # too few samples
+            np.ones((N_SAMPLES, N_FEATURES)),                      # rank deficient
+        ]
+        for X_bad in rejected:
+            with pytest.raises(ValueError):
+                pca.fit(X_bad)
+
+        assert pca.is_fitted_ is True
+        for name, old, new_ in zip(
+            ("mean_", "components_", "explained_variance_", "std_"),
+            before,
+            (pca.mean_, pca.components_, pca.explained_variance_, pca.std_),
+        ):
+            assert np.array_equal(old, new_), f"{name} changed across a failed re-fit"
+        # and the fit is still usable, not merely still present
+        assert torch.equal(pca.transform(X), expected)
+
     def test_full_rank_at_tiny_scale_still_fits(self) -> None:
         # Guards the tolerance against being absolute.  These eigenvalues are
         # ~1e-14, below the ~4e-14 an absolute tolerance would need in order to
