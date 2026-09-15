@@ -29,7 +29,8 @@ Notes
 * Eigenvector signs are canonicalised so that the largest-magnitude entry of
   each component is positive.  ``eigh`` gives no guarantee about which of the
   two valid signs it returns, so without this the fitted basis -- and every
-  encoded feature -- would differ between LAPACK builds and platforms.
+  encoded feature -- would differ between LAPACK builds and platforms.  The
+  guarantee is conditional; ``PCANormalizer.components_`` states the conditions.
 """
 
 from __future__ import annotations
@@ -64,8 +65,15 @@ class PCANormalizer:
         explained variance).  Each row's sign is canonicalised so its
         largest-magnitude entry is positive, making ``components_`` -- and
         therefore ``transform`` -- a deterministic function of the input data
-        rather than of the LAPACK build.  This is part of the public contract;
-        the convention matches scikit-learn's ``svd_flip``.
+        rather than of the LAPACK build.  This is part of the public contract,
+        and holds whenever the eigenvalues are well separated.  Entries tied for
+        largest magnitude are resolved by column order, so mirrored feature
+        pairs are covered; near-degenerate eigenvalues, however, leave the basis
+        itself build-dependent, which no sign convention can repair.
+        The convention matches scikit-learn's ``svd_flip`` with
+        ``u_based_decision=False``.  Note that ``sklearn.decomposition.PCA``
+        uses the default ``u_based_decision=True``, which keys on the left
+        singular vectors instead, so individual rows may differ in sign from it.
     explained_variance_ : np.ndarray, shape (n_components,)
         Eigenvalues corresponding to retained components.
     std_ : np.ndarray, shape (n_components,)
@@ -188,13 +196,23 @@ class PCANormalizer:
         # component negated -- components_ and the encoded features would not be
         # reproducible across platforms.  Convention (matching scikit-learn's
         # svd_flip): the largest-magnitude entry of each component is positive.
-        # Well defined whenever a component has one clearly largest entry;
-        # ambiguous only if its two largest are equal to within the ~1e-15 spread
-        # between builds, far below the ~1% margin realistic data leaves.
+        #
+        # Which entry that is has to be decided with a tolerance, because exact
+        # ties are structural rather than a coincidence of continuous data: if
+        # two columns are exact mirrors (x_j == -x_i, as in a two-level one-hot,
+        # a share/1-share pair, or a +/- sensor pair), then (e_i + e_j)/sqrt(2)
+        # is an exact null eigenvector of the covariance, so every retained
+        # component satisfies v_j == -v_i to the last ulp.  Where that pair
+        # carries the largest entry, a strict argmax keys the whole row's sign
+        # on ~1e-16 rounding noise.  Taking the first entry within a relative
+        # tolerance of the maximum instead makes the choice a function of column
+        # order alone; where the maximum is unique it selects what argmax would.
         # np.sign cannot return 0 here: the largest-magnitude entry of a
         # unit-norm vector is at least 1/sqrt(n_features).
-        leading = np.abs(components).argmax(axis=1)
-        signs   = np.sign(components[np.arange(components.shape[0]), leading])
+        magnitudes = np.abs(components)
+        tied       = magnitudes >= magnitudes.max(axis=1, keepdims=True) * (1 - 1e-12)
+        leading    = tied.argmax(axis=1)
+        signs      = np.sign(components[np.arange(components.shape[0]), leading])
         # Out-of-place: components is a non-contiguous view over the full
         # (n_features, n_features) eigenvector matrix, which this also drops
         self.components_ = components * signs[:, np.newaxis]

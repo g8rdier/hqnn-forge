@@ -83,16 +83,55 @@ class TestTransformOutput:
         # is the property the convention exists for; the assertion above only
         # checks the convention is self-consistent, not that it is reached from
         # both starting points.
+        #
+        # The flip is alternating, not uniform: negating *every* eigenvector is
+        # undone by symmetry by any global sign rule, so a per-row bug -- one
+        # component's sign broadcast to all rows -- would leave a uniform flip
+        # passing.  Flipping a subset is what makes this assert the per-component
+        # property.
         real_eigh = np.linalg.eigh
 
         def flipped_eigh(a):  # type: ignore[no-untyped-def]
             eigenvalues, eigenvectors = real_eigh(a)
-            return eigenvalues, -eigenvectors
+            pattern = np.ones(eigenvectors.shape[1])
+            pattern[::2] = -1.0
+            return eigenvalues, eigenvectors * pattern  # columns are eigenvectors
 
         monkeypatch.setattr(np.linalg, "eigh", flipped_eigh)
         flipped = PCANormalizer(n_components=N_COMPONENTS, scale_to_pi=True).fit(training_data)
 
         np.testing.assert_allclose(flipped.components_, fitted_pca.components_)
+
+    def test_mirrored_feature_pair_keeps_a_stable_sign(self) -> None:
+        # A tie for the largest-magnitude entry is structural, not a freak of
+        # continuous data.  With x_5 == -x_0 exactly, (e_0 + e_5)/sqrt(2) is a
+        # null eigenvector of the covariance, so every retained component has
+        # v_5 == -v_0 to the last ulp; scaling column 0 up puts that pair in the
+        # leading position, where a strict argmax decides the row's sign on
+        # rounding noise.  Reordering rows perturbs the covariance by far less
+        # than a different LAPACK build would, so a sign that survives it is the
+        # weaker of the two claims -- and the strict argmax did not survive it.
+        rng = np.random.default_rng(0)
+        base = rng.standard_normal((50, 5))
+        base[:, 0] *= 3.0
+        X = np.column_stack([base, -base[:, 0]])
+
+        reference = PCANormalizer(n_components=3, scale_to_pi=True).fit(X).components_
+
+        # Guard the premise: if the fixture ever stops producing a tie, this
+        # test silently stops covering the tie-break rather than failing
+        magnitudes = np.sort(np.abs(reference), axis=1)
+        margins = (magnitudes[:, -1] - magnitudes[:, -2]) / magnitudes[:, -1]
+        assert margins.min() < 1e-12, (
+            f"fixture no longer has a component whose two largest entries are "
+            f"tied (smallest relative margin {margins.min():.2e}), so it no "
+            f"longer exercises the tie-break"
+        )
+
+        for seed in range(8):
+            perm = np.random.default_rng(seed).permutation(X.shape[0])
+            permuted = PCANormalizer(n_components=3, scale_to_pi=True).fit(X[perm]).components_
+            np.testing.assert_allclose(permuted, reference, atol=1e-8)
 
 class TestGoldenFixtureIsWellConditioned:
     """
