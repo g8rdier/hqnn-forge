@@ -25,7 +25,12 @@ Notes
 -----
 * Eigendecomposition uses ``numpy.linalg.eigh`` (symmetric covariance matrix),
   which is numerically more stable than ``numpy.linalg.eig`` for this use case.
-* Only the top ``n_components`` eigenvectors (by eigenvalue magnitude) are kept.
+* Only the top ``n_components`` eigenvectors (by descending eigenvalue) are kept.
+* Eigenvector signs are canonicalised so that the largest-magnitude entry of
+  each component is positive.  ``eigh`` gives no guarantee about which of the
+  two valid signs it returns, so without this the fitted basis -- and every
+  encoded feature -- would differ between LAPACK builds and platforms.  The
+  guarantee is conditional; ``PCANormalizer.components_`` states the conditions.
 """
 
 from __future__ import annotations
@@ -57,7 +62,16 @@ class PCANormalizer:
         Per-feature mean computed during ``fit``.
     components_ : np.ndarray, shape (n_components, n_features)
         Principal component matrix (rows = eigenvectors, sorted by descending
-        explained variance).
+        explained variance).  Each row's sign is canonicalised so its
+        largest-magnitude entry is positive, making ``components_`` -- and
+        therefore ``transform`` -- a deterministic function of the input data
+        rather than of the LAPACK build.  This is part of the public contract,
+        and holds whenever the eigenvalues are well separated.  Entries tied for
+        largest magnitude are resolved by column order, so mirrored feature
+        pairs are covered; near-degenerate eigenvalues, however, leave the basis
+        itself build-dependent, which no sign convention can repair.
+        The convention is the one scikit-learn's ``svd_flip`` applies with
+        ``u_based_decision=False``, reimplemented here rather than depended on.
     explained_variance_ : np.ndarray, shape (n_components,)
         Eigenvalues corresponding to retained components.
     std_ : np.ndarray, shape (n_components,)
@@ -173,9 +187,35 @@ class PCANormalizer:
 
         self.explained_variance_ = eigenvalues[: self.n_components]
         # rows = components (shape: n_components × n_features)
-        self.components_ = eigenvectors[:, : self.n_components].T
+        components = eigenvectors[:, : self.n_components].T
 
-        # 5. Project training data → compute per-component std for standardisation
+        # 5. Canonicalise the sign of each component.  eigh returns eigenvectors
+        # up to an arbitrary sign, so another LAPACK build may hand back a
+        # component negated -- components_ and the encoded features would not be
+        # reproducible across platforms.  Convention (matching scikit-learn's
+        # svd_flip): the largest-magnitude entry of each component is positive.
+        #
+        # Which entry that is has to be decided with a tolerance, because exact
+        # ties are structural rather than a coincidence of continuous data: if
+        # two columns are exact mirrors (x_j == -x_i, as in a two-level one-hot,
+        # a share/1-share pair, or a +/- sensor pair), then (e_i + e_j)/sqrt(2)
+        # is an exact null eigenvector of the covariance, so every retained
+        # component satisfies v_j == -v_i to the last ulp.  Where that pair
+        # carries the largest entry, a strict argmax keys the whole row's sign
+        # on ~1e-16 rounding noise.  Taking the first entry within a relative
+        # tolerance of the maximum instead makes the choice a function of column
+        # order alone; where the maximum is unique it selects what argmax would.
+        # np.sign cannot return 0 here: the largest-magnitude entry of a
+        # unit-norm vector is at least 1/sqrt(n_features).
+        magnitudes = np.abs(components)
+        tied       = magnitudes >= magnitudes.max(axis=1, keepdims=True) * (1 - 1e-12)
+        leading    = tied.argmax(axis=1)
+        signs      = np.sign(components[np.arange(components.shape[0]), leading])
+        # Out-of-place: components is a non-contiguous view over the full
+        # (n_features, n_features) eigenvector matrix, which this also drops
+        self.components_ = components * signs[:, np.newaxis]
+
+        # 6. Project training data → compute per-component std for standardisation
         projections = X_centered @ self.components_.T          # (n_samples, n_components)
         self.std_   = projections.std(axis=0, ddof=1) + 1e-8  # avoid div-by-zero
 

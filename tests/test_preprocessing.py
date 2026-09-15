@@ -17,17 +17,19 @@ N_FEATURES = 12
 N_COMPONENTS = 4
 
 @pytest.fixture
-def fitted_pca() -> PCANormalizer:
-    rng = np.random.default_rng(0)
-    X = rng.standard_normal((N_SAMPLES, N_FEATURES))
-    pca = PCANormalizer(n_components=N_COMPONENTS, scale_to_pi=True)
-    pca.fit(X)
-    return pca
-
-@pytest.fixture
 def training_data() -> np.ndarray:
     rng = np.random.default_rng(0)
     return rng.standard_normal((N_SAMPLES, N_FEATURES))
+
+@pytest.fixture
+def fitted_pca(training_data: np.ndarray) -> PCANormalizer:
+    # Fitted on the training_data fixture rather than an inlined copy of it:
+    # test_negated_eigenvectors_give_identical_fit compares a fit on
+    # training_data against this one, so the two must be the same array by
+    # construction and not by both happening to use seed 0 and the same shape
+    pca = PCANormalizer(n_components=N_COMPONENTS, scale_to_pi=True)
+    pca.fit(training_data)
+    return pca
 
 class TestFitAttributes:
     def test_is_fitted(self, fitted_pca: PCANormalizer) -> None:
@@ -41,22 +43,75 @@ class TestFitAttributes:
         for i in range(len(ev) - 1):
             assert ev[i] >= ev[i + 1]
 
-def _component_signs(pca: PCANormalizer) -> torch.Tensor:
-    """
-    Per-component ±1 normalising the arbitrary eigenvector sign, as a row vector
-    broadcastable over a transform output of shape (n_samples, n_components).
+    def test_components_have_positive_leading_entry(self, fitted_pca: PCANormalizer) -> None:
+        # The documented sign convention, asserted directly: it is what makes
+        # components_ and the pinned golden values reproducible across platforms.
+        # A strict argmax states the property independently of how fit computes
+        # it, which is sound precisely because the fixture has one clearly
+        # largest entry per component -- guarded by
+        # TestGoldenFixtureIsWellConditioned::test_sign_convention_is_unambiguous
+        components = fitted_pca.components_
+        leading = np.abs(components).argmax(axis=1)
+        assert np.all(components[np.arange(components.shape[0]), leading] > 0)
 
-    ``fit`` keeps whatever sign ``np.linalg.eigh`` returns, which is not part of
-    the library's contract: another LAPACK build or platform may return a
-    component negated, flipping that output column with nothing actually wrong.
-    Convention here: the largest-magnitude entry of each component is positive.
-    That is only well defined while the fixture stays unambiguous, which
-    TestGoldenFixtureIsWellConditioned asserts.
-    """
-    components = pca.components_
-    leading = np.abs(components).argmax(axis=1)
-    signs = np.sign(components[np.arange(components.shape[0]), leading])
-    return torch.tensor(signs, dtype=torch.float32)
+    def test_negated_eigenvectors_give_identical_fit(
+        self, fitted_pca: PCANormalizer, training_data: np.ndarray,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # The signs cannot be made to differ on one machine, so stand in for a
+        # LAPACK build that returns the other (equally valid) eigenvectors.  This
+        # is the property the convention exists for; the assertion above only
+        # checks the convention is self-consistent, not that it is reached from
+        # both starting points.
+        #
+        # The flip is alternating, not uniform: negating *every* eigenvector is
+        # undone by symmetry by any global sign rule, so a per-row bug -- one
+        # component's sign broadcast to all rows -- would leave a uniform flip
+        # passing.  Flipping a subset is what makes this assert the per-component
+        # property.
+        real_eigh = np.linalg.eigh
+
+        def flipped_eigh(a):  # type: ignore[no-untyped-def]
+            eigenvalues, eigenvectors = real_eigh(a)
+            pattern = np.ones(eigenvectors.shape[1])
+            pattern[::2] = -1.0
+            return eigenvalues, eigenvectors * pattern  # columns are eigenvectors
+
+        monkeypatch.setattr(np.linalg, "eigh", flipped_eigh)
+        flipped = PCANormalizer(n_components=N_COMPONENTS, scale_to_pi=True).fit(training_data)
+
+        np.testing.assert_allclose(flipped.components_, fitted_pca.components_)
+
+    def test_mirrored_feature_pair_keeps_a_stable_sign(self) -> None:
+        # A tie for the largest-magnitude entry is structural, not a freak of
+        # continuous data.  With x_5 == -x_0 exactly, (e_0 + e_5)/sqrt(2) is a
+        # null eigenvector of the covariance, so every retained component has
+        # v_5 == -v_0 to the last ulp; scaling column 0 up puts that pair in the
+        # leading position, where a strict argmax decides the row's sign on
+        # rounding noise.  Reordering rows perturbs the covariance by far less
+        # than a different LAPACK build would, so a sign that survives it is the
+        # weaker of the two claims -- and the strict argmax did not survive it.
+        rng = np.random.default_rng(0)
+        base = rng.standard_normal((50, 5))
+        base[:, 0] *= 3.0
+        X = np.column_stack([base, -base[:, 0]])
+
+        reference = PCANormalizer(n_components=3, scale_to_pi=True).fit(X).components_
+
+        # Guard the premise: if the fixture ever stops producing a tie, this
+        # test silently stops covering the tie-break rather than failing
+        magnitudes = np.sort(np.abs(reference), axis=1)
+        margins = (magnitudes[:, -1] - magnitudes[:, -2]) / magnitudes[:, -1]
+        assert margins.min() < 1e-12, (
+            f"fixture no longer has a component whose two largest entries are "
+            f"tied (smallest relative margin {margins.min():.2e}), so it no "
+            f"longer exercises the tie-break"
+        )
+
+        for seed in range(8):
+            perm = np.random.default_rng(seed).permutation(X.shape[0])
+            permuted = PCANormalizer(n_components=3, scale_to_pi=True).fit(X[perm]).components_
+            np.testing.assert_allclose(permuted, reference, atol=1e-8)
 
 class TestTransformOutput:
     def test_output_shape(self, fitted_pca: PCANormalizer, training_data: np.ndarray) -> None:
@@ -72,8 +127,8 @@ class TestTransformOutput:
     ) -> None:
         # Pins the actual numbers, not just the shape, so a refactor of the
         # conversion or projection path cannot quietly change the encoding.
-        # Signs are normalised first (see _component_signs): everything else
-        # about the encoding stays pinned to 1e-6.
+        # Signs need no normalisation here: fit canonicalises them, so these
+        # values are pinned as-is to 1e-6 on any platform.
         expected = torch.tensor(
             [
                 [0.26675245, -1.63643660, 2.29188750, 3.09272840],
@@ -81,16 +136,20 @@ class TestTransformOutput:
                 [2.91354400, 1.08601160, 3.04996010, -1.35583290],
             ]
         )
-        result = fitted_pca.transform(held_out_data)[:3] * _component_signs(fitted_pca)
+        result = fitted_pca.transform(held_out_data)[:3]
         torch.testing.assert_close(result, expected, atol=1e-6, rtol=0.0)
 
 class TestGoldenFixtureIsWellConditioned:
     """
-    test_matches_golden_values and _component_signs both assume the fixture is
-    unambiguous: well-separated eigenvalues, and one clearly largest entry per
-    component.  Assert that directly, so a future change to the fixture fails
-    here with a stated reason rather than as an inscrutable golden mismatch on
-    someone else's platform.
+    test_matches_golden_values and the sign assertions above both assume the
+    fixture is unambiguous: well-separated eigenvalues, and one clearly largest
+    entry per component.  Assert that directly, so a future change to the
+    fixture fails here with a stated reason rather than as an inscrutable golden
+    mismatch on someone else's platform.
+
+    fit itself no longer needs the second assumption -- it resolves exact ties by
+    column order, which test_mirrored_feature_pair_keeps_a_stable_sign covers.
+    The assertions that restate the convention with a strict argmax still do.
 
     The thresholds are canaries, not descriptions of the current fixture: they
     sit several times below what it actually has, so an innocuous tweak won't
@@ -117,8 +176,9 @@ class TestGoldenFixtureIsWellConditioned:
         margins = (magnitudes[:, -1] - magnitudes[:, -2]) / magnitudes[:, -1]
         assert margins.min() > 0.001, (
             f"a component's two largest entries are nearly equal (smallest "
-            f"relative margin {margins.min():.2%}), so which entry "
-            f"_component_signs keys on is itself build-dependent"
+            f"relative margin {margins.min():.2%}); fit resolves exact ties by "
+            f"column order, but the assertions that restate the convention with "
+            f"a strict argmax need a clear winner to key on"
         )
 
 class TestScaleToPi:
