@@ -140,7 +140,18 @@ class PCANormalizer:
             If ``X`` is not 2-D, if ``n_components < 1``, if
             ``n_features < n_components``, or if ``n_samples <= n_components``
             (centred data then has rank below ``n_components``, so some
-            components have zero variance).
+            components have zero variance).  Also if the centred data has rank
+            below ``n_components`` for any other reason -- collinear features,
+            duplicated samples, constant data -- which is detected from
+            ``numpy.linalg.matrix_rank`` of the centred data, before any
+            component is retained.
+
+        Notes
+        -----
+        ``fit`` is all-or-nothing: every check above raises before the first
+        fitted attribute is assigned, so a rejected fit leaves the instance
+        exactly as it found it.  An instance that was already fitted keeps that
+        fit and stays usable; one that was not stays unfitted.
         """
         # asarray, not array: float64 input is used as-is rather than copied, so
         # X_arr may share memory with the caller.  Never write into it in place.
@@ -170,9 +181,13 @@ class PCANormalizer:
                 f"{self.n_components + 1} samples."
             )
 
-        # 1. Centre the data
-        self.mean_ = X_arr.mean(axis=0)
-        X_centered = X_arr - self.mean_
+        # 1. Centre the data.  mean_ is assigned only once the rank check below
+        # has passed -- together with the checks above raising before any other
+        # attribute is written, that makes fit all-or-nothing: a rejected fit
+        # leaves the instance untouched, so a failed re-fit keeps the previous
+        # fit intact and usable rather than half-replacing it
+        mean = X_arr.mean(axis=0)
+        X_centered = X_arr - mean
 
         # 2. Covariance matrix (unbiased estimator, ddof=1)
         cov = np.cov(X_centered, rowvar=False)  # shape (n_features, n_features)
@@ -185,11 +200,49 @@ class PCANormalizer:
         eigenvalues  = eigenvalues[sort_idx]
         eigenvectors = eigenvectors[:, sort_idx]
 
-        self.explained_variance_ = eigenvalues[: self.n_components]
+        # 5. Reject data whose centred rank is below n_components.  The extra
+        # components have a numerically zero eigenvalue, their directions are an
+        # arbitrary basis of the null space, and std_ falls back to the 1e-8
+        # added for division safety -- so transform divides new data's
+        # projection on them by 1e-8 and returns ~1e8 (or a saturated +-pi).
+        # Nothing about that is detectable from the output, hence the check.
+        #
+        # The rank is read off the centred data rather than off the eigenvalues
+        # above, because cov squares the singular values and so halves the
+        # digits available to separate signal from the noise floor.  A tolerance
+        # relative to eigenvalues[0] == s_max**2 squares the condition number
+        # with it, rejecting genuinely full-rank data whose feature scales
+        # differ by more than ~1e8; and taking sqrt afterwards does not undo
+        # that, since a null direction's eigenvalue sits near lambda_max * eps,
+        # whose root is s_max * sqrt(eps) -- ~1e-8 relative, far above any
+        # eps-scaled threshold.  matrix_rank thresholds the singular values
+        # themselves, which is where a relative tolerance belongs.  An absolute
+        # one is not an option either: it would reject full-rank data that
+        # merely has a small overall scale.
+        rank = int(np.linalg.matrix_rank(X_centered))
+        if rank < self.n_components:
+            remedy = (
+                "Provide data that varies: every feature is constant, so the "
+                "centred data is all zeros."
+                if rank == 0
+                else f"Reduce n_components to at most {rank}, or provide data "
+                f"of higher rank (collinear features and duplicated samples "
+                f"both lower it)."
+            )
+            raise ValueError(
+                f"centred data has rank {rank} < n_components="
+                f"{self.n_components}, so components {rank}.."
+                f"{self.n_components - 1} have zero variance and transform "
+                f"would divide their projections by the 1e-8 epsilon.  {remedy}"
+            )
+        kept = eigenvalues[: self.n_components]
+
+        self.mean_ = mean
+        self.explained_variance_ = kept
         # rows = components (shape: n_components × n_features)
         components = eigenvectors[:, : self.n_components].T
 
-        # 5. Canonicalise the sign of each component.  eigh returns eigenvectors
+        # 6. Canonicalise the sign of each component.  eigh returns eigenvectors
         # up to an arbitrary sign, so another LAPACK build may hand back a
         # component negated -- components_ and the encoded features would not be
         # reproducible across platforms.  Convention (matching scikit-learn's
@@ -215,7 +268,7 @@ class PCANormalizer:
         # (n_features, n_features) eigenvector matrix, which this also drops
         self.components_ = components * signs[:, np.newaxis]
 
-        # 6. Project training data → compute per-component std for standardisation
+        # 7. Project training data → compute per-component std for standardisation
         projections = X_centered @ self.components_.T          # (n_samples, n_components)
         self.std_   = projections.std(axis=0, ddof=1) + 1e-8  # avoid div-by-zero
 

@@ -298,6 +298,105 @@ class TestErrors:
         ):
             pca.fit(X)
 
+    # Warnings as errors: constant data makes explained_variance_ratio_ divide
+    # 0 by 0, so the check must fire before any component is retained
+    @pytest.mark.filterwarnings("error")
+    @pytest.mark.parametrize(
+        "name, rank, remedy",
+        [
+            ("collinear_features", 2, r"at most 2"),
+            ("duplicated_samples", 2, r"at most 2"),
+            # Rank 0 gets prose, not "at most 0" -- a value fit() itself rejects
+            ("constant", 0, r"Provide data that varies"),
+        ],
+    )
+    def test_rank_below_n_components(self, name: str, rank: int, remedy: str) -> None:
+        # Enough rows to clear the n_samples check, but a centred rank below
+        # n_components.  Without the guard these fit silently and transform
+        # returns ~1e8 (or a saturated +-pi) on the zero-variance components,
+        # because std_ falls back to the 1e-8 added for division safety
+        rng = np.random.default_rng(0)
+        X = {
+            "collinear_features": rng.standard_normal((N_SAMPLES, 2)) @ rng.standard_normal((2, N_FEATURES)),
+            "duplicated_samples": np.tile(rng.standard_normal((3, N_FEATURES)), (34, 1)),
+            "constant": np.ones((N_SAMPLES, N_FEATURES)),
+        }[name]
+        assert len(X) > N_COMPONENTS, "must clear the n_samples check to reach the rank check"
+
+        pca = PCANormalizer(n_components=N_COMPONENTS)
+        with pytest.raises(
+            ValueError,
+            match=rf"rank {rank} < n_components={N_COMPONENTS}\b.*{remedy}",
+        ):
+            pca.fit(X)
+        # A rejected fit leaves no attribute populated
+        assert pca.mean_ is None and pca.explained_variance_ is None
+        assert pca.is_fitted_ is False
+
+    @pytest.mark.filterwarnings("error")
+    def test_failed_refit_leaves_previous_fit_intact(self) -> None:
+        # fit is all-or-nothing: every check raises before the first attribute
+        # is assigned, so a rejected re-fit is a no-op rather than a partial
+        # overwrite.  Pinned because the obvious "tidy-up" -- resetting the
+        # fitted attributes at the top of fit -- would silently break it, and
+        # would destroy a working fit in response to one bad batch
+        rng = np.random.default_rng(0)
+        X = rng.standard_normal((N_SAMPLES, N_FEATURES))
+        pca = PCANormalizer(n_components=N_COMPONENTS).fit(X)
+        before = (pca.mean_.copy(), pca.components_.copy(),
+                  pca.explained_variance_.copy(), pca.std_.copy())
+        expected = pca.transform(X)
+
+        # One rejection per data-dependent guard, in declaration order
+        # (the n_components < 1 guard keys off the attribute, not off X)
+        rejected = [
+            rng.standard_normal(N_SAMPLES),                        # not 2-D
+            rng.standard_normal((N_SAMPLES, N_COMPONENTS - 1)),    # too few features
+            rng.standard_normal((N_COMPONENTS, N_FEATURES)),       # too few samples
+            np.ones((N_SAMPLES, N_FEATURES)),                      # rank deficient
+        ]
+        for X_bad in rejected:
+            with pytest.raises(ValueError):
+                pca.fit(X_bad)
+
+        assert pca.is_fitted_ is True
+        for name, old, new_ in zip(
+            ("mean_", "components_", "explained_variance_", "std_"),
+            before,
+            (pca.mean_, pca.components_, pca.explained_variance_, pca.std_),
+        ):
+            assert np.array_equal(old, new_), f"{name} changed across a failed re-fit"
+        # and the fit is still usable, not merely still present
+        assert torch.equal(pca.transform(X), expected)
+
+    def test_full_rank_at_tiny_scale_still_fits(self) -> None:
+        # Guards the tolerance against being absolute.  These eigenvalues are
+        # ~1e-14, below the ~4e-14 an absolute tolerance would need in order to
+        # reject the rank-deficient cases above -- so an absolute threshold
+        # would reject this genuinely full-rank data, and a relative one must not
+        X = 1e-7 * np.random.default_rng(0).standard_normal((N_SAMPLES, N_FEATURES))
+        pca = PCANormalizer(n_components=N_COMPONENTS).fit(X)
+        assert pca.is_fitted_ is True
+        assert pca.explained_variance_.max() < 1e-13
+        # and the components carry real variance, not the 1e-8 epsilon.
+        # std_ is std + 1e-8, so compare the excess: a true std of 1e-12 would
+        # still clear a bare "> 1e-8" while being 99.99% epsilon
+        assert np.all(pca.std_ - 1e-8 > 1e-8)
+
+    def test_full_rank_at_heterogeneous_scales_still_fits(self) -> None:
+        # Guards the tolerance against living in eigenvalue space.  Thresholding
+        # the covariance eigenvalues relative to their maximum squares the
+        # condition number, so full-rank data whose feature scales differ by
+        # more than ~1e8 gets rejected as rank-deficient
+        X = np.random.default_rng(0).standard_normal((N_SAMPLES, N_FEATURES))
+        X[:, 0] *= 1e9
+        assert np.linalg.matrix_rank(X - X.mean(axis=0)) == N_FEATURES
+
+        pca = PCANormalizer(n_components=N_COMPONENTS).fit(X)
+        assert pca.is_fitted_ is True
+        # every retained component carries real variance, not the 1e-8 epsilon
+        assert np.all(pca.std_ - 1e-8 > 1e-8)
+
     def test_minimum_samples_fit_has_nonzero_variance(self) -> None:
         X = np.random.default_rng(0).standard_normal((N_COMPONENTS + 1, N_FEATURES))
         pca = PCANormalizer(n_components=N_COMPONENTS).fit(X)
