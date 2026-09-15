@@ -17,17 +17,19 @@ N_FEATURES = 12
 N_COMPONENTS = 4
 
 @pytest.fixture
-def fitted_pca() -> PCANormalizer:
-    rng = np.random.default_rng(0)
-    X = rng.standard_normal((N_SAMPLES, N_FEATURES))
-    pca = PCANormalizer(n_components=N_COMPONENTS, scale_to_pi=True)
-    pca.fit(X)
-    return pca
-
-@pytest.fixture
 def training_data() -> np.ndarray:
     rng = np.random.default_rng(0)
     return rng.standard_normal((N_SAMPLES, N_FEATURES))
+
+@pytest.fixture
+def fitted_pca(training_data: np.ndarray) -> PCANormalizer:
+    # Fitted on the training_data fixture rather than an inlined copy of it:
+    # test_negated_eigenvectors_give_identical_fit compares a fit on
+    # training_data against this one, so the two must be the same array by
+    # construction and not by both happening to use seed 0 and the same shape
+    pca = PCANormalizer(n_components=N_COMPONENTS, scale_to_pi=True)
+    pca.fit(training_data)
+    return pca
 
 class TestFitAttributes:
     def test_is_fitted(self, fitted_pca: PCANormalizer) -> None:
@@ -69,7 +71,11 @@ class TestTransformOutput:
 
     def test_components_have_positive_leading_entry(self, fitted_pca: PCANormalizer) -> None:
         # The documented sign convention, asserted directly: it is what makes
-        # components_ and the golden values above reproducible across platforms
+        # components_ and the golden values above reproducible across platforms.
+        # A strict argmax states the property independently of how fit computes
+        # it, which is sound precisely because the fixture has one clearly
+        # largest entry per component -- guarded by
+        # TestGoldenFixtureIsWellConditioned::test_sign_convention_is_unambiguous
         components = fitted_pca.components_
         leading = np.abs(components).argmax(axis=1)
         assert np.all(components[np.arange(components.shape[0]), leading] > 0)
@@ -135,11 +141,15 @@ class TestTransformOutput:
 
 class TestGoldenFixtureIsWellConditioned:
     """
-    test_matches_golden_values and fit's sign convention both assume the fixture
-    is unambiguous: well-separated eigenvalues, and one clearly largest entry per
-    component.  Assert that directly, so a future change to the fixture fails
-    here with a stated reason rather than as an inscrutable golden mismatch on
-    someone else's platform.
+    test_matches_golden_values and the sign assertions above both assume the
+    fixture is unambiguous: well-separated eigenvalues, and one clearly largest
+    entry per component.  Assert that directly, so a future change to the
+    fixture fails here with a stated reason rather than as an inscrutable golden
+    mismatch on someone else's platform.
+
+    fit itself no longer needs the second assumption -- it resolves exact ties by
+    column order, which test_mirrored_feature_pair_keeps_a_stable_sign covers.
+    The assertions that restate the convention with a strict argmax still do.
 
     The thresholds are canaries, not descriptions of the current fixture: they
     sit several times below what it actually has, so an innocuous tweak won't
@@ -166,8 +176,9 @@ class TestGoldenFixtureIsWellConditioned:
         margins = (magnitudes[:, -1] - magnitudes[:, -2]) / magnitudes[:, -1]
         assert margins.min() > 0.001, (
             f"a component's two largest entries are nearly equal (smallest "
-            f"relative margin {margins.min():.2%}), so which entry fit keys "
-            f"its sign convention on is itself build-dependent"
+            f"relative margin {margins.min():.2%}); fit resolves exact ties by "
+            f"column order, but the assertions that restate the convention with "
+            f"a strict argmax need a clear winner to key on"
         )
 
 class TestScaleToPi:
