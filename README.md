@@ -1,5 +1,8 @@
 # hqnn-forge
 
+[![Tests](https://github.com/g8rdier/hqnn-forge/actions/workflows/tests.yml/badge.svg)](https://github.com/g8rdier/hqnn-forge/actions/workflows/tests.yml)
+[![License](https://img.shields.io/github/license/g8rdier/hqnn-forge)](LICENSE)
+
 > **Parameter-efficient Hybrid Quantum Neural Networks for imbalanced tabular classification.**
 
 `hqnn-forge` is a research-grade Python library that fuses **PennyLane** quantum circuits with **PyTorch** classical layers into end-to-end differentiable hybrid architectures optimised for NISQ-era hardware and binary fraud-detection workloads.
