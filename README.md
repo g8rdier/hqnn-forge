@@ -10,7 +10,7 @@
 
 | Feature | Detail |
 |---|---|
-| **Barren-plateau-safe init** | Block-local restricted-variance initialisation (Cerezo et al. 2021) |
+| **Barren-plateau-aware init** | Small-angle Gaussian initialisation with σ shrinking in width and depth, global or per-layer (this library's heuristic, in the spirit of Zhang et al. 2022) |
 | **Adjoint differentiation** | Exact gradients via `lightning.qubit` — no finite-difference approximation |
 | **Custom angle encoding** | 8-qubit angle-embedding feature map with strongly-entangled VQC ansatz |
 | **Imbalance-robust losses** | Focal Loss & inverse-frequency weighted BCE |
@@ -78,7 +78,8 @@ and versioning policy this project follows.
 
 ## References
 
-- Cerezo et al. (2021) — *Barren plateaus in quantum neural network training landscapes*
+- Cerezo et al. (2021) — *Cost function dependent barren plateaus in shallow parametrized quantum circuits*
 - McClean et al. (2018) — *Barren plateaus in quantum neural network training landscapes*
+- Zhang et al. (2022) — *Escaping from the barren plateau via Gaussian initializations in deep variational quantum circuits*
 - Lin et al. (2017) — *Focal Loss for Dense Object Detection*
 - Bergholm et al. (2022) — *PennyLane: Automatic differentiation of hybrid quantum-classical computations*

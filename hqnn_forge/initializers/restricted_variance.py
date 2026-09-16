@@ -5,22 +5,33 @@ Barren-plateau-aware weight initialisation for variational quantum circuits.
 
 Theory
 ------
-In deep variational quantum circuits initialised with uniform random weights
-(i.e. a 2-design), the gradient variance decays *exponentially* in the number
-of qubits n and layers L:
+In variational circuits whose parameters are drawn uniformly at random (so
+that the circuit approximates a 2-design), the gradient variance decays
+exponentially in the number of qubits n:
 
     Var[∂L/∂θ] ∝ 2^{-n}   (global cost, McClean et al. 2018)
 
-This makes training effectively impossible beyond ~10 qubits with naive init.
+Two published results bound that decay.  Cerezo et al. (2021) show that for
+*local* cost functions and shallow circuits (depth O(log n)) the decay is
+only polynomial -- the per-qubit ⟨Z_i⟩ readouts used throughout this library
+are local costs for that reason.  Zhang et al. (2022) show that drawing the
+parameters from N(0, σ²) with σ² = O(1/L) instead of uniformly bounds the
+gradient norm below by a polynomial in n and L, for deep circuits too.
 
-**Block-local restricted-variance initialisation** (Cerezo et al. 2021) mitigates
-this by keeping individual rotation angles small — drawn from N(0, σ²) with σ
-chosen to preserve O(1) gradient variance at initialisation:
+The two initialisers here are **this library's own heuristics** in the
+spirit of the second result; neither formula is taken from a paper:
 
-    σ = π / sqrt(n_qubits * n_layers)
+    restricted_normal_init_:  σ   = scale / sqrt(n_qubits * n_layers)
+    block_local_init_:        σ_ℓ = scale / sqrt(n_qubits * (ℓ + 1))
 
-This ensures that at t=0 the circuit is "close to the identity" so that local
-cost-function gradients remain polynomial.
+Shrinking σ with both width and depth keeps the initial parameters far from
+the uniform-over-[0, 2π) regime that the 2-design argument needs.  With the
+default ``scale = π`` and 8 qubits × 2 layers that gives σ = π/4 ≈ 0.79 rad:
+a *small-angle* initialisation, not an identity one -- the initial circuit is
+not close to the identity, and the σ are not derived to guarantee any
+particular gradient variance.  Grant et al. (2019) is a different strategy
+(identity blocks: parameters chosen so that consecutive blocks compose to
+the identity) and is not implemented here; it is cited for contrast.
 
 Functions
 ---------
@@ -35,6 +46,8 @@ References
   parametrized quantum circuits", Nature Communications 12, 1791.
 * Grant et al. (2019) "An initialization strategy for addressing barren
   plateaus in parametrized quantum circuits", Quantum 3, 214.
+* Zhang et al. (2022) "Escaping from the barren plateau via Gaussian
+  initializations in deep variational quantum circuits", NeurIPS 35.
 """
 
 from __future__ import annotations
@@ -60,8 +73,11 @@ def restricted_normal_init_(
 
         σ = scale / sqrt(n_qubits * n_layers)
 
-    This keeps the initial circuit "close to the identity" and preserves
-    O(1) gradient variance for local cost functions.
+    A small-angle initialisation: σ shrinks with both width and depth so the
+    initial parameters stay far from uniform over [0, 2π), the regime in which
+    gradients vanish exponentially.  The formula is this library's heuristic
+    (see the module docstring), not a published prescription, and it does not
+    by itself guarantee O(1) gradient variance.
 
     Parameters
     ----------
@@ -123,8 +139,10 @@ def block_local_init_(
 
         σ_ℓ = scale / sqrt(n_qubits * (ℓ + 1))
 
-    This is the "layer-wise" variant recommended by Grant et al. (2019) for
-    deeper circuits where a global σ may be too aggressive.
+    A per-layer variant of :func:`restricted_normal_init_` for deeper circuits:
+    early layers keep a wider σ and only the later ones are narrowed, instead
+    of narrowing every layer by the full depth.  The schedule is this library's
+    heuristic; it is not the identity-block scheme of Grant et al. (2019).
 
     Parameters
     ----------
