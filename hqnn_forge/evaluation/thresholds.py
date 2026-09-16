@@ -221,10 +221,14 @@ def parameter_efficiency(model: nn.Module | int, score: float) -> float:
     """
     if isinstance(model, int):
         n_params = model
-    elif hasattr(model, "count_parameters"):
-        n_params = int(model.count_parameters())
     else:
-        n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        # nn.Module.__getattr__ is typed as returning Tensor | Module, so the
+        # method is looked up and checked explicitly rather than via hasattr
+        counter = getattr(model, "count_parameters", None)
+        if callable(counter):
+            n_params = int(counter())
+        else:
+            n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     if n_params <= 0:
         raise ValueError(f"parameter count must be positive; got {n_params}.")
     return float(score) / (n_params / 1000.0)
