@@ -419,6 +419,54 @@ class TestErrors:
         ):
             pca.fit(X)
 
+    # Warnings as errors: without the guard the top-k slice raises a bare
+    # TypeError about slice indices, so the check must fire before it
+    @pytest.mark.filterwarnings("error")
+    @pytest.mark.parametrize("n_components", [2.5, 3.0, "4", None])
+    def test_non_integer_n_components(self, n_components: object) -> None:
+        pca = PCANormalizer(n_components=n_components)
+        X = np.random.default_rng(0).standard_normal((N_SAMPLES, N_FEATURES))
+        with pytest.raises(
+            ValueError,
+            match=rf"n_components={n_components!r} is not an integer\..*rejected rather than coerced",
+        ):
+            pca.fit(X)
+        assert pca.is_fitted_ is False
+
+    @pytest.mark.filterwarnings("error")
+    def test_bool_n_components(self) -> None:
+        # bool subclasses int, so True would otherwise fit silently with one component
+        pca = PCANormalizer(n_components=True)
+        X = np.random.default_rng(0).standard_normal((N_SAMPLES, N_FEATURES))
+        with pytest.raises(ValueError, match=r"n_components=True is a bool, not an integer"):
+            pca.fit(X)
+        assert pca.is_fitted_ is False
+
+    @pytest.mark.parametrize("n_components", [np.int64(4), np.int32(4), np.uint8(4)])
+    def test_numpy_integer_n_components_fits(self, n_components: np.integer) -> None:
+        X = np.random.default_rng(0).standard_normal((N_SAMPLES, N_FEATURES))
+        pca = PCANormalizer(n_components=n_components).fit(X)
+        assert pca.components_.shape == (4, N_FEATURES)
+        assert pca.transform(X).shape == (N_SAMPLES, 4)
+
+    # Warnings as errors: with a single column np.cov returns a 0-d array and
+    # eigh raises LinAlgError (a ValueError subclass) about the array's
+    # dimensionality, so the check must fire before it
+    @pytest.mark.filterwarnings("error")
+    @pytest.mark.parametrize("n_components", [1, N_COMPONENTS])
+    def test_single_feature_input(self, n_components: int) -> None:
+        pca = PCANormalizer(n_components=n_components)
+        X = np.random.default_rng(0).standard_normal((10, 1))
+        with pytest.raises(ValueError, match=r"n_features=1 < 2\..*at least two features"):
+            pca.fit(X)
+        assert pca.is_fitted_ is False
+
+    def test_two_features_still_fit(self) -> None:
+        # The lower bound is 2, not higher: the smallest decomposable case must work
+        X = np.random.default_rng(0).standard_normal((10, 2))
+        pca = PCANormalizer(n_components=2).fit(X)
+        assert pca.components_.shape == (2, 2)
+
     def test_fit_1d_input(self) -> None:
         pca = PCANormalizer(n_components=N_COMPONENTS)
         with pytest.raises(ValueError, match=rf"2-D input.*got shape \({N_FEATURES},\).*reshape\(1, -1\)"):
