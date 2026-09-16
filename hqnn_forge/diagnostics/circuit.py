@@ -100,29 +100,33 @@ class CircuitSummary:
 # Resolving what to inspect
 # ---------------------------------------------------------------------------
 
-def _resolve_layer(target: nn.Module) -> nn.Module:
+def _resolve_layer(target: nn.Module) -> tuple[nn.Module, qml.qnn.TorchLayer, int]:
     """
-    Return the encoding layer inside *target*.
+    Return ``(layer, qlayer, n_qubits)`` for the encoding layer inside *target*.
 
     Accepts an encoding layer directly (anything with a ``qlayer`` TorchLayer
-    and ``n_qubits``), or a hybrid classifier exposing ``quantum_layer``.
+    and an integer ``n_qubits``), or a hybrid classifier exposing
+    ``quantum_layer``.
     """
-    if hasattr(target, "quantum_layer"):
-        target = target.quantum_layer
-    qlayer = getattr(target, "qlayer", None)
-    if not isinstance(qlayer, qml.qnn.TorchLayer) or not hasattr(target, "n_qubits"):
+    layer = getattr(target, "quantum_layer", target)
+    qlayer = getattr(layer, "qlayer", None)
+    n_qubits = getattr(layer, "n_qubits", None)
+    if (
+        not isinstance(layer, nn.Module)
+        or not isinstance(qlayer, qml.qnn.TorchLayer)
+        or not isinstance(n_qubits, int)
+    ):
         raise TypeError(
             f"circuit_summary expects an encoding layer (QuantumEncodingLayer, "
             f"IQPEncodingLayer) or a hybrid classifier with a quantum_layer attribute; "
             f"got {type(target).__name__}."
         )
-    return target
+    return layer, qlayer, n_qubits
 
 
-def _logical_tape(layer: nn.Module) -> qml.tape.QuantumScript:
+def _logical_tape(qlayer: qml.qnn.TorchLayer, n_qubits: int) -> qml.tape.QuantumScript:
     """The tape the layer executes for one sample, decomposed to LOGICAL_GATE_SET."""
-    qlayer = layer.qlayer
-    inputs = torch.zeros(layer.n_qubits, dtype=torch.float64)
+    inputs = torch.zeros(n_qubits, dtype=torch.float64)
     weights = {name: param.detach() for name, param in qlayer.qnode_weights.items()}
     # level="top": the circuit as written, before the QNode's own transforms
     # (batch expansion) and before the device rewrites gates it cannot run.
@@ -165,15 +169,15 @@ def circuit_summary(target: nn.Module) -> CircuitSummary:
       qubits           : 4
       ...
     """
-    layer = _resolve_layer(target)
-    tape = _logical_tape(layer)
+    layer, qlayer, n_qubits = _resolve_layer(target)
+    tape = _logical_tape(qlayer, n_qubits)
     resources = tape.specs["resources"]
-    qnode = layer.qlayer.qnode
+    qnode = qlayer.qnode
     return CircuitSummary(
         layer_type=type(layer).__name__,
-        n_qubits=int(layer.n_qubits),
+        n_qubits=n_qubits,
         n_trainable_params=sum(
-            p.numel() for p in layer.qlayer.qnode_weights.values() if p.requires_grad
+            p.numel() for p in qlayer.qnode_weights.values() if p.requires_grad
         ),
         depth=int(resources.depth),
         n_gates=int(resources.num_gates),
@@ -198,5 +202,5 @@ def draw_circuit(target: nn.Module, decimals: int = 2) -> str:
     decimals:
         Digits shown for gate parameters.  Default: 2.
     """
-    layer = _resolve_layer(target)
-    return qml.drawer.tape_text(_logical_tape(layer), decimals=decimals)
+    _, qlayer, n_qubits = _resolve_layer(target)
+    return qml.drawer.tape_text(_logical_tape(qlayer, n_qubits), decimals=decimals)
