@@ -15,6 +15,7 @@
 | **Custom angle encoding** | 8-qubit angle-embedding feature map with strongly-entangled VQC ansatz |
 | **Imbalance-robust losses** | Focal Loss & inverse-frequency weighted BCE |
 | **Pure-NumPy pre-processing** | PCA + standardisation without scikit-learn runtime dependency |
+| **Two hybrid topologies** | Serial `HybridBinaryClassifier` and parallel `ParallelHybridClassifier` (classical MLP branch ‖ quantum branch), with angle or IQP encoding |
 
 ---
 
@@ -55,11 +56,75 @@ See `examples/quick_start.py` for a full training loop on a synthetic imbalanced
 
 ---
 
+## Architecture
+
+Two hybrid topologies share the same building blocks. Both return a raw logit of shape
+`(batch, 1)`: apply `torch.sigmoid` for a probability, or pass it straight to `FocalLoss`.
+
+### `HybridBinaryClassifier` (serial)
+
+```
+Input (batch, n_input_features)
+     │
+     ▼
+Classical encoder   Linear(n_input_features → n_qubits) + Tanh, scaled by π into (-π, π)
+     │
+     ▼
+Quantum layer       AngleEmbedding RX(x_i) on qubit i   (or IQP embedding)
+     │              n_layers × [ CNOT ring → per-qubit Rot(φ, θ, ω) ]
+     │              → ⟨Z_i⟩ for every qubit, shape (batch, n_qubits)
+     ▼
+Classical head      Linear(n_qubits → 1)
+     │
+     ▼
+Raw logit (batch, 1)
+```
+
+### `ParallelHybridClassifier` (parallel)
+
+```
+Input (batch, n_input_features)
+     ├───────────────────────────────────┐
+     ▼                                   ▼
+Classical branch                    Classical encoder   Linear(→ n_qubits) + Tanh, × π
+Linear → ReLU → Linear → ReLU            │
+→ (batch, classical_hidden_dim)          ▼
+     │                              Quantum layer       same circuit as the serial model
+     │                                   │              → ⟨Z_i⟩, shape (batch, n_qubits)
+     └────────────────┬──────────────────┘
+                      ▼
+                Concatenate   (batch, classical_hidden_dim + n_qubits)
+                      │
+                      ▼
+                Classical head   Linear(→ 1)
+                      │
+                      ▼
+                Raw logit (batch, 1)
+```
+
+The parallel model asks whether added classical capacity can substitute for, or extend, what
+the quantum layer contributes: compare `count_parameters()` across the two at equal `n_qubits`
+and `n_layers`.
+
+Options shared by both models:
+
+- `encoding_type="angle"` (default) or `"iqp"` (Havlíček-style feature map with pairwise
+  `x_i x_j` phases).
+- `init_strategy="restricted"` (one σ for the whole circuit) or `"block_local"` (σ narrowing
+  with layer depth); see `hqnn_forge.initializers`.
+- `use_classical_encoder=False` to feed features already scaled into (-π, π), for example from
+  `PCANormalizer(scale_to_pi=True)`, straight into the circuit. `n_input_features` must then
+  equal `n_qubits`.
+- `dropout_p` on the features entering the head, and `predict_proba` / `predict`, which always
+  run in eval mode.
+
+---
+
 ## Folder Structure
 
 ```
 hqnn_forge/
-├── encoding/        Quantum feature maps (angle embedding, IQP placeholder)
+├── encoding/        Quantum feature maps (angle embedding, IQP embedding)
 ├── circuits/        Reusable VQC ansatz primitives
 ├── initializers/    Barren-plateau-aware weight initialisation
 ├── preprocessing/   Classical PCA + normalisation (no sklearn runtime dep)
