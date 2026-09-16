@@ -42,7 +42,7 @@ lightning = [
     "pennylane-lightning>=0.42",  # enables adjoint diff on CPU
 ]
 dev = [
-    "pytest>=8.0",
+    "pytest>=9.1.1",
     "pytest-cov",
     "black",
     "ruff",
