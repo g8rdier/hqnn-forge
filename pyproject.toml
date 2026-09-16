@@ -33,7 +33,7 @@ dependencies = [
     "torch>=2.2",
     # floor is the lowest CI-tested version; 0.38 breaks with autoray>=0.7
     # (NumpyMimic removed) and PennyLane declares no upper bound of its own
-    "pennylane>=0.42",
+    "pennylane>=0.42.3",
     "numpy>=1.26",
 ]
 
