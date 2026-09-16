@@ -39,7 +39,7 @@ dependencies = [
 
 [project.optional-dependencies]
 lightning = [
-    "pennylane-lightning>=0.42",  # enables adjoint diff on CPU
+    "pennylane-lightning>=0.42.0",  # enables adjoint diff on CPU
 ]
 dev = [
     "pytest>=8.0",
