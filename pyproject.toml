@@ -57,6 +57,9 @@ examples = [
 where = ["."]
 include = ["hqnn_forge*"]
 
+[tool.setuptools.package-data]
+hqnn_forge = ["py.typed"]
+
 [tool.ruff]
 line-length = 99
 target-version = "py310"
