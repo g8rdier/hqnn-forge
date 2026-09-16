@@ -2,9 +2,12 @@ version: 2
 updates:
   - package-ecosystem: "pip"
     directory: "/"
-    target-branch: "main"
     schedule:
       interval: "weekly"
+    # Dependencies are declared as open floors (">=") in pyproject.toml, which every
+    # new release already satisfies. Without this, Dependabot finds nothing to rewrite
+    # and stays silent; "increase" makes it raise the floor instead.
+    versioning-strategy: increase
     groups:
       dev-dependencies:
         patterns:
