@@ -189,11 +189,11 @@ def train_model(
     X_train = torch.as_tensor(X_train)
     y_train = torch.as_tensor(y_train).reshape(-1).float()
     _check_pair(X_train, y_train, "train")
-    has_val = X_val is not None
-    if has_val:
-        X_val = torch.as_tensor(X_val)
-        y_val = torch.as_tensor(y_val).reshape(-1).float()
-        _check_pair(X_val, y_val, "val")
+    val: tuple[torch.Tensor, torch.Tensor] | None = None
+    if X_val is not None and y_val is not None:
+        val = (torch.as_tensor(X_val), torch.as_tensor(y_val).reshape(-1).float())
+        _check_pair(*val, "val")
+    has_val = val is not None
 
     lower_is_better = monitor == "val_loss"
     history = TrainingHistory(monitor=monitor)
@@ -217,15 +217,16 @@ def train_model(
         record = EpochRecord(epoch=epoch, train_loss=total / seen)
 
         # ── validate ─────────────────────────────────────────────────────
-        if has_val:
+        if val is not None:
+            x_v, y_v = val
             with torch.no_grad(), eval_mode(model):
-                val_logits = _logits(model, X_val)
-                val_loss = float(loss_fn(val_logits, y_val))
+                val_logits = _logits(model, x_v)
+                val_loss = float(loss_fn(val_logits, y_v))
             if lower_is_better:
                 value, threshold = val_loss, None
             else:
                 search = find_optimal_threshold(
-                    y_val.long(), torch.sigmoid(val_logits), metric=monitor
+                    y_v.long(), torch.sigmoid(val_logits), metric=monitor
                 )
                 value, threshold = search.score, search.threshold
             record = EpochRecord(
