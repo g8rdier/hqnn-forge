@@ -133,6 +133,17 @@ class HybridBinaryClassifier(BinaryClassifierBase):
         encoding_type: str = "angle",
     ) -> None:
         super().__init__()
+        self._config = dict(
+            n_input_features=n_input_features,
+            n_qubits=n_qubits,
+            n_layers=n_layers,
+            use_classical_encoder=use_classical_encoder,
+            dropout_p=dropout_p,
+            device_name=device_name,
+            diff_method=diff_method,
+            init_strategy=init_strategy,
+            encoding_type=encoding_type,
+        )
 
         self.n_input_features = n_input_features
         self.n_qubits         = n_qubits
