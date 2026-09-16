@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ "main" ]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -30,3 +33,36 @@ jobs:
     - name: Run pytest
       run: |
         pytest tests/ -v
+
+  # The matrix above installs the latest versions satisfying the open ">=" floors,
+  # which is the early warning that an upstream release broke us. This job installs
+  # the exact resolution recorded in uv.lock instead, so a Dependabot lockfile bump
+  # is tested against the versions it actually changes. --locked additionally fails
+  # if uv.lock has drifted out of sync with pyproject.toml.
+  #
+  # Both interpreters are run because uv.lock splits the core stack on a
+  # python_full_version >= '3.11' marker: pennylane, pennylane-lightning, numpy,
+  # scipy and friends each have a separate 3.10 and 3.11+ entry. Since pennylane
+  # 0.43+ requires >= 3.11, the 3.10 branch is end-of-line and effectively every
+  # future lock bump lands only in the 3.11+ half — a job pinned to 3.10 would go
+  # green without ever installing the versions the PR changed.
+  test-locked:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11"]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v10.1.0
+      with:
+        python-version: ${{ matrix.python-version }}
+        enable-cache: true
+
+    - name: Install dependencies from the lockfile
+      run: uv sync --locked --all-extras
+
+    - name: Run pytest
+      run: uv run --frozen pytest tests/ -v
