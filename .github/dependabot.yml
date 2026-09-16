@@ -14,3 +14,16 @@ updates:
           - "black"
           - "ruff"
           - "mypy"
+
+  # Keeps the actions in tests.yml current; without this entry checkout,
+  # setup-python and setup-uv would never be updated. The three arrive in one
+  # grouped PR rather than three: they are reviewed identically and each
+  # ungrouped PR would spend a full matrix run to say the same thing.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions:
+        patterns:
+          - "*"
