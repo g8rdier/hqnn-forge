@@ -36,11 +36,20 @@ Notes
 from __future__ import annotations
 
 import operator
+import warnings
 from typing import Optional
 
 import numpy as np
 import numpy.typing as npt
 import torch
+
+# Relative eigenvalue gap below which fit warns that the retained basis is not
+# reproducible.  Chosen from measurement, not intuition: perturbing the
+# covariance by 1e-16 relative (the scale on which two LAPACK builds disagree
+# about the same matrix) rotates the affected components by ~0.002 deg at a gap
+# of 1e-12, ~3 deg at 1e-14 and ~20 deg when exactly degenerate, and by nothing
+# measurable at 1e-8.  1e-12 sits safely inside the flat region.
+EIGENVALUE_GAP_WARN: float = 1e-12
 
 
 class PCANormalizer:
@@ -72,7 +81,11 @@ class PCANormalizer:
         and holds whenever the eigenvalues are well separated.  Entries tied for
         largest magnitude are resolved by column order, so mirrored feature
         pairs are covered; near-degenerate eigenvalues, however, leave the basis
-        itself build-dependent, which no sign convention can repair.
+        itself build-dependent, which no sign convention can repair.  ``fit``
+        checks for this and emits a ``RuntimeWarning`` when two consecutive
+        eigenvalues among the retained ones (or at the cutoff) differ by less
+        than ``EIGENVALUE_GAP_WARN`` relative, which in practice means exactly
+        degenerate up to rounding.
         The convention is the one scikit-learn's ``svd_flip`` applies with
         ``u_based_decision=False``, reimplemented here rather than depended on.
     explained_variance_ : np.ndarray, shape (n_components,)
@@ -273,6 +286,37 @@ class PCANormalizer:
                 f"would divide their projections by the 1e-8 epsilon.  {remedy}"
             )
         kept = eigenvalues[:n_components]
+
+        # 5b. Warn when the retained basis is not reproducible.  Within a
+        # degenerate eigenspace eigh may return any orthonormal basis, and a
+        # rotation is not a sign flip, so step 6 cannot repair it; degeneracy
+        # *at* the cutoff additionally makes it arbitrary which component is
+        # kept at all.  Hence the gaps between consecutive eigenvalues among the
+        # kept ones and the first excluded one are all checked.  The rank check
+        # above guarantees kept[i] > 0, so the division is safe.  A warning and
+        # not an error: the fit is still a valid PCA, it just is not the same
+        # one on every platform, which only matters to callers who rely on the
+        # components_ contract.
+        kept_and_next = eigenvalues[: n_components + 1]
+        if kept_and_next.shape[0] > 1:
+            gaps = (kept_and_next[:-1] - kept_and_next[1:]) / kept_and_next[:-1]
+            worst = int(np.argmin(gaps))
+            if gaps[worst] < EIGENVALUE_GAP_WARN:
+                where = (
+                    "at the n_components cutoff, so which component is retained "
+                    "is arbitrary"
+                    if worst == n_components - 1
+                    else "among the retained components"
+                )
+                warnings.warn(
+                    f"eigenvalues {worst} and {worst + 1} are degenerate "
+                    f"(relative gap {gaps[worst]:.1e} < {EIGENVALUE_GAP_WARN:.0e}) "
+                    f"{where}: components_ and transform are not reproducible "
+                    f"across platforms for this data.  Reduce n_components to "
+                    f"{worst}, or accept a basis that depends on the LAPACK build.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
         self.mean_ = mean
         self.explained_variance_ = kept

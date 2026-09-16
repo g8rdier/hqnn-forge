@@ -11,6 +11,7 @@ import pytest
 import torch
 
 from hqnn_forge.preprocessing import PCANormalizer
+from hqnn_forge.preprocessing.pca_normalizer import EIGENVALUE_GAP_WARN
 
 N_SAMPLES = 100
 N_FEATURES = 12
@@ -503,3 +504,81 @@ class TestErrors:
         # not a misleading feature-count mismatch
         with pytest.raises(ValueError, match=rf"2-D input.*got shape \(2, 3, {N_FEATURES}\)\.$"):
             fitted_pca.transform(np.zeros((2, 3, N_FEATURES)))
+
+
+def _data_with_spectrum(eigenvalues: list[float], n_samples: int = 200, seed: int = 0) -> np.ndarray:
+    """
+    Data whose *sample* covariance has exactly the given eigenvalues.
+
+    Orthonormalise centred Gaussian columns with QR (they stay centred, since
+    the column space is orthogonal to the ones vector), scale each to the chosen
+    variance, then mix with a random rotation so the components are not axis-
+    aligned.  cov = R.T @ diag(eigenvalues) @ R up to rounding.
+    """
+    rng = np.random.default_rng(seed)
+    n_features = len(eigenvalues)
+    G = rng.standard_normal((n_samples, n_features))
+    Q, _ = np.linalg.qr(G - G.mean(axis=0))
+    R, _ = np.linalg.qr(rng.standard_normal((n_features, n_features)))
+    return Q @ np.diag(np.sqrt((n_samples - 1) * np.asarray(eigenvalues))) @ R
+
+
+class TestDegenerateEigenvalueWarning:
+    """
+    components_ is reproducible only when the eigenvalues are well separated.
+    fit surfaces the exception with a RuntimeWarning instead of leaving the
+    caller with a silently build-dependent basis.
+    """
+
+    WELL_SEPARATED = [8.0, 7.0, 6.0, 5.0, 4.0, 3.0]
+
+    def test_construction_hits_the_requested_spectrum(self) -> None:
+        X = _data_with_spectrum(self.WELL_SEPARATED)
+        got = np.linalg.eigvalsh(np.cov(X, rowvar=False))[::-1]
+        np.testing.assert_allclose(got, self.WELL_SEPARATED, rtol=1e-10)
+
+    @pytest.mark.filterwarnings("error")
+    def test_well_separated_spectrum_does_not_warn(self) -> None:
+        PCANormalizer(n_components=4).fit(_data_with_spectrum(self.WELL_SEPARATED))
+
+    @pytest.mark.filterwarnings("error")
+    def test_golden_fixture_does_not_warn(self, training_data: np.ndarray) -> None:
+        PCANormalizer(n_components=N_COMPONENTS).fit(training_data)
+
+    def test_degenerate_pair_among_kept_components_warns(self) -> None:
+        X = _data_with_spectrum([8.0, 6.0, 6.0, 4.0, 2.0, 1.0])
+        with pytest.warns(RuntimeWarning, match=r"eigenvalues 1 and 2 are degenerate.*among the retained components.*Reduce n_components to 1"):
+            pca = PCANormalizer(n_components=4).fit(X)
+        # The fit itself is still valid: pinned so the behaviour at exact
+        # degeneracy is recorded rather than discovered later
+        assert pca.is_fitted_ is True
+        assert pca.components_.shape == (4, 6)
+        np.testing.assert_allclose(pca.explained_variance_, [8.0, 6.0, 6.0, 4.0], rtol=1e-10)
+
+    def test_degenerate_pair_at_cutoff_warns(self) -> None:
+        # ev[3] == ev[4] with n_components=4: which of the two is kept is arbitrary
+        X = _data_with_spectrum([8.0, 6.0, 5.0, 3.0, 3.0, 1.0])
+        with pytest.warns(RuntimeWarning, match=r"eigenvalues 3 and 4 are degenerate.*at the n_components cutoff"):
+            PCANormalizer(n_components=4).fit(X)
+
+    @pytest.mark.filterwarnings("error")
+    def test_degeneracy_beyond_cutoff_is_ignored(self) -> None:
+        # ev[4] == ev[5] are both discarded; the retained basis is unaffected
+        PCANormalizer(n_components=4).fit(_data_with_spectrum([8.0, 6.0, 5.0, 3.0, 1.0, 1.0]))
+
+    @pytest.mark.filterwarnings("error")
+    def test_all_features_kept_checks_only_retained_gaps(self) -> None:
+        # n_components == n_features: no cutoff gap exists, and the spectrum is separated
+        PCANormalizer(n_components=6).fit(_data_with_spectrum(self.WELL_SEPARATED))
+
+    @pytest.mark.parametrize("gap", [1e-8, 1e-10, 10 * EIGENVALUE_GAP_WARN])
+    @pytest.mark.filterwarnings("error")
+    def test_gap_above_threshold_does_not_warn(self, gap: float) -> None:
+        # Separation the LAPACK spread cannot rotate measurably: no warning
+        X = _data_with_spectrum([8.0, 6.0, 6.0 * (1 - gap), 4.0, 2.0, 1.0])
+        PCANormalizer(n_components=4).fit(X)
+
+    def test_gap_below_threshold_warns(self) -> None:
+        X = _data_with_spectrum([8.0, 6.0, 6.0 * (1 - EIGENVALUE_GAP_WARN / 10), 4.0, 2.0, 1.0])
+        with pytest.warns(RuntimeWarning, match=r"eigenvalues 1 and 2"):
+            PCANormalizer(n_components=4).fit(X)
