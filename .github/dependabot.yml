@@ -14,3 +14,10 @@ updates:
           - "black"
           - "ruff"
           - "mypy"
+
+  # Keeps the actions in tests.yml current; without this entry checkout,
+  # setup-python and setup-uv would never be updated.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
