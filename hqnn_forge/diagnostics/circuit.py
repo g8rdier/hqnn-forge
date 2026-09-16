@@ -82,8 +82,12 @@ class CircuitSummary:
         return d
 
     def __str__(self) -> str:
-        width = max(len(name) for name in self.gate_counts) if self.gate_counts else 0
-        width = max(width, len("two-qubit gates"))
+        labels = ("qubits", "trainable params", "depth", "gates", "two-qubit gates")
+        # Gate names are indented two columns further, so they get two less padding
+        width = max(
+            max(len(label) for label in labels),
+            max((len(name) + 2 for name in self.gate_counts), default=0),
+        )
         lines = [
             f"Circuit summary: {self.layer_type} on {self.device_name} ({self.diff_method})",
             f"  {'qubits':<{width}} : {self.n_qubits}",
@@ -92,7 +96,7 @@ class CircuitSummary:
             f"  {'gates':<{width}} : {self.n_gates}",
             f"  {'two-qubit gates':<{width}} : {self.n_two_qubit_gates}",
         ]
-        lines += [f"    {name:<{width}} : {count}" for name, count in self.gate_counts.items()]
+        lines += [f"    {name:<{width - 2}} : {count}" for name, count in self.gate_counts.items()]
         return "\n".join(lines)
 
 
