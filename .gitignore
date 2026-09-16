@@ -49,5 +49,3 @@ CLAUDE.md
 *.tar.gz
 *.whl
 
-# uv lockfile — the project installs with pip from pyproject.toml
-uv.lock
