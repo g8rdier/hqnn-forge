@@ -132,6 +132,11 @@ class TestPresentation:
         for label, value in [("qubits", 3), ("trainable params", 18), ("depth", 9), ("gates", 15), ("two-qubit gates", 6), ("CNOT", 6), ("RX", 3), ("Rot", 6)]:
             assert any(line.strip().startswith(label) and line.rstrip().endswith(f": {value}") for line in text.splitlines()), label
 
+    def test_str_values_are_aligned(self) -> None:
+        text = str(circuit_summary(IQPEncodingLayer(n_qubits=3, n_layers=1, **CPU)))
+        colons = {line.index(" : ") for line in text.splitlines()[1:]}
+        assert len(colons) == 1, text
+
     def test_to_dict_round_trips(self) -> None:
         s = circuit_summary(IQPEncodingLayer(n_qubits=3, n_layers=1, **CPU))
         d = s.to_dict()
