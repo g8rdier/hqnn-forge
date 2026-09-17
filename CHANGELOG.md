@@ -19,8 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Quick-start example for training
 
 ### Changed
-- Raised the `pennylane` and `pennylane-lightning` floors from `>=0.38` to `>=0.42`, the lowest
-  version CI runs; 0.38 is incompatible with `autoray>=0.7`
+- Raised the `pennylane` and `pennylane-lightning` floors from `>=0.38` to `>=0.45`, the lowest
+  version CI runs; 0.38 is incompatible with `autoray>=0.7`, and 0.42 was only tested on
+  Python 3.10
 
 ### Removed
 - `requirements.txt`; `pyproject.toml` is now the only place dependencies are declared
