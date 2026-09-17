@@ -38,10 +38,16 @@ from typing import Literal, NamedTuple
 
 import pennylane as qml
 import torch
-import torch.nn as nn
+from torch import nn
 
 Position = Literal["all", "end"]
 MAX_P = 0.75
+
+# The insert transform moved from qml.transforms to qml.noise after PennyLane
+# 0.42, and was dropped from the old namespace. Both spellings take the same
+# (tape, op, op_args, position) signature, so either satisfies _noisy_qnode.
+# 0.42.x is what Python 3.10 resolves to, since PennyLane 0.43+ requires 3.11.
+_insert = getattr(qml.noise, "insert", None) or qml.transforms.insert
 
 
 def _resolve_qlayer(target: nn.Module) -> tuple[qml.qnn.TorchLayer, int]:
@@ -59,7 +65,7 @@ def _resolve_qlayer(target: nn.Module) -> tuple[qml.qnn.TorchLayer, int]:
 def _noisy_qnode(qnode: qml.QNode, n_qubits: int, p: float, position: Position) -> qml.QNode:
     device = qml.device("default.mixed", wires=n_qubits)
     base = qml.QNode(qnode.func, device, diff_method="backprop", interface="torch")
-    return qml.noise.insert(base, qml.DepolarizingChannel, p, position=position)
+    return _insert(base, qml.DepolarizingChannel, p, position=position)
 
 
 @contextmanager
