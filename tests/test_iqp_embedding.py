@@ -59,7 +59,8 @@ class TestIQPEncodingLayer:
 class TestExplicitDecompositionMatchesTemplate:
     """
     The circuit writes qml.IQPEmbedding out gate by gate (with MultiRZ as
-    CNOT·RZ·CNOT) so that batched inputs broadcast correctly on every device.
+    CNOT·RZ·CNOT) so that a broadcasted batch only passes through
+    single-parameter gates.
     Pin that it is still the same feature map, sample by sample.
     """
 
