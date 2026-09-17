@@ -6,6 +6,7 @@ Unit tests for hqnn_forge.preprocessing.PCANormalizer.
 from __future__ import annotations
 
 import math
+import warnings
 import numpy as np
 import pytest
 import torch
@@ -393,7 +394,11 @@ class TestErrors:
         X[:, 0] *= 1e9
         assert np.linalg.matrix_rank(X - X.mean(axis=0)) == N_FEATURES
 
-        pca = PCANormalizer(n_components=N_COMPONENTS).fit(X)
+        # Full rank, but the remaining eigenvalues (~1) sit ~1e-18 apart
+        # relative to the largest (~1e18), well inside the rounding that
+        # rotates them, so the degeneracy warning is expected alongside the fit
+        with pytest.warns(RuntimeWarning, match=r"degenerate"):
+            pca = PCANormalizer(n_components=N_COMPONENTS).fit(X)
         assert pca.is_fitted_ is True
         # every retained component carries real variance, not the 1e-8 epsilon
         assert np.all(pca.std_ - 1e-8 > 1e-8)
@@ -582,3 +587,33 @@ class TestDegenerateEigenvalueWarning:
         X = _data_with_spectrum([8.0, 6.0, 6.0 * (1 - EIGENVALUE_GAP_WARN / 10), 4.0, 2.0, 1.0])
         with pytest.warns(RuntimeWarning, match=r"eigenvalues 1 and 2"):
             PCANormalizer(n_components=4).fit(X)
+
+    def test_close_pair_of_small_eigenvalues_warns(self) -> None:
+        # Relative to each other ev[1] and ev[2] differ by 1e-9, but LAPACK
+        # rounding scales with ev[0], against which they are 1e-15 apart
+        X = _data_with_spectrum([1.0, 1e-6, 1e-6 * (1 - 1e-9), 1e-7, 1e-8, 1e-9])
+        with pytest.warns(RuntimeWarning, match=r"eigenvalues 1 and 2 are degenerate"):
+            PCANormalizer(n_components=3).fit(X)
+
+    def test_first_degenerate_pair_is_reported(self) -> None:
+        # Two degenerate pairs: the suggestion must avoid both, not only the later one
+        X = _data_with_spectrum([8.0, 6.0, 6.0, 4.0, 4.0, 1.0])
+        with pytest.warns(RuntimeWarning, match=r"eigenvalues 1 and 2 .*Reduce n_components to 1,") as record:
+            PCANormalizer(n_components=4).fit(X)
+        assert len(record) == 1
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            PCANormalizer(n_components=1).fit(X)
+
+    def test_degeneracy_at_first_eigenvalue_suggests_no_smaller_n_components(self) -> None:
+        X = _data_with_spectrum([6.0, 6.0, 4.0, 1.0])
+        with pytest.warns(RuntimeWarning, match=r"eigenvalues 0 and 1 .*No smaller n_components avoids this") as record:
+            PCANormalizer(n_components=2).fit(X)
+        assert "Reduce n_components to 0" not in str(record[0].message)
+
+    @pytest.mark.parametrize("method", ["fit", "fit_transform"])
+    def test_warning_points_at_the_caller(self, method: str) -> None:
+        X = _data_with_spectrum([8.0, 6.0, 6.0, 4.0, 2.0, 1.0])
+        with pytest.warns(RuntimeWarning, match=r"degenerate") as record:
+            getattr(PCANormalizer(n_components=4), method)(X)
+        assert record[0].filename == __file__

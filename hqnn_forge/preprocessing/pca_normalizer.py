@@ -43,12 +43,15 @@ import numpy as np
 import numpy.typing as npt
 import torch
 
-# Relative eigenvalue gap below which fit warns that the retained basis is not
+# Eigenvalue gap, relative to the largest eigenvalue, below which fit warns that the retained basis is not
 # reproducible.  Chosen from measurement, not intuition: perturbing the
 # covariance by 1e-16 relative (the scale on which two LAPACK builds disagree
-# about the same matrix) rotates the affected components by ~0.002 deg at a gap
+# about the same matrix, i.e. relative to the largest eigenvalue) rotates the affected components by ~0.002 deg at a gap
 # of 1e-12, ~3 deg at 1e-14 and ~20 deg when exactly degenerate, and by nothing
-# measurable at 1e-8.  1e-12 sits safely inside the flat region.
+# measurable at 1e-8.  Rotation scales as ||E|| / gap, and ||E|| scales with
+# the largest eigenvalue, so the gap is measured against that rather than
+# against the pair itself -- otherwise a close pair of small eigenvalues would
+# look well separated.  1e-12 sits safely inside the flat region.
 EIGENVALUE_GAP_WARN: float = 1e-12
 
 
@@ -84,8 +87,8 @@ class PCANormalizer:
         itself build-dependent, which no sign convention can repair.  ``fit``
         checks for this and emits a ``RuntimeWarning`` when two consecutive
         eigenvalues among the retained ones (or at the cutoff) differ by less
-        than ``EIGENVALUE_GAP_WARN`` relative, which in practice means exactly
-        degenerate up to rounding.
+        than ``EIGENVALUE_GAP_WARN`` times the largest eigenvalue, which in
+        practice means exactly degenerate up to rounding.
         The convention is the one scikit-learn's ``svd_flip`` applies with
         ``u_based_decision=False``, reimplemented here rather than depended on.
     explained_variance_ : np.ndarray, shape (n_components,)
@@ -171,6 +174,11 @@ class PCANormalizer:
         exactly as it found it.  An instance that was already fitted keeps that
         fit and stays usable; one that was not stays unfitted.
         """
+        return self._fit(X, stacklevel=3)
+
+    def _fit(self, X: npt.ArrayLike, stacklevel: int) -> "PCANormalizer":
+        # Body of fit, shared with fit_transform so the degeneracy warning's
+        # stacklevel points at the caller of either public method.
         # asarray, not array: float64 input is used as-is rather than copied, so
         # X_arr may share memory with the caller.  Never write into it in place.
         X_arr: npt.NDArray[np.float64] = np.asarray(X, dtype=np.float64)
@@ -292,30 +300,39 @@ class PCANormalizer:
         # rotation is not a sign flip, so step 6 cannot repair it; degeneracy
         # *at* the cutoff additionally makes it arbitrary which component is
         # kept at all.  Hence the gaps between consecutive eigenvalues among the
-        # kept ones and the first excluded one are all checked.  The rank check
-        # above guarantees kept[i] > 0, so the division is safe.  A warning and
+        # kept ones and the first excluded one are all checked.  Gaps are
+        # relative to eigenvalues[0], the scale of the rounding that rotates the
+        # basis (see EIGENVALUE_GAP_WARN); the rank check above guarantees it is
+        # > 0.  The first offending pair is reported, so that n_components=first
+        # keeps only well-separated eigenvalues, cutoff included.  A warning and
         # not an error: the fit is still a valid PCA, it just is not the same
         # one on every platform, which only matters to callers who rely on the
         # components_ contract.
         kept_and_next = eigenvalues[: n_components + 1]
         if kept_and_next.shape[0] > 1:
-            gaps = (kept_and_next[:-1] - kept_and_next[1:]) / kept_and_next[:-1]
-            worst = int(np.argmin(gaps))
-            if gaps[worst] < EIGENVALUE_GAP_WARN:
+            gaps = (kept_and_next[:-1] - kept_and_next[1:]) / eigenvalues[0]
+            degenerate = np.flatnonzero(gaps < EIGENVALUE_GAP_WARN)
+            if degenerate.size:
+                first = int(degenerate[0])
                 where = (
                     "at the n_components cutoff, so which component is retained "
                     "is arbitrary"
-                    if worst == n_components - 1
+                    if first == n_components - 1
                     else "among the retained components"
                 )
+                remedy = (
+                    f"Reduce n_components to {first}, or accept"
+                    if first > 0
+                    else "No smaller n_components avoids this; accept"
+                )
                 warnings.warn(
-                    f"eigenvalues {worst} and {worst + 1} are degenerate "
-                    f"(relative gap {gaps[worst]:.1e} < {EIGENVALUE_GAP_WARN:.0e}) "
-                    f"{where}: components_ and transform are not reproducible "
-                    f"across platforms for this data.  Reduce n_components to "
-                    f"{worst}, or accept a basis that depends on the LAPACK build.",
+                    f"eigenvalues {first} and {first + 1} are degenerate "
+                    f"(gap {gaps[first]:.1e} of the largest eigenvalue < "
+                    f"{EIGENVALUE_GAP_WARN:.0e}) {where}: components_ and "
+                    f"transform are not reproducible across platforms for this "
+                    f"data.  {remedy} a basis that depends on the LAPACK build.",
                     RuntimeWarning,
-                    stacklevel=2,
+                    stacklevel=stacklevel,
                 )
 
         self.mean_ = mean
@@ -428,7 +445,7 @@ class PCANormalizer:
         torch.Tensor
             Transformed tensor, shape ``(n_samples, n_components)``.
         """
-        return self.fit(X).transform(X)
+        return self._fit(X, stacklevel=3).transform(X)
 
     # ------------------------------------------------------------------
     @property
