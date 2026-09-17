@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.11"]
+        python-version: ["3.11", "3.14"]
 
     steps:
     - uses: actions/checkout@v7
@@ -40,17 +40,15 @@ jobs:
   # is tested against the versions it actually changes. --locked additionally fails
   # if uv.lock has drifted out of sync with pyproject.toml.
   #
-  # Both interpreters are run because uv.lock splits the core stack on a
-  # python_full_version >= '3.11' marker: pennylane, pennylane-lightning, numpy,
-  # scipy and friends each have a separate 3.10 and 3.11+ entry. Since pennylane
-  # 0.43+ requires >= 3.11, the 3.10 branch is end-of-line and effectively every
-  # future lock bump lands only in the 3.11+ half — a job pinned to 3.10 would go
-  # green without ever installing the versions the PR changed.
+  # Both interpreters are run because uv.lock resolves per interpreter: the core
+  # stack carries python_full_version markers, so the oldest supported version and
+  # the newest can install different pins from the same lockfile. A job on one
+  # interpreter only would go green without installing the other half of a bump.
   test-locked:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.11"]
+        python-version: ["3.11", "3.14"]
 
     steps:
     - uses: actions/checkout@v7
