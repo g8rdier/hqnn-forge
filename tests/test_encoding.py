@@ -153,16 +153,31 @@ class TestInputValidation:
 
 # Statistical assertions on initialiser output need enough draws to separate
 # the two strategies: per-layer sample count is n_qubits * 3.  At 16 qubits and
-# 16 layers the tolerances below sit at more than twice the worst deviation
-# observed over 5000 seeds (restricted std: 0.091 relative; block-local slope:
-# 0.127; a flat tensor's slope: 0.160), so they hold for any seed rather than
-# relying on INIT_SEED alone.
+# 16 layers every tolerance below clears the worst deviation observed over 5000
+# seeds, so the tests hold for any seed rather than relying on INIT_SEED alone:
+#
+#   restricted std, relative error   worst 0.091  tolerance 0.20  (2.2x)
+#   log-std slope, either strategy   worst 0.160  tolerance 0.25  (1.56x)
+#   block-local intercept, log space worst 0.332  tolerance 0.5   (1.5x)
+#
+# The slope tolerance is two-sided.  For the same seed, block_local_init_ is
+# restricted_normal_init_ rescaled per layer, so its slope is exactly the flat
+# slope minus 0.5: the decay test and its flat-rejection power check measure
+# one statistic, from -0.5 and from 0 respectively.  SLOPE_TOLERANCE must stay
+# inside (0.160, 0.340); 0.25 leaves 1.56x on the decay side and 1.36x on the
+# power side.  Tightening or loosening it moves both tests at once.
 INIT_N_QUBITS = 16
 INIT_N_LAYERS = 16
 INIT_SEED = 0
 STD_TOLERANCE = 0.20      # relative
 SLOPE_TOLERANCE = 0.25    # in log-log space
 INTERCEPT_TOLERANCE = 0.5 # in log space
+# The first/last std ratio compares two single layers, so it needs far more
+# than 48 draws per layer: at 16 qubits rel=0.3 fails for ~4.5% of seeds.  At
+# 256 qubits (768 draws) the worst relative deviation over 5000 seeds is 0.136.
+# The ratio sqrt(L) does not depend on n_qubits.
+RATIO_N_QUBITS = 256
+RATIO_TOLERANCE = 0.3     # relative
 
 
 def _log_std_fit(tensor: torch.Tensor) -> tuple[float, float]:
@@ -235,9 +250,11 @@ class TestBlockLocalInit:
 
     def test_first_layer_wider_than_last(self) -> None:
         """The documented ratio sigma_0 / sigma_{L-1} = sqrt(L)."""
-        tensor = _block_local()
+        torch.manual_seed(INIT_SEED)
+        tensor = torch.empty(INIT_N_LAYERS, RATIO_N_QUBITS, 3)
+        block_local_init_(tensor, n_qubits=RATIO_N_QUBITS)
         ratio = tensor[0].std().item() / tensor[-1].std().item()
-        assert ratio == pytest.approx(math.sqrt(INIT_N_LAYERS), rel=0.3)
+        assert ratio == pytest.approx(math.sqrt(INIT_N_LAYERS), rel=RATIO_TOLERANCE)
 
     def test_returns_same_tensor(self) -> None:
         tensor = torch.empty(2, 4, 3)
