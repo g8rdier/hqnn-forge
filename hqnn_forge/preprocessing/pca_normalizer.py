@@ -180,14 +180,17 @@ class PCANormalizer:
         # TypeError about slice indices.  operator.index accepts int and NumPy
         # integers and rejects floats, integral ones included: 3.0 is not
         # coerced, the caller casts.  bool is an int subclass and would keep
-        # one component for True; nobody means that, so it is rejected too
+        # one component for True; nobody means that, so it is rejected too.
+        # Everything below uses the plain int it returns, never the attribute:
+        # a fixed-width NumPy integer would wrap in the arithmetic of the error
+        # messages (np.uint8(255) + 1 == 0)
         if isinstance(self.n_components, bool):
             raise ValueError(
                 f"n_components={self.n_components!r} is a bool, not an integer.  "
                 f"Provide the number of components to retain."
             )
         try:
-            operator.index(self.n_components)
+            n_components = operator.index(self.n_components)
         except TypeError:
             raise ValueError(
                 f"n_components={self.n_components!r} is not an integer.  "
@@ -196,23 +199,23 @@ class PCANormalizer:
             ) from None
         # Values <= 0 pass both shape checks below and then silently slice off
         # components from the end (-1 keeps all but one)
-        if self.n_components < 1:
+        if n_components < 1:
             raise ValueError(
-                f"n_components={self.n_components} < 1.  Provide a positive "
+                f"n_components={n_components} < 1.  Provide a positive "
                 f"number of components to retain."
             )
-        if n_features < self.n_components:
+        if n_features < n_components:
             raise ValueError(
-                f"n_features={n_features} < n_components={self.n_components}.  "
+                f"n_features={n_features} < n_components={n_components}.  "
                 f"Reduce n_components or provide higher-dimensional data."
             )
         # Centred data has rank <= n_samples - 1, so fewer rows leave some
         # kept components with zero variance
-        if n_samples <= self.n_components:
+        if n_samples <= n_components:
             raise ValueError(
-                f"n_samples={n_samples} <= n_components={self.n_components}.  "
+                f"n_samples={n_samples} <= n_components={n_components}.  "
                 f"Reduce n_components or provide at least "
-                f"{self.n_components + 1} samples."
+                f"{n_components + 1} samples."
             )
 
         # 1. Centre the data.  mean_ is assigned only once the rank check below
@@ -254,7 +257,7 @@ class PCANormalizer:
         # one is not an option either: it would reject full-rank data that
         # merely has a small overall scale.
         rank = int(np.linalg.matrix_rank(X_centered))
-        if rank < self.n_components:
+        if rank < n_components:
             remedy = (
                 "Provide data that varies: every feature is constant, so the "
                 "centred data is all zeros."
@@ -265,16 +268,16 @@ class PCANormalizer:
             )
             raise ValueError(
                 f"centred data has rank {rank} < n_components="
-                f"{self.n_components}, so components {rank}.."
-                f"{self.n_components - 1} have zero variance and transform "
+                f"{n_components}, so components {rank}.."
+                f"{n_components - 1} have zero variance and transform "
                 f"would divide their projections by the 1e-8 epsilon.  {remedy}"
             )
-        kept = eigenvalues[: self.n_components]
+        kept = eigenvalues[:n_components]
 
         self.mean_ = mean
         self.explained_variance_ = kept
         # rows = components (shape: n_components × n_features)
-        components = eigenvectors[:, : self.n_components].T
+        components = eigenvectors[:, :n_components].T
 
         # 6. Canonicalise the sign of each component.  eigh returns eigenvectors
         # up to an arbitrary sign, so another LAPACK build may hand back a

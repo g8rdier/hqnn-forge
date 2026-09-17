@@ -449,6 +449,22 @@ class TestErrors:
         assert pca.components_.shape == (4, N_FEATURES)
         assert pca.transform(X).shape == (N_SAMPLES, 4)
 
+    # Warnings as errors: a fixed-width NumPy integer at its maximum would wrap
+    # in the "at least n_components + 1 samples" message (255 + 1 == 0 for
+    # uint8) and raise an overflow RuntimeWarning instead of the ValueError
+    @pytest.mark.filterwarnings("error")
+    @pytest.mark.parametrize("n_components", [np.uint8(255), np.int8(127)])
+    def test_numpy_integer_n_components_does_not_overflow(self, n_components: np.integer) -> None:
+        n = int(n_components)
+        pca = PCANormalizer(n_components=n_components)
+        X = np.random.default_rng(0).standard_normal((100, n + 45))
+        with pytest.raises(
+            ValueError,
+            match=rf"n_samples=100 <= n_components={n}\..*at least {n + 1} samples",
+        ):
+            pca.fit(X)
+        assert pca.is_fitted_ is False
+
     # Warnings as errors: with a single column np.cov returns a 0-d array and
     # eigh raises LinAlgError (a ValueError subclass) about the array's
     # dimensionality, so the check must fire before it
