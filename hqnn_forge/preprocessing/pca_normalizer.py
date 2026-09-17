@@ -35,6 +35,7 @@ Notes
 
 from __future__ import annotations
 
+import operator
 from typing import Optional
 
 import numpy as np
@@ -49,8 +50,10 @@ class PCANormalizer:
     Parameters
     ----------
     n_components:
-        Number of principal components to retain.  Must be ≥ 1; ``fit``
-        raises ``ValueError`` otherwise.  Default: 8.
+        Number of principal components to retain.  Must be an integer ≥ 1
+        (``int`` or a NumPy integer; ``bool`` and floats, even integral ones
+        such as ``3.0``, are rejected rather than coerced); ``fit`` raises
+        ``ValueError`` otherwise.  Default: 8.
     scale_to_pi:
         If ``True`` (default), rescale standardised components into ``[-π, π]``
         via ``tanh(x) * π`` before returning.  Ensures valid angle-embedding
@@ -125,9 +128,9 @@ class PCANormalizer:
         ----------
         X:
             Training data array-like of shape ``(n_samples, n_features)``.
-            ``n_features`` must be ≥ ``n_components`` and ``n_samples`` must
-            be > ``n_components``.  Not copied when already ``float64``, and
-            never modified.
+            ``n_features`` must be ≥ 2 and ≥ ``n_components``, and
+            ``n_samples`` must be > ``n_components``.  Not copied when already
+            ``float64``, and never modified.
 
         Returns
         -------
@@ -137,8 +140,10 @@ class PCANormalizer:
         Raises
         ------
         ValueError
-            If ``X`` is not 2-D, if ``n_components < 1``, if
-            ``n_features < n_components``, or if ``n_samples <= n_components``
+            If ``X`` is not 2-D, if ``n_features < 2`` (a single column has no
+            covariance to decompose), if ``n_components`` is not an integer or
+            is ``< 1``, if ``n_features < n_components``, or if
+            ``n_samples <= n_components``
             (centred data then has rank below ``n_components``, so some
             components have zero variance).  Also if the centred data has rank
             below ``n_components`` for any other reason -- collinear features,
@@ -159,26 +164,58 @@ class PCANormalizer:
         self._check_2d(X_arr)
 
         n_samples, n_features = X_arr.shape
-        # Checked here rather than in __init__ because the attribute can be
-        # reassigned afterwards.  Values <= 0 pass both shape checks below and
-        # then silently slice off components from the end (-1 keeps all but one)
-        if self.n_components < 1:
+        # A single column clears every check below and then fails inside
+        # numpy: np.cov(..., rowvar=False) returns a 0-d array for it, which
+        # eigh rejects with a message about the array, not about the data
+        if n_features < 2:
             raise ValueError(
-                f"n_components={self.n_components} < 1.  Provide a positive "
+                f"n_features={n_features} < 2.  PCA needs at least two features "
+                f"to have a covariance to decompose; a single feature has "
+                f"nothing to project."
+            )
+
+        # Checked here rather than in __init__ because the attribute can be
+        # reassigned afterwards.  The comparisons below all accept a float, so
+        # a non-integer would clear them and fail on the top-k slice with a
+        # TypeError about slice indices.  operator.index accepts int and NumPy
+        # integers and rejects floats, integral ones included: 3.0 is not
+        # coerced, the caller casts.  bool is an int subclass and would keep
+        # one component for True; nobody means that, so it is rejected too.
+        # Everything below uses the plain int it returns, never the attribute:
+        # a fixed-width NumPy integer would wrap in the arithmetic of the error
+        # messages (np.uint8(255) + 1 == 0)
+        if isinstance(self.n_components, bool):
+            raise ValueError(
+                f"n_components={self.n_components!r} is a bool, not an integer.  "
+                f"Provide the number of components to retain."
+            )
+        try:
+            n_components = operator.index(self.n_components)
+        except TypeError:
+            raise ValueError(
+                f"n_components={self.n_components!r} is not an integer.  "
+                f"Provide an int (or NumPy integer); a float such as 3.0 is "
+                f"rejected rather than coerced."
+            ) from None
+        # Values <= 0 pass both shape checks below and then silently slice off
+        # components from the end (-1 keeps all but one)
+        if n_components < 1:
+            raise ValueError(
+                f"n_components={n_components} < 1.  Provide a positive "
                 f"number of components to retain."
             )
-        if n_features < self.n_components:
+        if n_features < n_components:
             raise ValueError(
-                f"n_features={n_features} < n_components={self.n_components}.  "
+                f"n_features={n_features} < n_components={n_components}.  "
                 f"Reduce n_components or provide higher-dimensional data."
             )
         # Centred data has rank <= n_samples - 1, so fewer rows leave some
         # kept components with zero variance
-        if n_samples <= self.n_components:
+        if n_samples <= n_components:
             raise ValueError(
-                f"n_samples={n_samples} <= n_components={self.n_components}.  "
+                f"n_samples={n_samples} <= n_components={n_components}.  "
                 f"Reduce n_components or provide at least "
-                f"{self.n_components + 1} samples."
+                f"{n_components + 1} samples."
             )
 
         # 1. Centre the data.  mean_ is assigned only once the rank check below
@@ -220,7 +257,7 @@ class PCANormalizer:
         # one is not an option either: it would reject full-rank data that
         # merely has a small overall scale.
         rank = int(np.linalg.matrix_rank(X_centered))
-        if rank < self.n_components:
+        if rank < n_components:
             remedy = (
                 "Provide data that varies: every feature is constant, so the "
                 "centred data is all zeros."
@@ -231,16 +268,16 @@ class PCANormalizer:
             )
             raise ValueError(
                 f"centred data has rank {rank} < n_components="
-                f"{self.n_components}, so components {rank}.."
-                f"{self.n_components - 1} have zero variance and transform "
+                f"{n_components}, so components {rank}.."
+                f"{n_components - 1} have zero variance and transform "
                 f"would divide their projections by the 1e-8 epsilon.  {remedy}"
             )
-        kept = eigenvalues[: self.n_components]
+        kept = eigenvalues[:n_components]
 
         self.mean_ = mean
         self.explained_variance_ = kept
         # rows = components (shape: n_components × n_features)
-        components = eigenvectors[:, : self.n_components].T
+        components = eigenvectors[:, :n_components].T
 
         # 6. Canonicalise the sign of each component.  eigh returns eigenvectors
         # up to an arbitrary sign, so another LAPACK build may hand back a
