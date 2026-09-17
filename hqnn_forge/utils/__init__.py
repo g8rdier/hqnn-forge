@@ -11,6 +11,7 @@ compute_class_weights   Computes inverse-frequency class weights from a label te
 eval_mode               Context manager: eval mode for a block, submodule modes restored.
 save_checkpoint         Write a classifier's class, constructor arguments and weights.
 load_checkpoint         Rebuild a classifier from such a file.
+disable_quantum_layer   Context manager: replace the quantum layer's output with a constant.
 """
 
 from hqnn_forge.utils.imbalance import (
@@ -18,6 +19,7 @@ from hqnn_forge.utils.imbalance import (
     compute_class_weights,
     weighted_bce_loss,
 )
+from hqnn_forge.utils.ablation import disable_quantum_layer
 from hqnn_forge.utils.checkpoint import load_checkpoint, save_checkpoint
 from hqnn_forge.utils.modes import eval_mode
 
@@ -25,6 +27,7 @@ __all__: list[str] = [
     "FocalLoss",
     "weighted_bce_loss",
     "compute_class_weights",
+    "disable_quantum_layer",
     "eval_mode",
     "load_checkpoint",
     "save_checkpoint",
