@@ -14,6 +14,9 @@ parameter_efficiency     Score per thousand trainable parameters.
 wilcoxon_signed_rank     Paired signed-rank test with its attainable p-value floor.
 WilcoxonResult           Result of wilcoxon_signed_rank.
 rank_biserial_correlation  Effect size for the paired comparison.
+plots                    Submodule: confusion matrix, fold boxplot, efficiency
+                         frontier (needs matplotlib; import it explicitly:
+                         ``from hqnn_forge.evaluation import plots``).
 """
 
 from hqnn_forge.evaluation.statistics import (
