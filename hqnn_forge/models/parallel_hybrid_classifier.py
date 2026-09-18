@@ -138,9 +138,10 @@ class ParallelHybridClassifier(nn.Module):
         Pauli axis of the angle embedding, ``"X"`` (default), ``"Y"`` or ``"Z"``.
         Angle encoding only.
     entangler:
-        ``"ring"`` (default: CNOT ring then ``Rot``) or ``"strongly_entangling"``
+        ``"ring"`` (default: CNOT ring then ``Rot``), ``"strongly_entangling"``
         (``qml.StronglyEntanglingLayers``: ``Rot`` then a CNOT ring of growing
-        range).  See :func:`hqnn_forge.encoding.angle_embedding.apply_variational_layers`.
+        range) or ``"brickwork"`` (nearest-neighbour CNOT pairs, local light
+        cones).  See :func:`hqnn_forge.encoding.angle_embedding.apply_variational_layers`.
     readout:
         ``"all"`` (default): the head reads every ⟨Z_i⟩.  ``"first"``: ⟨Z_0⟩
         only, so the head is ``Linear(1 → 1)``.

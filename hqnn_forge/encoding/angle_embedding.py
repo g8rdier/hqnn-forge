@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 RotationAxis = Literal["X", "Y", "Z"]
 DiffMethod   = Literal["adjoint", "parameter-shift", "backprop", "finite-diff"]
 DeviceName   = Literal["lightning.qubit", "default.qubit"]
-Entangler    = Literal["ring", "strongly_entangling"]
+Entangler    = Literal["ring", "strongly_entangling", "brickwork"]
 Readout      = Literal["all", "first"]
 
 
@@ -76,20 +76,36 @@ def apply_variational_layers(
       ``Rot`` on every qubit **then** a CNOT ring whose range grows with the
       layer index, ``r = ℓ mod (n-1) + 1``.  This is the block the published
       SHNN uses (Schuld et al. 2020, PennyLane template).
+    * ``"brickwork"``: nearest-neighbour CNOTs on the even pairs
+      ``(0,1), (2,3), …`` then the odd pairs ``(1,2), (3,4), …`` (no
+      wrap-around), then ``Rot`` on every qubit.  ``n_qubits - 1`` CNOTs per
+      layer instead of ``n_qubits``.  Unlike the two cascades above, the
+      backward light cone of a single-qubit readout grows by at most two
+      qubits per layer, so the per-qubit ⟨Z_i⟩ readouts stay *local* costs
+      at shallow depth in the sense of Cerezo et al. (2021); see the
+      measurements in :mod:`hqnn_forge.initializers`.
 
-    Both take ``weights`` of shape ``(n_layers, n_qubits, 3)`` and use
-    ``n_layers · n_qubits`` ``Rot`` and CNOT gates; they differ in gate order
-    and, from the second layer on, in which qubits the CNOTs connect.
+    All three take ``weights`` of shape ``(n_layers, n_qubits, 3)`` and use
+    ``n_layers · n_qubits`` ``Rot`` gates; they differ in the CNOT pattern
+    and in gate order.
     """
     if entangler == "strongly_entangling":
         qml.StronglyEntanglingLayers(weights, wires=range(n_qubits))
         return
-    if entangler != "ring":
-        raise ValueError(f"entangler must be 'ring' or 'strongly_entangling'; got {entangler!r}.")
+    if entangler not in ("ring", "brickwork"):
+        raise ValueError(
+            f"entangler must be 'ring', 'strongly_entangling' or 'brickwork'; got {entangler!r}."
+        )
     for layer in range(n_layers):
-        # CNOT entangling ring (cyclic: last qubit → first qubit)
-        for qubit in range(n_qubits):
-            qml.CNOT(wires=[qubit, (qubit + 1) % n_qubits])
+        if entangler == "ring":
+            # CNOT entangling ring (cyclic: last qubit → first qubit)
+            for qubit in range(n_qubits):
+                qml.CNOT(wires=[qubit, (qubit + 1) % n_qubits])
+        else:
+            # Brickwork: even nearest-neighbour pairs, then odd pairs
+            for start in (0, 1):
+                for qubit in range(start, n_qubits - 1, 2):
+                    qml.CNOT(wires=[qubit, qubit + 1])
         # Per-qubit SU(2) rotation block
         for qubit in range(n_qubits):
             qml.Rot(
@@ -206,9 +222,10 @@ def _make_angle_embedding_circuit(
     rotation:
         Pauli axis used by AngleEmbedding: ``"X"`` | ``"Y"`` | ``"Z"``.
     entangler:
-        ``"ring"`` (steps 2 and 3 above) or ``"strongly_entangling"``
+        ``"ring"`` (steps 2 and 3 above), ``"strongly_entangling"``
         (``qml.StronglyEntanglingLayers``: Rot first, then a CNOT ring of
-        range ``ℓ mod (n-1) + 1``).  See :func:`apply_variational_layers`.
+        range ``ℓ mod (n-1) + 1``) or ``"brickwork"`` (nearest-neighbour
+        CNOT pairs, no wrap-around).  See :func:`apply_variational_layers`.
     readout:
         ``"all"`` (step 4 above) or ``"first"`` (``[⟨Z_0⟩]`` only, as in the
         published SHNN).
@@ -219,8 +236,10 @@ def _make_angle_embedding_circuit(
         A plain Python function suitable for ``@qml.qnode`` decoration.
     """
     readout_wires(n_qubits, readout)  # validate early
-    if entangler not in ("ring", "strongly_entangling"):
-        raise ValueError(f"entangler must be 'ring' or 'strongly_entangling'; got {entangler!r}.")
+    if entangler not in ("ring", "strongly_entangling", "brickwork"):
+        raise ValueError(
+            f"entangler must be 'ring', 'strongly_entangling' or 'brickwork'; got {entangler!r}."
+        )
 
     def circuit(
         inputs: torch.Tensor,
@@ -317,8 +336,8 @@ def build_encoding_qnode(
         - ``"backprop"``        — auto-diff through simulator; requires default.qubit.
         - ``"finite-diff"``     — approximate; avoid for training.
     entangler:
-        ``"ring"`` (default) or ``"strongly_entangling"``; see
-        :func:`apply_variational_layers`.
+        ``"ring"`` (default), ``"strongly_entangling"`` or ``"brickwork"``;
+        see :func:`apply_variational_layers`.
     readout:
         ``"all"`` (default): ⟨Z_i⟩ on every qubit.  ``"first"``: ⟨Z_0⟩ only.
 
@@ -415,8 +434,8 @@ class QuantumEncodingLayer(nn.Module):
         Gradient method.  Use ``"adjoint"`` with ``lightning.qubit`` for
         exact, efficient gradients during state-vector simulation.
     entangler:
-        ``"ring"`` (default) or ``"strongly_entangling"``; see
-        :func:`apply_variational_layers`.  Same parameter count either way.
+        ``"ring"`` (default), ``"strongly_entangling"`` or ``"brickwork"``;
+        see :func:`apply_variational_layers`.  Same parameter count for all.
     readout:
         ``"all"`` (default): the layer returns ``(batch, n_qubits)``.
         ``"first"``: ⟨Z_0⟩ only, ``(batch, 1)``, the published SHNN readout.

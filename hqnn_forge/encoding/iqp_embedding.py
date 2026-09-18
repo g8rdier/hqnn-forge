@@ -77,8 +77,10 @@ def _make_iqp_embedding_circuit(
     :func:`~hqnn_forge.encoding.angle_embedding.measure_z`.
     """
     readout_wires(n_qubits, readout)  # validate early
-    if entangler not in ("ring", "strongly_entangling"):
-        raise ValueError(f"entangler must be 'ring' or 'strongly_entangling'; got {entangler!r}.")
+    if entangler not in ("ring", "strongly_entangling", "brickwork"):
+        raise ValueError(
+            f"entangler must be 'ring', 'strongly_entangling' or 'brickwork'; got {entangler!r}."
+        )
     # All-to-all entangling pattern, the same as qml.IQPEmbedding(pattern=None)
     pairs = list(combinations(range(n_qubits), 2))
 

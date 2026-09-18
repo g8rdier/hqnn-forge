@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - HybridBinaryClassifier end-to-end model
 - Smoke tests for quantum encoding layer
 - Quick-start example for training
+- `entangler="brickwork"`: nearest-neighbour CNOT pairs without wrap-around, so single-qubit
+  readouts keep local light cones at shallow depth
 - `entangler` (`"ring"` / `"strongly_entangling"`) and `readout` (`"all"` / `"first"`) on the
   encoding layers; `embedding_rotation`, `entangler`, `readout`, `encoder_activation` and
   `init_strategy="normal"` on the classifiers, and `HybridBinaryClassifier.published_shnn()` for
