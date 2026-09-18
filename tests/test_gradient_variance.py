@@ -38,6 +38,46 @@ def _gen(seed: int = 0) -> torch.Generator:
     return torch.Generator().manual_seed(seed)
 
 
+class TestMeasuredInitClaims:
+    """
+    The statements in hqnn_forge.initializers.restricted_variance's
+    "measured" section (#122), pinned with the diagnostic.  Thresholds sit
+    well inside the 5-seed × 300-draw measurements quoted there: at 8 qubits
+    the restricted/uniform ratio is 1.67–1.89 with zero input and 0.80–1.12
+    with inputs in (-π, π), and both inits lose ~9x from 4 to 8 qubits.
+    """
+
+    def test_no_benefit_with_inputs_spread_over_pi(self) -> None:
+        """What the classifiers feed the circuit: restricted ≈ uniform."""
+        layer = _layer(8)
+        uniform = gradient_variance(layer, n_samples=200, input_scale=math.pi, generator=_gen())
+        restricted = gradient_variance(
+            layer, n_samples=200, init="restricted", input_scale=math.pi, generator=_gen()
+        )
+        ratio = restricted.mean_variance / uniform.mean_variance
+        assert 0.6 < ratio < 1.5, ratio
+
+    def test_constant_factor_benefit_near_zero_input(self) -> None:
+        """Near-zero input: more variance, but by a factor, not an order of magnitude."""
+        layer = _layer(8)
+        uniform = gradient_variance(layer, n_samples=200, input_scale=0.0, generator=_gen())
+        restricted = gradient_variance(
+            layer, n_samples=200, init="restricted", input_scale=0.0, generator=_gen()
+        )
+        ratio = restricted.mean_variance / uniform.mean_variance
+        assert 1.3 < ratio < 3.0, ratio
+
+    def test_restricted_init_decays_with_qubits_like_uniform(self) -> None:
+        """The init does not change the exponential decay: 4 → 8 qubits loses > 4x."""
+        results = {
+            n: gradient_variance(
+                _layer(n), n_samples=200, init="restricted", input_scale=math.pi, generator=_gen()
+            ).mean_variance
+            for n in (4, 8)
+        }
+        assert results[4] > 4 * results[8], results
+
+
 class TestPhysics:
     def test_uniform_init_variance_decays_with_qubits(self) -> None:
         small = gradient_variance(_layer(2), n_samples=100, generator=_gen())

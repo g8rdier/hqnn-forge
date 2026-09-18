@@ -33,6 +33,44 @@ particular gradient variance.  Grant et al. (2019) is a different strategy
 (identity blocks: parameters chosen so that consecutive blocks compose to
 the identity) and is not implemented here; it is cited for contrast.
 
+What the initialiser does for this library's circuits (measured)
+----------------------------------------------------------------
+The local-cost argument above does not apply to the library's default
+circuit: its CNOT ring is a cascade, so the backward light cone of every
+⟨Z_i⟩ spans all n qubits after one layer and the readouts behave as global
+costs.  Measured with :func:`hqnn_forge.diagnostics.gradient_variance` on
+``QuantumEncodingLayer`` (2 layers, cost ⟨Z_0⟩, ``default.qubit``, mean
+per-weight gradient variance over 5 seeds × 300 draws of weights and inputs),
+the ratio of restricted-init to uniform-init variance is:
+
+    inputs uniform in   n=4    n=6    n=8
+    {0}                 1.09   1.52   1.75
+    ±π/4                1.00   1.20   1.53
+    ±π                  0.97   0.97   1.00     (5-seed range at n=8: 0.80–1.12)
+
+and the uniform-init variance itself at ±π falls 0.0153 → 0.00428 → 0.00166
+from 4 to 8 qubits, about 3x per two qubits, with the restricted init
+following the same curve (0.0149 → 0.0042 → 0.0017).
+
+So:
+
+* With inputs spread over (-π, π), which is what both classifiers feed the
+  circuit (``tanh(·)·π``) and what ``PCANormalizer(scale_to_pi=True)``
+  produces, the initialiser makes **no measurable difference**: the angle
+  embedding already randomises the state, and shrinking the weight angles
+  cannot bring it back near the identity.
+* With inputs near zero it keeps a **constant factor** more gradient
+  variance (1.5–1.8x at 8 qubits), and the factor grows with n.
+* It does **not** change the exponential decay with qubit count under either
+  input range; that is set by the circuit, not the initialisation.
+
+The initialisers are kept as the default because they are harmless and
+cheap, and because the ``scale`` argument gives a one-parameter handle on
+the initial angle spread.  They should not be relied on for trainability at
+larger qubit counts; a locality-preserving entangler is the lever for that
+(see the brickwork entangler issue).  ``tests/test_gradient_variance.py``
+pins the three statements above so a change that alters them is noticed.
+
 Functions
 ---------
 restricted_normal_init_     In-place; fills a tensor with restricted-normal values.
@@ -191,7 +229,7 @@ def apply_restricted_init(
     scale: float = math.pi,
 ) -> None:
     """
-    Apply barren-plateau-safe initialisation to **all parameters** in *module*
+    Apply the small-angle initialisation to **all parameters** in *module*
     whose shape starts with ``(n_layers, ...)``.
 
     This is a convenience wrapper; for fine-grained control call

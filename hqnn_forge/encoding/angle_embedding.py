@@ -20,8 +20,13 @@ Design Rationale
   single forward + backward pass and scales as O(p) in the number of parameters p,
   making it strictly superior to the parameter-shift rule for state-vector sims.
 
-* **Barren Plateau Avoidance** — weights are *not* initialised here; callers should
-  use `hqnn_forge.initializers.restricted_normal_init_` on the returned layer.
+* **Initialisation** — weights are *not* initialised here; callers should use
+  `hqnn_forge.initializers.restricted_normal_init_` on the returned layer.  Note
+  what that buys for this circuit (measured, see `hqnn_forge.diagnostics`): a
+  constant-factor gain in initial gradient variance, not an escape from its
+  exponential decay with qubit count.  The cascaded CNOT ring puts every qubit
+  in the backward light cone of each ⟨Z_i⟩ within one layer, so the per-qubit
+  readouts are global costs in the sense of Cerezo et al. (2021).
 
 References
 ----------
@@ -119,10 +124,13 @@ def _make_angle_embedding_circuit(
        → RX(x_i) on wire i, ∀ i ∈ {0, …, n_qubits-1}.
 
     2. **CNOT entangling ring**:
-       CNOT(i → i+1 mod n) for i ∈ {0, …, n_qubits-1}.
-       This creates a cyclic entanglement graph ensuring all-to-all reachability
-       within a single layer and avoids "barren plateau–inducing" global 2-designs
-       compared to random full entanglers.
+       CNOT(i → i+1 mod n) for i ∈ {0, …, n_qubits-1}, applied as a cascade.
+       This creates a cyclic entanglement graph with all-to-all reachability
+       within a single layer.  The flip side is that the backward light cone
+       of every single-qubit readout already spans all n qubits after one
+       layer (Z_0 ↦ Z_1⋯Z_{n-1} in the Heisenberg picture), so the ⟨Z_i⟩
+       readouts do not enjoy the local-cost gradient bounds of Cerezo et al.
+       (2021); see `hqnn_forge.initializers` for what is measured instead.
 
     3. **Per-qubit SU(2) rotation block**:
        ``qml.Rot(φ, θ, ω, wires=i)`` applies Rz(ω)·Ry(θ)·Rz(φ), covering the
@@ -323,8 +331,9 @@ class QuantumEncodingLayer(nn.Module):
     +-----------+------------------------------------+
 
     **Important**: Call ``hqnn_forge.initializers.restricted_normal_init_``
-    on ``layer.qlayer.weights`` immediately after construction to obtain
-    barren-plateau-safe initial values (see :mod:`hqnn_forge.initializers`).
+    on ``layer.qlayer.weights`` immediately after construction for the
+    library's small-angle initial values (see :mod:`hqnn_forge.initializers`
+    for what they do and do not guarantee).
 
     Parameters
     ----------
