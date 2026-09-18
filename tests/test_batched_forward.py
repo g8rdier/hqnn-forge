@@ -40,7 +40,9 @@ DEVICE_CONFIGS = [
         "lightning.qubit",
         "adjoint",
         id="lightning.qubit/adjoint",
-        marks=pytest.mark.skipif(not _lightning_available(), reason="pennylane-lightning not installed"),
+        marks=pytest.mark.skipif(
+            not _lightning_available(), reason="pennylane-lightning not installed"
+        ),
     ),
 ]
 

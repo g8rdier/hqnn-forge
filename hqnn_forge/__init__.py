@@ -11,7 +11,7 @@ package so user code stays concise:
     from hqnn_forge.utils     import FocalLoss
 """
 
-from importlib.metadata import version, PackageNotFoundError
+from importlib.metadata import PackageNotFoundError, version
 
 try:
     __version__: str = version("hqnn-forge")

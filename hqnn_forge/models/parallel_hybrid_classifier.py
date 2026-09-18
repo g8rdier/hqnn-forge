@@ -88,8 +88,8 @@ import torch.nn as nn
 from hqnn_forge.encoding.angle_embedding import QuantumEncodingLayer
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.initializers.restricted_variance import (
-    restricted_normal_init_,
     block_local_init_,
+    restricted_normal_init_,
 )
 from hqnn_forge.utils.modes import eval_mode
 
@@ -162,11 +162,11 @@ class ParallelHybridClassifier(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.n_input_features     = n_input_features
-        self.n_qubits             = n_qubits
-        self.n_layers             = n_layers
+        self.n_input_features = n_input_features
+        self.n_qubits = n_qubits
+        self.n_layers = n_layers
         self.classical_hidden_dim = classical_hidden_dim
-        self.init_strategy        = init_strategy
+        self.init_strategy = init_strategy
         self.use_classical_encoder = use_classical_encoder
 
         # ── Classical branch (MLP) ────────────────────────────────────────
@@ -246,9 +246,7 @@ class ParallelHybridClassifier(nn.Module):
         if self.init_strategy == "block_local":
             block_local_init_(weights.data, n_qubits=self.n_qubits)
         else:
-            restricted_normal_init_(
-                weights.data, n_qubits=self.n_qubits, n_layers=self.n_layers
-            )
+            restricted_normal_init_(weights.data, n_qubits=self.n_qubits, n_layers=self.n_layers)
 
     # ------------------------------------------------------------------
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -269,22 +267,22 @@ class ParallelHybridClassifier(nn.Module):
             for probabilities, or pass directly to ``FocalLoss``.
         """
         # Classical branch
-        classical_out = self.classical_branch(x)   # (B, classical_hidden_dim)
+        classical_out = self.classical_branch(x)  # (B, classical_hidden_dim)
 
         # Quantum branch: classical projection + activation
-        q = self.classical_encoder(x)               # (B, n_qubits)
+        q = self.classical_encoder(x)  # (B, n_qubits)
         # Tanh output (-1, 1) → (-π, π).  Bypassed input is already in (-π, π);
         # scaling it again would alias angles mod 2π.
         if self.use_classical_encoder:
             q = q * torch.pi
-        quantum_out = self.quantum_layer(q)          # (B, n_qubits), values ∈ [-1, 1]
+        quantum_out = self.quantum_layer(q)  # (B, n_qubits), values ∈ [-1, 1]
 
         # Fuse branches
         fused = torch.cat([classical_out, quantum_out], dim=-1)
         fused = self.dropout(fused)
 
         # Classification head
-        return self.head(fused)                     # (B, 1)
+        return self.head(fused)  # (B, 1)
 
     # ------------------------------------------------------------------
     @torch.no_grad()
@@ -338,7 +336,8 @@ class ParallelHybridClassifier(nn.Module):
     def count_parameters(self, trainable_only: bool = True) -> int:
         """Return total parameter count (quantum + classical, both branches)."""
         params = (
-            self.parameters() if not trainable_only
+            self.parameters()
+            if not trainable_only
             else (p for p in self.parameters() if p.requires_grad)
         )
         return sum(p.numel() for p in params)

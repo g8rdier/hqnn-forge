@@ -59,17 +59,14 @@ init_strategy:
 
 from __future__ import annotations
 
-from typing import Optional
-
 import torch
 import torch.nn as nn
 
 from hqnn_forge.encoding.angle_embedding import QuantumEncodingLayer
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.initializers.restricted_variance import (
-    apply_restricted_init,
-    restricted_normal_init_,
     block_local_init_,
+    restricted_normal_init_,
 )
 from hqnn_forge.utils.modes import eval_mode
 
@@ -135,9 +132,9 @@ class HybridBinaryClassifier(nn.Module):
         super().__init__()
 
         self.n_input_features = n_input_features
-        self.n_qubits         = n_qubits
-        self.n_layers         = n_layers
-        self.init_strategy    = init_strategy
+        self.n_qubits = n_qubits
+        self.n_layers = n_layers
+        self.init_strategy = init_strategy
         self.use_classical_encoder = use_classical_encoder
 
         # ── Classical encoder ─────────────────────────────────────────────
@@ -197,9 +194,7 @@ class HybridBinaryClassifier(nn.Module):
         if self.init_strategy == "block_local":
             block_local_init_(weights.data, n_qubits=self.n_qubits)
         else:
-            restricted_normal_init_(
-                weights.data, n_qubits=self.n_qubits, n_layers=self.n_layers
-            )
+            restricted_normal_init_(weights.data, n_qubits=self.n_qubits, n_layers=self.n_layers)
 
     # ------------------------------------------------------------------
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -218,7 +213,7 @@ class HybridBinaryClassifier(nn.Module):
             for probabilities, or pass directly to ``FocalLoss``.
         """
         # Classical projection + activation
-        x = self.classical_encoder(x)        # (B, n_qubits)
+        x = self.classical_encoder(x)  # (B, n_qubits)
 
         # Tanh output (-1, 1) → (-π, π).  Bypassed input is already in (-π, π);
         # scaling it again would alias angles mod 2π.
@@ -226,13 +221,13 @@ class HybridBinaryClassifier(nn.Module):
             x = x * torch.pi
 
         # Quantum feature map
-        x = self.quantum_layer(x)            # (B, n_qubits), values ∈ [-1, 1]
+        x = self.quantum_layer(x)  # (B, n_qubits), values ∈ [-1, 1]
 
         # Regularisation
         x = self.dropout(x)
 
         # Classification head
-        return self.head(x)                  # (B, 1)
+        return self.head(x)  # (B, 1)
 
     # ------------------------------------------------------------------
     @torch.no_grad()
@@ -286,7 +281,8 @@ class HybridBinaryClassifier(nn.Module):
     def count_parameters(self, trainable_only: bool = True) -> int:
         """Return total parameter count (quantum + classical)."""
         params = (
-            self.parameters() if not trainable_only
+            self.parameters()
+            if not trainable_only
             else (p for p in self.parameters() if p.requires_grad)
         )
         return sum(p.numel() for p in params)

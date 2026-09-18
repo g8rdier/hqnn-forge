@@ -36,10 +36,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 # ---------------------------------------------------------------------------
 # Focal Loss
 # ---------------------------------------------------------------------------
+
 
 class FocalLoss(nn.Module):
     """
@@ -94,8 +94,8 @@ class FocalLoss(nn.Module):
         if reduction not in ("mean", "sum", "none"):
             raise ValueError(f"reduction must be 'mean', 'sum', or 'none'; got {reduction!r}.")
 
-        self.alpha     = alpha
-        self.gamma     = gamma
+        self.alpha = alpha
+        self.gamma = gamma
         self.reduction = reduction
 
     def forward(
@@ -118,7 +118,7 @@ class FocalLoss(nn.Module):
         torch.Tensor
             Scalar loss if ``reduction != "none"``, else per-sample tensor.
         """
-        logits  = logits.view(-1)
+        logits = logits.view(-1)
         targets = targets.view(-1).float()
 
         # Binary cross-entropy (numerically stable via log-sum-exp)
@@ -126,14 +126,14 @@ class FocalLoss(nn.Module):
 
         # p_t: probability assigned to the correct class
         probs = torch.sigmoid(logits)
-        p_t   = probs * targets + (1.0 - probs) * (1.0 - targets)
+        p_t = probs * targets + (1.0 - probs) * (1.0 - targets)
 
         # α_t: class-aware alpha weight
         alpha_t = self.alpha * targets + (1.0 - self.alpha) * (1.0 - targets)
 
         # Focal modulation
         focal_weight = (1.0 - p_t) ** self.gamma
-        focal_loss   = alpha_t * focal_weight * bce
+        focal_loss = alpha_t * focal_weight * bce
 
         if self.reduction == "mean":
             return focal_loss.mean()
@@ -148,6 +148,7 @@ class FocalLoss(nn.Module):
 # ---------------------------------------------------------------------------
 # Inverse-frequency weighted BCE (functional)
 # ---------------------------------------------------------------------------
+
 
 def compute_class_weights(
     labels: torch.Tensor,
@@ -186,8 +187,8 @@ def compute_class_weights(
     """
     labels = labels.view(-1).float()
     n_total = labels.numel()
-    n_pos   = labels.sum().item()
-    n_neg   = n_total - n_pos
+    n_pos = labels.sum().item()
+    n_neg = n_total - n_pos
 
     w_pos = n_total / (2.0 * n_pos + smooth)
     w_neg = n_total / (2.0 * n_neg + smooth)
@@ -230,7 +231,7 @@ def weighted_bce_loss(
     >>> cw   = compute_class_weights(y)
     >>> weighted_bce_loss(pred, y, cw)
     """
-    logits  = logits.view(-1)
+    logits = logits.view(-1)
     targets = targets.view(-1).float()
 
     # Map each sample's label to its class weight

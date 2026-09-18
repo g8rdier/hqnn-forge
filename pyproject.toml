@@ -66,6 +66,18 @@ hqnn_forge = ["py.typed"]
 line-length = 99
 target-version = "py311"
 
+[tool.ruff.lint]
+ignore = [
+    # `import torch.nn as nn` / `import torch.optim as optim` is the PyTorch
+    # idiom used throughout; `from torch import nn` reads as a different thing
+    "PLR0402",
+    # class-level constants in tests are read-only fixtures, not shared state
+    "RUF012",
+    # PCANormalizer.fit rejects a bool n_components with ValueError on purpose:
+    # bool is an int subclass, so it is a value check, not a type check
+    "TRY004",
+]
+
 [tool.mypy]
 # 3.12, not the 3.11 floor: the numpy stubs use the PEP 695 `type` statement,
 # which mypy only accepts at a target of 3.12 or later (see #102)

@@ -13,7 +13,6 @@ import torch
 
 from hqnn_forge.models import ParallelHybridClassifier
 
-
 BATCH = 8
 N_QUBITS = 4
 N_LAYERS = 2
@@ -49,7 +48,9 @@ def random_raw_batch() -> torch.Tensor:
 
 
 class TestForwardShape:
-    def test_output_shape(self, classifier: ParallelHybridClassifier, random_raw_batch: torch.Tensor) -> None:
+    def test_output_shape(
+        self, classifier: ParallelHybridClassifier, random_raw_batch: torch.Tensor
+    ) -> None:
         out = classifier(random_raw_batch)
         assert out.shape == (BATCH, 1)
 
@@ -60,28 +61,38 @@ class TestForwardShape:
 
 
 class TestPredictProba:
-    def test_output_in_zero_one(self, classifier: ParallelHybridClassifier, random_raw_batch: torch.Tensor) -> None:
+    def test_output_in_zero_one(
+        self, classifier: ParallelHybridClassifier, random_raw_batch: torch.Tensor
+    ) -> None:
         probs = classifier.predict_proba(random_raw_batch)
         assert probs.min().item() >= 0.0 - 1e-6
         assert probs.max().item() <= 1.0 + 1e-6
 
-    def test_output_shape(self, classifier: ParallelHybridClassifier, random_raw_batch: torch.Tensor) -> None:
+    def test_output_shape(
+        self, classifier: ParallelHybridClassifier, random_raw_batch: torch.Tensor
+    ) -> None:
         probs = classifier.predict_proba(random_raw_batch)
         assert probs.shape == (BATCH,)
 
-    def test_no_grad(self, classifier: ParallelHybridClassifier, random_raw_batch: torch.Tensor) -> None:
+    def test_no_grad(
+        self, classifier: ParallelHybridClassifier, random_raw_batch: torch.Tensor
+    ) -> None:
         probs = classifier.predict_proba(random_raw_batch)
         assert not probs.requires_grad
 
 
 class TestPredict:
-    def test_returns_binary(self, classifier: ParallelHybridClassifier, random_raw_batch: torch.Tensor) -> None:
+    def test_returns_binary(
+        self, classifier: ParallelHybridClassifier, random_raw_batch: torch.Tensor
+    ) -> None:
         preds = classifier.predict(random_raw_batch)
         unique_vals = torch.unique(preds)
         for v in unique_vals:
             assert v.item() in (0, 1)
 
-    def test_output_shape(self, classifier: ParallelHybridClassifier, random_raw_batch: torch.Tensor) -> None:
+    def test_output_shape(
+        self, classifier: ParallelHybridClassifier, random_raw_batch: torch.Tensor
+    ) -> None:
         preds = classifier.predict(random_raw_batch)
         assert preds.shape == (BATCH,)
         assert preds.dtype == torch.long
@@ -131,12 +142,14 @@ class TestParameterCount:
         a mis-sized head or a wrongly wired branch — this does.
         """
         branch = (
-            N_RAW_FEATURES * CLASSICAL_HIDDEN_DIM + CLASSICAL_HIDDEN_DIM       # Linear 1
-            + CLASSICAL_HIDDEN_DIM * CLASSICAL_HIDDEN_DIM + CLASSICAL_HIDDEN_DIM  # Linear 2
+            N_RAW_FEATURES * CLASSICAL_HIDDEN_DIM
+            + CLASSICAL_HIDDEN_DIM  # Linear 1
+            + CLASSICAL_HIDDEN_DIM * CLASSICAL_HIDDEN_DIM
+            + CLASSICAL_HIDDEN_DIM  # Linear 2
         )
         encoder = N_RAW_FEATURES * N_QUBITS + N_QUBITS
         quantum = N_LAYERS * N_QUBITS * 3
-        head    = (CLASSICAL_HIDDEN_DIM + N_QUBITS) * 1 + 1
+        head = (CLASSICAL_HIDDEN_DIM + N_QUBITS) * 1 + 1
 
         expected = branch + encoder + quantum + head
         assert expected == 207, "test constants drifted from the documented config"
@@ -346,9 +359,13 @@ class TestInitStrategies:
 class TestEncodingTypes:
     def test_angle_encoding(self) -> None:
         model = ParallelHybridClassifier(
-            n_input_features=4, n_qubits=4, n_layers=1,
-            use_classical_encoder=False, device_name="default.qubit",
-            diff_method="parameter-shift", encoding_type="angle",
+            n_input_features=4,
+            n_qubits=4,
+            n_layers=1,
+            use_classical_encoder=False,
+            device_name="default.qubit",
+            diff_method="parameter-shift",
+            encoding_type="angle",
         )
         x = torch.randn(2, 4)
         out = model(x)
@@ -356,9 +373,13 @@ class TestEncodingTypes:
 
     def test_iqp_encoding(self) -> None:
         model = ParallelHybridClassifier(
-            n_input_features=4, n_qubits=4, n_layers=1,
-            use_classical_encoder=False, device_name="default.qubit",
-            diff_method="parameter-shift", encoding_type="iqp",
+            n_input_features=4,
+            n_qubits=4,
+            n_layers=1,
+            use_classical_encoder=False,
+            device_name="default.qubit",
+            diff_method="parameter-shift",
+            encoding_type="iqp",
         )
         x = torch.randn(2, 4)
         out = model(x)
@@ -367,6 +388,5 @@ class TestEncodingTypes:
     def test_invalid_encoding(self) -> None:
         with pytest.raises(ValueError, match="Unsupported encoding_type"):
             ParallelHybridClassifier(
-                n_input_features=4, n_qubits=4, n_layers=1,
-                encoding_type="unknown_encoding"
+                n_input_features=4, n_qubits=4, n_layers=1, encoding_type="unknown_encoding"
             )
