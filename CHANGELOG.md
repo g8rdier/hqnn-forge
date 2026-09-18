@@ -51,6 +51,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from before them loads as noiseless. `apply_depolarizing_noise` at `p = 0` suppresses the
   training channel, and `gradient_variance` measures the layer in eval mode, so neither sees
   the train-mode noise
+- `CircuitSummary.n_inert_params` / `count_inert_parameters`: trainable gate parameters that
+  can never reach a measurement, found structurally; the last layer's `Rot` ω angles under a
+  `⟨Z⟩` readout are `n_qubits` such parameters in every default model
 
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from

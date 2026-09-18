@@ -20,12 +20,14 @@ FisherSpectrum                Result of fisher_information_matrix.
 effective_dimension           Effective dimension (Abbas et al. 2021) over random draws.
 effective_dimension_from_spectra  The formula alone, from Fisher eigenvalues.
 EffectiveDimensionResult      Result of effective_dimension.
+count_inert_parameters   Trainable gate parameters that can never reach a measurement.
 """
 
 from hqnn_forge.diagnostics.circuit import (
     LOGICAL_GATE_SET,
     CircuitSummary,
     circuit_summary,
+    count_inert_parameters,
     draw_circuit,
 )
 from hqnn_forge.diagnostics.fisher import (
@@ -50,6 +52,7 @@ __all__: list[str] = [
     "FisherSpectrum",
     "GradientVarianceResult",
     "circuit_summary",
+    "count_inert_parameters",
     "draw_circuit",
     "effective_dimension",
     "effective_dimension_from_spectra",
