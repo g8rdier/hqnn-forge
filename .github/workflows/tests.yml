@@ -10,6 +10,36 @@ permissions:
   contents: read
 
 jobs:
+  # ruff and mypy are configured in pyproject.toml but were never enforced. One
+  # interpreter is enough: the rule set depends on the pinned ruff version, not
+  # on the interpreter, and [tool.mypy] fixes python_version = "3.12" itself.
+  # The tools come from uv.lock so a ruff release cannot change the rule set
+  # under an open PR; Dependabot bumps them like every other dev dependency.
+  # mypy covers the package only: tests/ has its own baseline to fix first.
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v10.1.0
+      with:
+        python-version: "3.12"
+        enable-cache: true
+
+    - name: Install dependencies from the lockfile
+      run: uv sync --locked --extra dev
+
+    - name: Lint
+      run: uv run --frozen ruff check hqnn_forge tests examples
+
+    - name: Check formatting
+      run: uv run --frozen ruff format --check hqnn_forge tests examples
+
+    - name: Type-check
+      run: uv run --frozen mypy hqnn_forge
+
   test:
     runs-on: ubuntu-latest
     strategy:
