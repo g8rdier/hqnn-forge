@@ -125,7 +125,7 @@ class TestParameterCount:
         assert classifier.count_parameters() > 0
 
 
-def _circuit_input(model: torch.nn.Module, x: torch.Tensor) -> torch.Tensor:
+def _circuit_input(model: HybridBinaryClassifier, x: torch.Tensor) -> torch.Tensor:
     """Run a forward pass and return the tensor handed to the quantum layer."""
     captured: list[torch.Tensor] = []
     handle = model.quantum_layer.register_forward_pre_hook(

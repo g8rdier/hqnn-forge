@@ -111,7 +111,7 @@ class TestEndToEndPipeline:
     def test_pca_scaled_angles_stay_within_pi(
         self,
         synthetic_dataset: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
-        model_cls: type[torch.nn.Module],
+        model_cls: type[HybridBinaryClassifier | ParallelHybridClassifier],
     ) -> None:
         """PCANormalizer(scale_to_pi=True) output must reach a bypassed circuit within ±π."""
         X_train_np, _, _, _ = synthetic_dataset

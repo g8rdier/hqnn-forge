@@ -52,7 +52,10 @@ LAYER_CLASSES = [
 ]
 
 
-def _build(layer_cls: type, device_name: str, diff_method: str) -> torch.nn.Module:
+EncodingLayer = QuantumEncodingLayer | IQPEncodingLayer
+
+
+def _build(layer_cls: type, device_name: str, diff_method: str) -> EncodingLayer:
     torch.manual_seed(0)
     layer = layer_cls(
         n_qubits=N_QUBITS, n_layers=N_LAYERS, device_name=device_name, diff_method=diff_method
@@ -61,7 +64,13 @@ def _build(layer_cls: type, device_name: str, diff_method: str) -> torch.nn.Modu
     return layer
 
 
-def _per_sample(layer: torch.nn.Module, x: torch.Tensor) -> torch.Tensor:
+def _grad(tensor: torch.Tensor) -> torch.Tensor:
+    """``tensor.grad`` after a backward pass, narrowed from ``Tensor | None``."""
+    assert tensor.grad is not None
+    return tensor.grad
+
+
+def _per_sample(layer: EncodingLayer, x: torch.Tensor) -> torch.Tensor:
     """The loop the layers used before batching; the reference implementation."""
     return torch.stack([layer.qlayer(sample) for sample in x])
 
@@ -95,11 +104,11 @@ class TestBatchedMatchesPerSample:
 
         layer.zero_grad()
         (layer(batch) * weights).sum().backward()
-        grad_batched = layer.qlayer.weights.grad.clone()
+        grad_batched = _grad(layer.qlayer.weights).clone()
 
         layer.zero_grad()
         (_per_sample(layer, batch) * weights).sum().backward()
-        grad_looped = layer.qlayer.weights.grad.clone()
+        grad_looped = _grad(layer.qlayer.weights).clone()
 
         assert grad_batched.abs().sum() > 0
         torch.testing.assert_close(grad_batched, grad_looped, rtol=1e-5, atol=1e-6)
@@ -148,5 +157,5 @@ class TestInputGradients:
         x_looped = batch.clone().requires_grad_(True)
         (_per_sample(layer, x_looped) * weights).sum().backward()
 
-        assert x_batched.grad.abs().sum() > 0
-        torch.testing.assert_close(x_batched.grad, x_looped.grad, rtol=1e-5, atol=1e-6)
+        assert _grad(x_batched).abs().sum() > 0
+        torch.testing.assert_close(_grad(x_batched), _grad(x_looped), rtol=1e-5, atol=1e-6)
