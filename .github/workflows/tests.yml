@@ -43,6 +43,15 @@ jobs:
     - name: Type-check
       run: uv run --frozen mypy hqnn_forge
 
+    # Neither ruff nor mypy checks stdlib API usage against the 3.11 floor:
+    # ruff's target-version covers syntax only, and mypy has to target 3.12
+    # because the numpy stubs use PEP 695 syntax. vermin fails on a call such
+    # as itertools.batched or Path.walk that only exists from 3.12 on. It is
+    # run through uvx rather than declared in the dev extra because nothing
+    # else imports it; the version is pinned so the check cannot drift.
+    - name: Check stdlib usage against the 3.11 floor
+      run: uvx vermin==1.8.0 --no-tips -t=3.11- --violations --eval-annotations hqnn_forge tests examples
+
   test:
     runs-on: ubuntu-latest
     strategy:
