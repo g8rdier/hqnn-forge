@@ -89,6 +89,37 @@ feat: add user authentication endpoint
 Keep commit bodies to at most 3 bullet points. If you need more, the work is probably better
 split into smaller, more atomic commits.
 
+## Dependency Changes
+
+`uv.lock` is tracked in the repository and CI tests against it: the `test-locked` job in
+`.github/workflows/tests.yml` runs `uv sync --locked`, which installs the exact versions the
+lockfile records and fails if the lockfile no longer matches `pyproject.toml`.
+
+*   **After editing dependencies in `pyproject.toml`**, regenerate the lockfile and commit it
+    in the same PR:
+
+    ```bash
+    uv lock
+    git add pyproject.toml uv.lock
+    ```
+
+    This applies to every dependency edit by hand: adding or removing a package, changing a
+    version floor, or touching an extra.
+
+*   **What the failure looks like** when the lockfile is stale:
+
+    ```
+    error: The lockfile at `uv.lock` needs to be updated, but `--locked` was provided.
+
+    hint: To update the lockfile, run `uv lock`.
+    ```
+
+    The fix is exactly that hint: run `uv lock` locally and push the updated `uv.lock`.
+
+*   **Dependabot bumps the lockfile on its own.** Its PRs update `uv.lock` without touching
+    `pyproject.toml`, so contributors only regenerate the lockfile when they change
+    `pyproject.toml` by hand.
+
 ## Versioning
 
 Releases follow [Semantic Versioning](https://semver.org/) (`MAJOR.MINOR.PATCH`), tagged (e.g.
