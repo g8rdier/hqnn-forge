@@ -311,7 +311,9 @@ class DataReuploadingLayer(nn.Module):
     ``qlayer.weights`` has shape ``(n_layers, n_qubits, 3)`` and, like the
     other encoders, starts from ``TorchLayer``'s default Uniform(0, 2π).
     **Call** ``hqnn_forge.initializers.restricted_normal_init_`` **on it
-    immediately after construction** for barren-plateau-safe initial values.
+    immediately after construction** for the library's small-angle initial
+    values (see :mod:`hqnn_forge.initializers` for what they do and do not
+    guarantee).
     Leave ``qlayer.input_scaling`` at its ones-initialisation, which starts
     the layer as the plain re-uploading circuit.
 

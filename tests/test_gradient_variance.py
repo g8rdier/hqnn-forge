@@ -6,8 +6,8 @@ signatures it exists to show.
 
 Thresholds are set well inside what was measured over five seeds:
 uniform-init total variance falls by 5.3–5.9x from 2 to 6 qubits (asserted:
-> 3x), and at 8 qubits with zero inputs restricted init keeps 1.32–1.80x the
-uniform variance (asserted: > 1.2x).
+> 3x).  The initialiser's measured effect is pinned in TestMeasuredInitClaims,
+which quotes its own ranges.
 """
 
 from __future__ import annotations
@@ -81,19 +81,70 @@ def _result(init: str, n_qubits: int, total: float) -> GradientVarianceResult:
     )
 
 
+@pytest.fixture(scope="module")
+def measured() -> dict[tuple[str, int, float], float]:
+    """
+    Mean gradient variance per (init, n_qubits, input_scale), 200 draws, seed 0.
+
+    Computed once for TestMeasuredInitClaims: the 8-qubit estimates dominate
+    this module's run time, and each is shared by several claims.
+    """
+    layers = {n: _layer(n) for n in (4, 8)}
+    return {
+        (init, n, scale): gradient_variance(
+            layers[n], n_samples=200, init=init, input_scale=scale, generator=_gen()
+        ).mean_variance
+        for init in ("uniform", "restricted")
+        for n in (4, 8)
+        for scale in (0.0, math.pi)
+    }
+
+
+class TestMeasuredInitClaims:
+    """
+    The statements in hqnn_forge.initializers.restricted_variance's
+    "measured" section (#122), pinned with the diagnostic.  Over five seeds
+    at these 200 draws: the restricted/uniform ratio at 8 qubits is 0.86–1.23
+    with inputs in (-π, π) and 1.69–2.07 with zero input, the zero-input
+    ratio grows 1.5–2.0x from 4 to 8 qubits, and from 4 to 8 qubits at
+    (-π, π) restricted init loses 8.4–10.6x against uniform's 8.1–10.7x.
+    Every threshold below leaves a clear margin to those ranges.
+    """
+
+    @staticmethod
+    def _ratio(measured: dict, n: int, scale: float) -> float:
+        return measured["restricted", n, scale] / measured["uniform", n, scale]
+
+    def test_no_benefit_with_inputs_spread_over_pi(self, measured: dict) -> None:
+        """What the classifiers feed the circuit: restricted ≈ uniform."""
+        ratio = self._ratio(measured, 8, math.pi)
+        assert 0.6 < ratio < 1.5, ratio
+
+    def test_benefit_near_zero_input(self, measured: dict) -> None:
+        """Near-zero input: more variance, but by a factor, not an order of magnitude."""
+        ratio = self._ratio(measured, 8, 0.0)
+        assert 1.4 < ratio < 3.0, ratio
+
+    def test_zero_input_benefit_grows_with_qubits(self, measured: dict) -> None:
+        """The zero-input gain is not a constant factor over the measured range."""
+        small, large = self._ratio(measured, 4, 0.0), self._ratio(measured, 8, 0.0)
+        assert large > 1.25 * small, (small, large)
+
+    def test_restricted_init_decays_with_qubits_like_uniform(self, measured: dict) -> None:
+        """At (-π, π) the init does not change the decay: both lose > 5x from 4 to 8 qubits."""
+        decay = {
+            init: measured[init, 4, math.pi] / measured[init, 8, math.pi]
+            for init in ("uniform", "restricted")
+        }
+        assert decay["uniform"] > 5 and decay["restricted"] > 5, decay
+        assert 0.6 < decay["restricted"] / decay["uniform"] < 1.6, decay
+
+
 class TestPhysics:
     def test_uniform_init_variance_decays_with_qubits(self) -> None:
         small = gradient_variance(_layer(2), n_samples=100, generator=_gen())
         large = gradient_variance(_layer(6), n_samples=100, generator=_gen())
         assert small.total_variance > 3 * large.total_variance
-
-    def test_restricted_init_keeps_more_variance_near_zero_input(self) -> None:
-        layer = _layer(8)
-        uniform = gradient_variance(layer, n_samples=100, input_scale=0.0, generator=_gen())
-        restricted = gradient_variance(
-            layer, n_samples=100, init="restricted", input_scale=0.0, generator=_gen()
-        )
-        assert restricted.total_variance > 1.2 * uniform.total_variance
 
     def test_zero_weights_and_zero_input_give_zero_gradient(self) -> None:
         """|0...0> is a stationary point of <Z_0>: every gradient vanishes."""

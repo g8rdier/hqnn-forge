@@ -23,8 +23,14 @@ Design Rationale
   the same method; ``_resolve_device`` falls back through ``lightning.qubit`` to
   ``default.qubit`` when a backend is not installed or has no usable hardware.
 
-* **Barren Plateau Avoidance** — weights are *not* initialised here; callers should
-  use `hqnn_forge.initializers.restricted_normal_init_` on the returned layer.
+* **Initialisation** — weights are *not* initialised here; callers should use
+  `hqnn_forge.initializers.restricted_normal_init_` on the returned layer.  Note
+  what that buys for this circuit (measured, see `hqnn_forge.initializers`):
+  more initial gradient variance only for inputs near zero, and no escape from
+  its exponential decay with qubit count.  The cascaded CNOT ring puts every
+  qubit in the backward light cone of each ⟨Z_i⟩ within two layers (of ⟨Z_0⟩
+  and ⟨Z_{n-1}⟩ within one), so at the default depth the per-qubit readouts
+  are global costs in the sense of Cerezo et al. (2021).
 
 References
 ----------
@@ -323,10 +329,15 @@ def _make_angle_embedding_circuit(
        → RX(x_i) on wire i, ∀ i ∈ {0, …, n_qubits-1}.
 
     2. **CNOT entangling ring**:
-       CNOT(i → i+1 mod n) for i ∈ {0, …, n_qubits-1}.
-       This creates a cyclic entanglement graph ensuring all-to-all reachability
-       within a single layer and avoids "barren plateau–inducing" global 2-designs
-       compared to random full entanglers.
+       CNOT(i → i+1 mod n) for i ∈ {0, …, n_qubits-1}, applied as a cascade.
+       This creates a cyclic entanglement graph with all-to-all reachability
+       within a single layer.  The flip side is the backward light cone of
+       the readouts: through one ring it covers qubits {0, …, i+1} for ⟨Z_i⟩
+       with 0 < i < n-1, and all n qubits for ⟨Z_0⟩ (Z_0 ↦ Z_1⋯Z_{n-1} in the
+       Heisenberg picture) and ⟨Z_{n-1}⟩; through two rings it covers all n
+       qubits for every i.  From 2 layers on, the ⟨Z_i⟩ readouts therefore do
+       not enjoy the local-cost gradient bounds of Cerezo et al. (2021); see
+       `hqnn_forge.initializers` for what is measured instead.
 
     3. **Per-qubit SU(2) rotation block**:
        ``qml.Rot(φ, θ, ω, wires=i)`` applies Rz(ω)·Ry(θ)·Rz(φ), covering the

@@ -13,7 +13,7 @@
 
 | Feature | Detail |
 |---|---|
-| **Barren-plateau-aware init** | Small-angle Gaussian initialisation: global σ = π/√(n·L), or a per-layer schedule (this library's own heuristics — see the module docstring for what they do and do not guarantee) |
+| **Small-angle init** | Gaussian initialisation: global σ = π/√(n·L), or a per-layer schedule σ_ℓ = π/√(n·(ℓ+1)) that narrows with the layer index (this library's own heuristics, in the spirit of Zhang et al. 2022). Measured with `hqnn_forge.diagnostics.gradient_variance` on a 2-layer circuit with a ⟨Z_0⟩ cost: no gain over uniform init for inputs spread over (−π, π), which is what both classifiers feed the circuit, and a gain growing from 1.1x to 1.75x between 4 and 8 qubits only near zero input. Over (−π, π) the variance falls ~3x per two qubits under either init — see the module docstring |
 | **Adjoint differentiation** | Exact gradients via `lightning.qubit` — no finite-difference approximation |
 | **Custom angle encoding** | 8-qubit angle-embedding feature map with strongly-entangled VQC ansatz |
 | **Imbalance-robust losses** | Focal Loss & inverse-frequency weighted BCE |
@@ -179,7 +179,7 @@ Options shared by both models:
 hqnn_forge/
 ├── encoding/        Quantum feature maps (angle embedding, IQP embedding)
 ├── circuits/        Reusable VQC ansatz primitives
-├── initializers/    Barren-plateau-aware weight initialisation
+├── initializers/    Small-angle (restricted-variance) weight initialisation
 ├── preprocessing/   Classical PCA + normalisation (no sklearn runtime dep)
 ├── models/          Full hybrid architectures
 ├── diagnostics/     Circuit depth, gate and parameter counts

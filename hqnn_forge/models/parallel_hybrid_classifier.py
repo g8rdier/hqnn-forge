@@ -44,7 +44,7 @@ Design Notes
 
 * The quantum branch mirrors ``HybridBinaryClassifier`` in *topology* (same
   classical encoder + ``QuantumEncodingLayer`` / ``IQPEncodingLayer`` choice,
-  same restricted-variance initialisation scheme).  Note that seeding the two
+  same small-angle initialisation scheme).  Note that seeding the two
   architectures identically does **not** give them identical quantum weights:
   this model builds more classical layers before the quantum init runs, so it
   draws from a different RNG state.  To compare the two topologies fairly,

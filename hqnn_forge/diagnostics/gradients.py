@@ -19,7 +19,8 @@ every quantum weight is recorded.  The sample variance is taken per weight;
 ``total_variance`` is its sum over weights (the variance of the gradient
 vector, which does not shrink just because a larger circuit has more
 parameters) and ``mean_variance`` its mean.  The default cost is ⟨Z_0⟩, a
-local cost in the sense of Cerezo et al. (2021).
+single-qubit observable; whether it acts as a local cost in the sense of
+Cerezo et al. (2021) depends on the circuit's light cone (see below).
 
 What the library's own circuits show
 ------------------------------------
@@ -34,7 +35,8 @@ samples, ``default.qubit``):
   ``PCANormalizer(scale_to_pi=True)`` produces -- the restricted-variance init
   gives the same gradient variance as uniform init: the angle embedding
   already randomises the state.  Only with inputs near 0 does the restricted
-  init retain more variance (about 1.3–1.8x at 8 qubits).
+  init retain more variance (1.67–1.89x at 8 qubits over 5 seeds, 1.09x at
+  4; see :mod:`hqnn_forge.initializers.restricted_variance`).
 
 The layer is run in eval mode, so a layer built with ``noise_level > 0``
 is measured on its noiseless circuit, not the train-mode ``default.mixed``
