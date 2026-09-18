@@ -186,7 +186,7 @@ def train_and_evaluate(model: torch.nn.Module, model_name: str, banner: str) -> 
         model.eval()
         with torch.no_grad():
             train_probs = model.predict_proba(X_train)
-            train_preds = (train_probs >= 0.5).long()
+            train_preds = (train_probs >= 0.5).long()  # novermin: Tensor.long, not py2 long
             train_acc = (train_preds == y_train.long()).float().mean().item()
             avg_loss = epoch_loss / n_batches
 
