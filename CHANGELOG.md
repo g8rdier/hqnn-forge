@@ -17,10 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - HybridBinaryClassifier end-to-end model
 - Smoke tests for quantum encoding layer
 - Quick-start example for training
+- `CircuitSummary.n_inert_params` / `count_inert_parameters`: trainable gate parameters that
+  can never reach a measurement, found structurally; the last layer's `Rot` ω angles under a
+  `⟨Z⟩` readout are `n_qubits` such parameters in every default model
 
 ### Changed
-- Raised the `pennylane` and `pennylane-lightning` floors from `>=0.38` to `>=0.42`, the lowest
-  version CI runs; 0.38 is incompatible with `autoray>=0.7`
+- Raised the `pennylane` and `pennylane-lightning` floors from `>=0.38` to `>=0.45`, the lowest
+  version CI runs; 0.38 is incompatible with `autoray>=0.7`, and 0.42 was only tested on
+  Python 3.10
 
 ### Removed
 - `requirements.txt`; `pyproject.toml` is now the only place dependencies are declared
+- Python 3.10 support; `requires-python` is now `>=3.11`. 3.10 reaches end of life in
+  October 2026 and current PennyLane releases no longer install on it, so CI tests 3.11
+  (the floor) and 3.14 (the newest) instead
