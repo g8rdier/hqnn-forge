@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - HybridBinaryClassifier end-to-end model
 - Smoke tests for quantum encoding layer
 - Quick-start example for training
+- `MulticlassHybridClassifier`: shared quantum layer with `n_classes` linear heads, softmax or
+  one-vs-rest probabilities, argmax `predict`
 
 ### Changed
 - Raised the `pennylane` and `pennylane-lightning` floors from `>=0.38` to `>=0.42`, the lowest
