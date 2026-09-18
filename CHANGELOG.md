@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Quick-start example for training
 - `AmplitudeEncodingLayer`: amplitude embedding of up to `2**n_qubits` features per sample,
   with zero-padding and L2 normalisation in `forward`, ahead of the same entangling ansatz
+- `DataReuploadingLayer`: angle embedding repeated before every variational layer
+  (Pérez-Salinas et al. 2020), with optional trainable per-upload input scaling
 
 ### Changed
 - Raised the `pennylane` and `pennylane-lightning` floors from `>=0.38` to `>=0.45`, the lowest

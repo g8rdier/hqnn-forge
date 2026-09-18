@@ -11,6 +11,8 @@ QuantumEncodingLayer    PyTorch nn.Module wrapper (TorchLayer) of the QNode abov
 build_encoding_qnode    Factory that wires the QNode to a device and diff method.
 AmplitudeEncodingLayer  nn.Module: up to 2**n_qubits features as state amplitudes.
 build_amplitude_qnode   Factory for the amplitude-embedding QNode.
+DataReuploadingLayer    nn.Module: angle embedding repeated before every layer.
+build_data_reuploading_qnode  Factory for the data re-uploading QNode.
 
 See Also
 --------
@@ -26,11 +28,17 @@ from hqnn_forge.encoding.angle_embedding import (
     QuantumEncodingLayer,
     build_encoding_qnode,
 )
+from hqnn_forge.encoding.data_reuploading import (
+    DataReuploadingLayer,
+    build_data_reuploading_qnode,
+)
 
 __all__: list[str] = [
     "AmplitudeEncodingLayer",
     "AngleEmbeddingQNode",
+    "DataReuploadingLayer",
     "QuantumEncodingLayer",
     "build_amplitude_qnode",
+    "build_data_reuploading_qnode",
     "build_encoding_qnode",
 ]
