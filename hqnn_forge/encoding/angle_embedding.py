@@ -127,6 +127,10 @@ def _make_angle_embedding_circuit(
     3. **Per-qubit SU(2) rotation block**:
        ``qml.Rot(φ, θ, ω, wires=i)`` applies Rz(ω)·Ry(θ)·Rz(φ), covering the
        full Bloch sphere.  This is the most expressive single-qubit gate.
+       In the **last** layer the trailing Rz(ω) commutes with the ⟨Z_i⟩
+       readouts, so those ``n_qubits`` angles can never change the output:
+       they are counted by ``circuit_summary`` as ``n_inert_params`` and
+       kept in the weight tensor for parity with the published model.
 
     4. **Measurement**:
        Returns ``[qml.expval(qml.PauliZ(i)) for i in range(n_qubits)]``.

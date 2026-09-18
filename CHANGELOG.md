@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - HybridBinaryClassifier end-to-end model
 - Smoke tests for quantum encoding layer
 - Quick-start example for training
+- `CircuitSummary.n_inert_params` / `count_inert_parameters`: trainable gate parameters that
+  can never reach a measurement, found structurally; the last layer's `Rot` ω angles under a
+  `⟨Z⟩` readout are `n_qubits` such parameters in every default model
 
 ### Changed
 - Raised the `pennylane` and `pennylane-lightning` floors from `>=0.38` to `>=0.45`, the lowest
