@@ -56,16 +56,29 @@ class TestIQPEncodingLayer:
         assert weights.grad.abs().sum().item() > 0.0
 
 
-class TestExplicitDecompositionMatchesTemplate:
+def _lightning_available() -> bool:
+    try:
+        import pennylane as qml
+
+        qml.device("lightning.qubit", wires=1)
+        return True
+    except Exception:  # noqa: BLE001 - any failure means "not installed"
+        return False
+
+
+class TestTemplateMatchesDocumentedFeatureMap:
     """
-    The circuit writes qml.IQPEmbedding out gate by gate (with MultiRZ as
-    CNOT·RZ·CNOT) so that a broadcasted batch only passes through
-    single-parameter gates.
-    Pin that it is still the same feature map, sample by sample.
+    The circuit uses qml.IQPEmbedding directly.  Pin that the template is
+    the feature map the module docstring describes -- H, RZ(x_i), then
+    exp(-i x_i x_j Z_i Z_j / 2) on every pair, written here as its exact
+    CNOT·RZ·CNOT form -- sample by sample, so a change in the template's
+    convention (angle factor, pair pattern) is noticed.
     """
 
     @pytest.mark.parametrize("n_repeats", [1, 2])
-    def test_matches_qml_iqp_embedding(self, n_repeats: int) -> None:
+    def test_matches_explicit_decomposition(self, n_repeats: int) -> None:
+        from itertools import combinations
+
         import pennylane as qml
 
         from hqnn_forge.encoding.iqp_embedding import build_iqp_qnode
@@ -77,10 +90,18 @@ class TestExplicitDecompositionMatchesTemplate:
         )
 
         dev = qml.device("default.qubit", wires=n_qubits)
+        pairs = list(combinations(range(n_qubits), 2))
 
         @qml.qnode(dev, interface="torch")
         def reference(inputs: torch.Tensor, weights: torch.Tensor) -> list:
-            qml.IQPEmbedding(inputs, wires=range(n_qubits), n_repeats=n_repeats, pattern=None)
+            for _ in range(n_repeats):
+                for q in range(n_qubits):
+                    qml.Hadamard(wires=q)
+                    qml.RZ(inputs[q], wires=q)
+                for i, j in pairs:
+                    qml.CNOT(wires=[i, j])
+                    qml.RZ(inputs[i] * inputs[j], wires=j)
+                    qml.CNOT(wires=[i, j])
             for layer in range(n_layers):
                 for q in range(n_qubits):
                     qml.CNOT(wires=[q, (q + 1) % n_qubits])
@@ -96,3 +117,64 @@ class TestExplicitDecompositionMatchesTemplate:
                 got = torch.stack(ours(x, weights))
                 want = torch.stack(reference(x, weights))
             torch.testing.assert_close(got, want, rtol=0, atol=1e-12)
+
+    def test_tape_uses_the_template(self) -> None:
+        import pennylane as qml
+
+        from hqnn_forge.encoding.iqp_embedding import build_iqp_qnode
+
+        qnode = build_iqp_qnode(n_qubits=3, n_layers=1, n_repeats=2, device_name="default.qubit")
+        tape = qml.workflow.construct_tape(qnode, level=0)(torch.zeros(3), torch.zeros(1, 3, 3))
+        embeddings = [op for op in tape.operations if op.name == "IQPEmbedding"]
+        assert len(embeddings) == 1
+        assert embeddings[0].hyperparameters["n_repeats"] == 2
+
+
+class TestBatchedTemplateMatchesPerSample:
+    """
+    Reverting to the template makes the batched path depend on
+    _expand_batch_dimension splitting the batch for every diff method except
+    backprop (lightning.qubit's adjoint mis-shapes a broadcasted MultiRZ).
+    tests/test_batched_forward.py covers backprop, parameter-shift and
+    adjoint for outputs, weight gradients and input gradients; this pins the
+    two configurations the revert hinges on, plus finite-diff.
+    """
+
+    CONFIGS = [
+        pytest.param("default.qubit", "backprop", id="default.qubit/backprop"),
+        pytest.param("default.qubit", "finite-diff", id="default.qubit/finite-diff"),
+        pytest.param(
+            "lightning.qubit",
+            "adjoint",
+            id="lightning.qubit/adjoint",
+            marks=pytest.mark.skipif(
+                not _lightning_available(), reason="pennylane-lightning not installed"
+            ),
+        ),
+    ]
+
+    @pytest.mark.parametrize("device_name, diff_method", CONFIGS)
+    def test_outputs_and_gradients(self, device_name: str, diff_method: str) -> None:
+        torch.manual_seed(0)
+        layer = IQPEncodingLayer(
+            n_qubits=4, n_layers=1, device_name=device_name, diff_method=diff_method
+        )
+        restricted_normal_init_(layer.qlayer.weights, n_qubits=4, n_layers=1)
+        x = torch.rand(5, 4) * 2 * math.pi - math.pi
+        scale = torch.linspace(0.1, 1.0, 20).reshape(5, 4)
+
+        xb = x.clone().requires_grad_(True)
+        layer.zero_grad()
+        batched = layer(xb)
+        (batched * scale).sum().backward()
+        grad_w_batched = layer.qlayer.weights.grad.clone()
+
+        xl = x.clone().requires_grad_(True)
+        layer.zero_grad()
+        looped = torch.stack([layer.qlayer(sample) for sample in xl])
+        (looped * scale).sum().backward()
+
+        torch.testing.assert_close(batched, looped, rtol=0, atol=1e-6)
+        torch.testing.assert_close(grad_w_batched, layer.qlayer.weights.grad, rtol=1e-5, atol=1e-6)
+        assert xb.grad is not None and xl.grad is not None
+        torch.testing.assert_close(xb.grad, xl.grad, rtol=1e-5, atol=1e-6)

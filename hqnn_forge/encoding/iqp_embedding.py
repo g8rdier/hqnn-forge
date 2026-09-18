@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import logging
 import warnings
-from itertools import combinations
 from typing import Literal
 
 import pennylane as qml
@@ -63,32 +62,17 @@ def _make_iqp_embedding_circuit(
     """
     Factory returning the bare quantum function for the IQP embedding.
     """
-    # All-to-all entangling pattern, the same as qml.IQPEmbedding(pattern=None)
-    pairs = list(combinations(range(n_qubits), 2))
-
     def circuit(
         inputs: torch.Tensor,
         weights: torch.Tensor,
     ) -> list[qml.measurements.ExpectationMP]:
         # ── 1. IQP embedding: H → RZ(x_i) → exp(-i x_i x_j Z_i Z_j / 2) ─────
-        # This is qml.IQPEmbedding's decomposition written out gate by gate,
-        # with the two-qubit MultiRZ replaced by its exact CNOT·RZ·CNOT form.
-        # Written out so that a batched ``inputs`` of shape (batch, n_qubits)
-        # broadcasts through single-parameter gates only.  The QNode wrapper
-        # (_expand_batch_dimension) already splits the batch into one tape per
-        # sample for every method except backprop, so lightning.qubit's adjoint
-        # path -- which mis-shapes results for a broadcasted MultiRZ -- never
-        # sees a broadcasted tape here; this form is a safeguard in case the
-        # circuit is ever executed broadcasted without that wrapper.
-        # ``inputs[..., i]`` selects feature i for one sample or a batch alike.
-        for _ in range(n_repeats):
-            for qubit in range(n_qubits):
-                qml.Hadamard(wires=qubit)
-                qml.RZ(inputs[..., qubit], wires=qubit)
-            for i, j in pairs:
-                qml.CNOT(wires=[i, j])
-                qml.RZ(inputs[..., i] * inputs[..., j], wires=j)
-                qml.CNOT(wires=[i, j])
+        # All-to-all pairs (pattern=None), repeated n_repeats times.  A batch
+        # reaches this template broadcasted only under backprop on
+        # default.qubit, which handles it; every other diff method goes
+        # through _expand_batch_dimension, which splits the batch into one
+        # tape per sample first (see angle_embedding).
+        qml.IQPEmbedding(inputs, wires=range(n_qubits), n_repeats=n_repeats)
 
         # ── 2 & 3. Strongly entangling layers ────────────────────────────
         for layer in range(n_layers):
