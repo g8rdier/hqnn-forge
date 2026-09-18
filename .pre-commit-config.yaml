@@ -1,0 +1,17 @@
+# Runs ruff check and ruff format before each commit, with the same
+# line-length and target-version as [tool.ruff] in pyproject.toml (the hooks
+# read that file). Keep `rev` in step with the ruff version in uv.lock so the
+# hooks and the CI lint job apply the same rule set.
+#
+# Both hooks are limited to Python files. ruff 0.16 also formats the code
+# blocks in Markdown files, which CI's `ruff format --check hqnn_forge tests
+# examples` does not cover; restricting the hooks keeps the two in agreement.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.7
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+        types_or: [python, pyi]
+      - id: ruff-format
+        types_or: [python, pyi]
