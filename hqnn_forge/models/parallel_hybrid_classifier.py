@@ -134,6 +134,12 @@ class ParallelHybridClassifier(BinaryClassifierBase):
         ``"restricted"`` or ``"block_local"``.  Default: ``"restricted"``.
     encoding_type:
         Type of quantum embedding to use: ``"angle"`` or ``"iqp"``. Default: ``"angle"``.
+    noise_level:
+        Training-time depolarizing probability for the quantum layer, in
+        ``[0, 0.75]``.  Default: ``0.0`` (noiseless).  Applied in train mode
+        only; see :mod:`hqnn_forge.noise`.
+    noise_position:
+        ``"all"`` (default) or ``"end"``; where the channel is inserted.
 
     Attributes
     ----------
@@ -166,6 +172,8 @@ class ParallelHybridClassifier(BinaryClassifierBase):
         diff_method: DiffMethod = "adjoint",
         init_strategy: str = "restricted",
         encoding_type: str = "angle",
+        noise_level: float = 0.0,
+        noise_position: str = "all",
     ) -> None:
         super().__init__()
         self._config = dict(
@@ -217,6 +225,8 @@ class ParallelHybridClassifier(BinaryClassifierBase):
                 n_layers=n_layers,
                 device_name=device_name,
                 diff_method=diff_method,
+                noise_level=noise_level,
+                noise_position=noise_position,
             )
         elif encoding_type == "iqp":
             self.quantum_layer = IQPEncodingLayer(
@@ -225,6 +235,8 @@ class ParallelHybridClassifier(BinaryClassifierBase):
                 n_repeats=1,
                 device_name=device_name,
                 diff_method=diff_method,
+                noise_level=noise_level,
+                noise_position=noise_position,
             )
         else:
             raise ValueError(f"Unsupported encoding_type: {encoding_type}")
