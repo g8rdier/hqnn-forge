@@ -72,6 +72,9 @@ class PCANormalizer:
 
     Attributes
     ----------
+    The arrays below are set by ``fit`` and absent until then, as in
+    scikit-learn; ``is_fitted_`` exists from construction.
+
     mean_ : np.ndarray, shape (n_features,)
         Per-feature mean computed during ``fit``.
     components_ : np.ndarray, shape (n_components, n_features)
@@ -118,20 +121,22 @@ class PCANormalizer:
     torch.Size([1000, 8])
     """
 
+    # Set by fit() and absent until then, as in scikit-learn; is_fitted_ guards
+    # every read, so they are typed as always present.
+    mean_: npt.NDArray[np.float64]
+    components_: npt.NDArray[np.float64]
+    explained_variance_: npt.NDArray[np.float64]
+    std_: npt.NDArray[np.float64]
+
     def __init__(
         self,
-        n_components: int = 8,
+        n_components: int | np.integer = 8,
         *,
         scale_to_pi: bool = True,
     ) -> None:
         self.n_components = n_components
         self.scale_to_pi = scale_to_pi
 
-        # Populated by fit()
-        self.mean_: npt.NDArray[np.float64] | None = None
-        self.components_: npt.NDArray[np.float64] | None = None
-        self.explained_variance_: npt.NDArray[np.float64] | None = None
-        self.std_: npt.NDArray[np.float64] | None = None
         self.is_fitted_: bool = False
 
     # ------------------------------------------------------------------
@@ -411,17 +416,17 @@ class PCANormalizer:
         X_arr: npt.NDArray[np.float64] = np.asarray(X, dtype=np.float64)
         self._check_2d(X_arr)
 
-        if X_arr.shape[1] != self.mean_.shape[0]:  # type: ignore[union-attr]
+        if X_arr.shape[1] != self.mean_.shape[0]:
             raise ValueError(
                 f"Input has {X_arr.shape[1]} features but PCANormalizer was "
-                f"fitted on {self.mean_.shape[0]} features."  # type: ignore[union-attr]
+                f"fitted on {self.mean_.shape[0]} features."
             )
 
         # Centre → project → standardise, using training statistics only (no
         # per-batch mean), so each row's encoding is independent of the batch
-        X_centered = X_arr - self.mean_  # type: ignore[operator]
-        projections = X_centered @ self.components_.T  # type: ignore[union-attr]
-        standardised = projections / self.std_  # type: ignore[operator]
+        X_centered = X_arr - self.mean_
+        projections = X_centered @ self.components_.T
+        standardised = projections / self.std_
 
         if self.scale_to_pi:
             # Soft-clip to (-π, π) preserving relative magnitudes of outliers
@@ -457,8 +462,8 @@ class PCANormalizer:
         np.ndarray, shape (n_components,)
         """
         self._check_is_fitted()
-        total_var = self.explained_variance_.sum()  # type: ignore[union-attr]
-        return self.explained_variance_ / total_var  # type: ignore[operator]
+        total_var = self.explained_variance_.sum()
+        return self.explained_variance_ / total_var
 
     # ------------------------------------------------------------------
     def _check_is_fitted(self) -> None:

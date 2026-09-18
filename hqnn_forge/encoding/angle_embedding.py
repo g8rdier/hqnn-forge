@@ -314,13 +314,16 @@ def _make_angle_embedding_circuit(
 
     The returned function has the signature::
 
-        circuit(inputs: torch.Tensor, weights: torch.Tensor) -> list[float]
+        circuit(inputs: torch.Tensor, weights: torch.Tensor) -> list[ExpectationMP]
 
     where
 
     * ``inputs``  — shape ``(n_qubits,)`` — the pre-processed feature vector.
     * ``weights`` — shape ``(n_layers, n_qubits, 3)`` — rotation angles per
                     layer, qubit, and Euler angle (φ, θ, ω) for ``qml.Rot``.
+
+    Called inside a QNode it records one ``qml.expval(PauliZ)`` measurement per
+    readout wire; the QNode turns them into the expectation values.
 
     Circuit structure (per layer ℓ = 0 … L-1)
     ------------------------------------------

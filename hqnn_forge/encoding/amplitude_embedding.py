@@ -119,12 +119,15 @@ def _make_amplitude_embedding_circuit(
 
     The returned function has the signature::
 
-        circuit(inputs: torch.Tensor, weights: torch.Tensor) -> list[float]
+        circuit(inputs: torch.Tensor, weights: torch.Tensor) -> list[ExpectationMP]
 
     where ``inputs`` has shape ``(2**n_qubits,)`` (or ``(batch, 2**n_qubits)``
     when broadcasted) and is already zero-padded and L2-normalised, and
     ``weights`` has shape ``(n_layers, n_qubits, 3)``.  ``diff_method`` is
     used only by the input-gradient check.
+
+    Called inside a QNode it records one ``qml.expval(PauliZ)`` measurement per
+    readout wire; the QNode turns them into the expectation values.
 
     Circuit structure
     -----------------

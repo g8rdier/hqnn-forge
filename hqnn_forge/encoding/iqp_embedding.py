@@ -66,6 +66,13 @@ def _make_iqp_embedding_circuit(
     """
     Factory returning the bare quantum function for the IQP embedding.
 
+    The returned function has the signature::
+
+        circuit(inputs: torch.Tensor, weights: torch.Tensor) -> list[ExpectationMP]
+
+    Called inside a QNode it records one ``qml.expval(PauliZ)`` measurement per
+    readout wire; the QNode turns them into the expectation values.
+
     ``entangler`` and ``readout`` are as in
     :func:`hqnn_forge.encoding.angle_embedding.apply_variational_layers` and
     :func:`~hqnn_forge.encoding.angle_embedding.measure_z`.

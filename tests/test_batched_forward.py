@@ -15,6 +15,7 @@ from functools import partial
 
 import pytest
 import torch
+from conftest import _grad
 
 from hqnn_forge.encoding import DataReuploadingLayer, QuantumEncodingLayer
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
@@ -62,10 +63,12 @@ LAYER_CLASSES = [
     ),
 ]
 
+EncodingLayer = QuantumEncodingLayer | IQPEncodingLayer | DataReuploadingLayer
+
 
 def _build(
-    layer_cls: Callable[..., torch.nn.Module], device_name: str, diff_method: str
-) -> torch.nn.Module:
+    layer_cls: Callable[..., EncodingLayer], device_name: str, diff_method: str
+) -> EncodingLayer:
     torch.manual_seed(0)
     layer = layer_cls(
         n_qubits=N_QUBITS, n_layers=N_LAYERS, device_name=device_name, diff_method=diff_method
@@ -81,7 +84,7 @@ def _build(
     return layer
 
 
-def _per_sample(layer: torch.nn.Module, x: torch.Tensor) -> torch.Tensor:
+def _per_sample(layer: EncodingLayer, x: torch.Tensor) -> torch.Tensor:
     """The loop the layers used before batching; the reference implementation."""
     return torch.stack([layer.qlayer(sample) for sample in x])
 
@@ -97,7 +100,7 @@ def batch() -> torch.Tensor:
 class TestBatchedMatchesPerSample:
     def test_outputs_match(
         self,
-        layer_cls: Callable[..., torch.nn.Module],
+        layer_cls: Callable[..., EncodingLayer],
         device_name: str,
         diff_method: str,
         batch: torch.Tensor,
@@ -111,7 +114,7 @@ class TestBatchedMatchesPerSample:
 
     def test_gradients_match(
         self,
-        layer_cls: Callable[..., torch.nn.Module],
+        layer_cls: Callable[..., EncodingLayer],
         device_name: str,
         diff_method: str,
         batch: torch.Tensor,
@@ -123,11 +126,11 @@ class TestBatchedMatchesPerSample:
 
         layer.zero_grad()
         (layer(batch) * weights).sum().backward()
-        grads_batched = {n: p.grad.clone() for n, p in layer.named_parameters()}
+        grads_batched = {n: _grad(p).clone() for n, p in layer.named_parameters()}
 
         layer.zero_grad()
         (_per_sample(layer, batch) * weights).sum().backward()
-        grads_looped = {n: p.grad.clone() for n, p in layer.named_parameters()}
+        grads_looped = {n: _grad(p).clone() for n, p in layer.named_parameters()}
 
         # Every trainable tensor, e.g. the re-uploading layer's input_scaling too.
         for name, grad_batched in grads_batched.items():
@@ -136,7 +139,7 @@ class TestBatchedMatchesPerSample:
 
     def test_rows_are_independent(
         self,
-        layer_cls: Callable[..., torch.nn.Module],
+        layer_cls: Callable[..., EncodingLayer],
         device_name: str,
         diff_method: str,
         batch: torch.Tensor,
@@ -166,7 +169,7 @@ class TestBatchShapes:
 class TestInputGradients:
     def test_input_gradients_match_per_sample(
         self,
-        layer_cls: Callable[..., torch.nn.Module],
+        layer_cls: Callable[..., EncodingLayer],
         device_name: str,
         diff_method: str,
         batch: torch.Tensor,
@@ -186,5 +189,5 @@ class TestInputGradients:
         x_looped = batch.clone().requires_grad_(True)
         (_per_sample(layer, x_looped) * weights).sum().backward()
 
-        assert x_batched.grad.abs().sum() > 0
-        torch.testing.assert_close(x_batched.grad, x_looped.grad, rtol=1e-5, atol=1e-6)
+        assert _grad(x_batched).abs().sum() > 0
+        torch.testing.assert_close(_grad(x_batched), _grad(x_looped), rtol=1e-5, atol=1e-6)

@@ -15,10 +15,13 @@ init-strategy variance) stay in the per-model files.
 
 from __future__ import annotations
 
+from typing import TypedDict
+
 import pytest
 import torch
 import torch.nn as nn
 
+from hqnn_forge.encoding.angle_embedding import DeviceName, DiffMethod
 from hqnn_forge.models import (
     BinaryClassifierBase,
     HybridBinaryClassifier,
@@ -32,13 +35,23 @@ N_LAYERS = 2
 N_RAW_FEATURES = 12
 FIXTURE_SEED = 0
 
+# The concrete classes, for tests that reach their head, encoder or quantum layer:
+# BinaryClassifierBase declares none of them.
+ConcreteClassifier = HybridBinaryClassifier | ParallelHybridClassifier
+
 CLASSIFIERS = [
     pytest.param(HybridBinaryClassifier, id="serial"),
     pytest.param(ParallelHybridClassifier, id="parallel"),
 ]
 
+
 # Constructor arguments common to both classes; CI-portable device and diff method.
-DEVICE_KWARGS = dict(device_name="default.qubit", diff_method="parameter-shift")
+class _DeviceKwargs(TypedDict):
+    device_name: DeviceName
+    diff_method: DiffMethod
+
+
+DEVICE_KWARGS: _DeviceKwargs = {"device_name": "default.qubit", "diff_method": "parameter-shift"}
 
 
 @pytest.fixture(scope="module", params=CLASSIFIERS)
@@ -199,7 +212,7 @@ class TestParameterCount:
         assert classifier.count_parameters() == sum(p.numel() for p in classifier.parameters())
         assert classifier.count_parameters(trainable_only=False) == classifier.count_parameters()
 
-    def test_trainable_only_excludes_frozen(self, model_cls: type[BinaryClassifierBase]) -> None:
+    def test_trainable_only_excludes_frozen(self, model_cls: type[ConcreteClassifier]) -> None:
         model = model_cls(
             n_input_features=N_RAW_FEATURES, n_qubits=N_QUBITS, n_layers=N_LAYERS, **DEVICE_KWARGS
         )
@@ -209,7 +222,7 @@ class TestParameterCount:
         assert model.count_parameters(trainable_only=False) == total
 
 
-def _circuit_input(model: nn.Module, x: torch.Tensor) -> torch.Tensor:
+def _circuit_input(model: ConcreteClassifier, x: torch.Tensor) -> torch.Tensor:
     """Run a forward pass and return the tensor handed to the quantum layer."""
     captured: list[torch.Tensor] = []
     handle = model.quantum_layer.register_forward_pre_hook(
@@ -240,7 +253,7 @@ class TestEncoderBypass:
         assert model(torch.randn(2, 4)).shape == (2, 1)
 
     def test_bypassed_input_reaches_circuit_unscaled(
-        self, model_cls: type[BinaryClassifierBase]
+        self, model_cls: type[ConcreteClassifier]
     ) -> None:
         """Bypassed input is already in (-π, π); a second π factor aliases angles mod 2π."""
         model = model_cls(
@@ -254,7 +267,7 @@ class TestEncoderBypass:
         torch.testing.assert_close(_circuit_input(model, x), x)
 
     def test_encoder_output_scaled_by_pi(
-        self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor
+        self, classifier: ConcreteClassifier, random_raw_batch: torch.Tensor
     ) -> None:
         expected = classifier.classical_encoder(random_raw_batch).detach() * torch.pi
         torch.testing.assert_close(_circuit_input(classifier, random_raw_batch), expected)

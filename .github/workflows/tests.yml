@@ -28,8 +28,9 @@ jobs:
   # under an open PR; Dependabot bumps them like every other dev dependency.
   # --all-extras so mypy sees matplotlib, scikit-learn and pennylane-lightning:
   # with ignore_missing_imports, a missing extra silently types its imports as Any.
-  # ruff covers the whole tree (it respects .gitignore). mypy covers the package
-  # only: tests/ and examples/ each have a baseline to fix first (#145).
+  # ruff covers the whole tree (it respects .gitignore). mypy covers the package,
+  # tests/ and examples/; modules still failing are listed under
+  # [[tool.mypy.overrides]] in pyproject.toml until #232 clears them.
   lint:
     if: github.event.action != 'edited' || github.event.changes.base
     runs-on: ubuntu-latest
@@ -53,7 +54,7 @@ jobs:
       run: uv run --frozen ruff format --check .
 
     - name: Type-check
-      run: uv run --frozen mypy hqnn_forge
+      run: uv run --frozen mypy hqnn_forge tests examples
 
     # Neither ruff nor mypy checks stdlib API usage against the 3.11 floor:
     # ruff's target-version covers syntax only, and mypy has to target 3.12

@@ -131,7 +131,9 @@ print()
 # ---------------------------------------------------------------------------
 # 3-5. Train and evaluate a model — shared by both architectures
 # ---------------------------------------------------------------------------
-def train_and_evaluate(model: torch.nn.Module, model_name: str, banner: str) -> dict:
+def train_and_evaluate(
+    model: HybridBinaryClassifier | ParallelHybridClassifier, model_name: str, banner: str
+) -> dict:
     """
     Train `model` for N_EPOCHS and report hold-out metrics.
 

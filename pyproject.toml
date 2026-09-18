@@ -104,3 +104,30 @@ ignore = [
 python_version = "3.12"
 ignore_missing_imports = true
 strict = false
+
+# Test and example modules that still fail the type check (#232). Each is
+# checked again once removed from this list; new modules are checked from the
+# start, so the list can only get shorter.
+[[tool.mypy.overrides]]
+module = [
+    "noise_aware_training",  # examples/noise_aware_training.py
+    "test_ablation",
+    "test_checkpoint",
+    "test_circuit_options",
+    "test_circuit_summary",
+    "test_cv",
+    "test_data_reuploading",
+    "test_device_backends",
+    "test_evaluation_plots",
+    "test_evaluation_statistics",
+    "test_fisher",
+    "test_gradient_variance",
+    "test_kernels",
+    "test_multiclass_hybrid_classifier",
+    "test_noise",
+    "test_noise_aware_training",
+    "test_published_shnn_parity",
+    "test_sklearn_estimator",
+    "test_training",
+]
+ignore_errors = true
