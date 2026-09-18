@@ -6,11 +6,13 @@ Unit tests for hqnn_forge.preprocessing.PCANormalizer.
 from __future__ import annotations
 
 import math
+import warnings
 import numpy as np
 import pytest
 import torch
 
 from hqnn_forge.preprocessing import PCANormalizer
+from hqnn_forge.preprocessing.pca_normalizer import EIGENVALUE_GAP_WARN
 
 N_SAMPLES = 100
 N_FEATURES = 12
@@ -392,7 +394,11 @@ class TestErrors:
         X[:, 0] *= 1e9
         assert np.linalg.matrix_rank(X - X.mean(axis=0)) == N_FEATURES
 
-        pca = PCANormalizer(n_components=N_COMPONENTS).fit(X)
+        # Full rank, but the remaining eigenvalues (~1) sit ~1e-18 apart
+        # relative to the largest (~1e18), well inside the rounding that
+        # rotates them, so the degeneracy warning is expected alongside the fit
+        with pytest.warns(RuntimeWarning, match=r"degenerate"):
+            pca = PCANormalizer(n_components=N_COMPONENTS).fit(X)
         assert pca.is_fitted_ is True
         # every retained component carries real variance, not the 1e-8 epsilon
         assert np.all(pca.std_ - 1e-8 > 1e-8)
@@ -419,6 +425,70 @@ class TestErrors:
         ):
             pca.fit(X)
 
+    # Warnings as errors: without the guard the top-k slice raises a bare
+    # TypeError about slice indices, so the check must fire before it
+    @pytest.mark.filterwarnings("error")
+    @pytest.mark.parametrize("n_components", [2.5, 3.0, "4", None])
+    def test_non_integer_n_components(self, n_components: object) -> None:
+        pca = PCANormalizer(n_components=n_components)
+        X = np.random.default_rng(0).standard_normal((N_SAMPLES, N_FEATURES))
+        with pytest.raises(
+            ValueError,
+            match=rf"n_components={n_components!r} is not an integer\..*rejected rather than coerced",
+        ):
+            pca.fit(X)
+        assert pca.is_fitted_ is False
+
+    @pytest.mark.filterwarnings("error")
+    def test_bool_n_components(self) -> None:
+        # bool subclasses int, so True would otherwise fit silently with one component
+        pca = PCANormalizer(n_components=True)
+        X = np.random.default_rng(0).standard_normal((N_SAMPLES, N_FEATURES))
+        with pytest.raises(ValueError, match=r"n_components=True is a bool, not an integer"):
+            pca.fit(X)
+        assert pca.is_fitted_ is False
+
+    @pytest.mark.parametrize("n_components", [np.int64(4), np.int32(4), np.uint8(4)])
+    def test_numpy_integer_n_components_fits(self, n_components: np.integer) -> None:
+        X = np.random.default_rng(0).standard_normal((N_SAMPLES, N_FEATURES))
+        pca = PCANormalizer(n_components=n_components).fit(X)
+        assert pca.components_.shape == (4, N_FEATURES)
+        assert pca.transform(X).shape == (N_SAMPLES, 4)
+
+    # Warnings as errors: a fixed-width NumPy integer at its maximum would wrap
+    # in the "at least n_components + 1 samples" message (255 + 1 == 0 for
+    # uint8) and raise an overflow RuntimeWarning instead of the ValueError
+    @pytest.mark.filterwarnings("error")
+    @pytest.mark.parametrize("n_components", [np.uint8(255), np.int8(127)])
+    def test_numpy_integer_n_components_does_not_overflow(self, n_components: np.integer) -> None:
+        n = int(n_components)
+        pca = PCANormalizer(n_components=n_components)
+        X = np.random.default_rng(0).standard_normal((100, n + 45))
+        with pytest.raises(
+            ValueError,
+            match=rf"n_samples=100 <= n_components={n}\..*at least {n + 1} samples",
+        ):
+            pca.fit(X)
+        assert pca.is_fitted_ is False
+
+    # Warnings as errors: with a single column np.cov returns a 0-d array and
+    # eigh raises LinAlgError (a ValueError subclass) about the array's
+    # dimensionality, so the check must fire before it
+    @pytest.mark.filterwarnings("error")
+    @pytest.mark.parametrize("n_components", [1, N_COMPONENTS])
+    def test_single_feature_input(self, n_components: int) -> None:
+        pca = PCANormalizer(n_components=n_components)
+        X = np.random.default_rng(0).standard_normal((10, 1))
+        with pytest.raises(ValueError, match=r"n_features=1 < 2\..*at least two features"):
+            pca.fit(X)
+        assert pca.is_fitted_ is False
+
+    def test_two_features_still_fit(self) -> None:
+        # The lower bound is 2, not higher: the smallest decomposable case must work
+        X = np.random.default_rng(0).standard_normal((10, 2))
+        pca = PCANormalizer(n_components=2).fit(X)
+        assert pca.components_.shape == (2, 2)
+
     def test_fit_1d_input(self) -> None:
         pca = PCANormalizer(n_components=N_COMPONENTS)
         with pytest.raises(ValueError, match=rf"2-D input.*got shape \({N_FEATURES},\).*reshape\(1, -1\)"):
@@ -439,3 +509,111 @@ class TestErrors:
         # not a misleading feature-count mismatch
         with pytest.raises(ValueError, match=rf"2-D input.*got shape \(2, 3, {N_FEATURES}\)\.$"):
             fitted_pca.transform(np.zeros((2, 3, N_FEATURES)))
+
+
+def _data_with_spectrum(eigenvalues: list[float], n_samples: int = 200, seed: int = 0) -> np.ndarray:
+    """
+    Data whose *sample* covariance has exactly the given eigenvalues.
+
+    Orthonormalise centred Gaussian columns with QR (they stay centred, since
+    the column space is orthogonal to the ones vector), scale each to the chosen
+    variance, then mix with a random rotation so the components are not axis-
+    aligned.  cov = R.T @ diag(eigenvalues) @ R up to rounding.
+    """
+    rng = np.random.default_rng(seed)
+    n_features = len(eigenvalues)
+    G = rng.standard_normal((n_samples, n_features))
+    Q, _ = np.linalg.qr(G - G.mean(axis=0))
+    R, _ = np.linalg.qr(rng.standard_normal((n_features, n_features)))
+    return Q @ np.diag(np.sqrt((n_samples - 1) * np.asarray(eigenvalues))) @ R
+
+
+class TestDegenerateEigenvalueWarning:
+    """
+    components_ is reproducible only when the eigenvalues are well separated.
+    fit surfaces the exception with a RuntimeWarning instead of leaving the
+    caller with a silently build-dependent basis.
+    """
+
+    WELL_SEPARATED = [8.0, 7.0, 6.0, 5.0, 4.0, 3.0]
+
+    def test_construction_hits_the_requested_spectrum(self) -> None:
+        X = _data_with_spectrum(self.WELL_SEPARATED)
+        got = np.linalg.eigvalsh(np.cov(X, rowvar=False))[::-1]
+        np.testing.assert_allclose(got, self.WELL_SEPARATED, rtol=1e-10)
+
+    @pytest.mark.filterwarnings("error")
+    def test_well_separated_spectrum_does_not_warn(self) -> None:
+        PCANormalizer(n_components=4).fit(_data_with_spectrum(self.WELL_SEPARATED))
+
+    @pytest.mark.filterwarnings("error")
+    def test_golden_fixture_does_not_warn(self, training_data: np.ndarray) -> None:
+        PCANormalizer(n_components=N_COMPONENTS).fit(training_data)
+
+    def test_degenerate_pair_among_kept_components_warns(self) -> None:
+        X = _data_with_spectrum([8.0, 6.0, 6.0, 4.0, 2.0, 1.0])
+        with pytest.warns(RuntimeWarning, match=r"eigenvalues 1 and 2 are degenerate.*among the retained components.*Reduce n_components to 1"):
+            pca = PCANormalizer(n_components=4).fit(X)
+        # The fit itself is still valid: pinned so the behaviour at exact
+        # degeneracy is recorded rather than discovered later
+        assert pca.is_fitted_ is True
+        assert pca.components_.shape == (4, 6)
+        np.testing.assert_allclose(pca.explained_variance_, [8.0, 6.0, 6.0, 4.0], rtol=1e-10)
+
+    def test_degenerate_pair_at_cutoff_warns(self) -> None:
+        # ev[3] == ev[4] with n_components=4: which of the two is kept is arbitrary
+        X = _data_with_spectrum([8.0, 6.0, 5.0, 3.0, 3.0, 1.0])
+        with pytest.warns(RuntimeWarning, match=r"eigenvalues 3 and 4 are degenerate.*at the n_components cutoff"):
+            PCANormalizer(n_components=4).fit(X)
+
+    @pytest.mark.filterwarnings("error")
+    def test_degeneracy_beyond_cutoff_is_ignored(self) -> None:
+        # ev[4] == ev[5] are both discarded; the retained basis is unaffected
+        PCANormalizer(n_components=4).fit(_data_with_spectrum([8.0, 6.0, 5.0, 3.0, 1.0, 1.0]))
+
+    @pytest.mark.filterwarnings("error")
+    def test_all_features_kept_checks_only_retained_gaps(self) -> None:
+        # n_components == n_features: no cutoff gap exists, and the spectrum is separated
+        PCANormalizer(n_components=6).fit(_data_with_spectrum(self.WELL_SEPARATED))
+
+    @pytest.mark.parametrize("gap", [1e-8, 1e-10, 10 * EIGENVALUE_GAP_WARN])
+    @pytest.mark.filterwarnings("error")
+    def test_gap_above_threshold_does_not_warn(self, gap: float) -> None:
+        # Separation the LAPACK spread cannot rotate measurably: no warning
+        X = _data_with_spectrum([8.0, 6.0, 6.0 * (1 - gap), 4.0, 2.0, 1.0])
+        PCANormalizer(n_components=4).fit(X)
+
+    def test_gap_below_threshold_warns(self) -> None:
+        X = _data_with_spectrum([8.0, 6.0, 6.0 * (1 - EIGENVALUE_GAP_WARN / 10), 4.0, 2.0, 1.0])
+        with pytest.warns(RuntimeWarning, match=r"eigenvalues 1 and 2"):
+            PCANormalizer(n_components=4).fit(X)
+
+    def test_close_pair_of_small_eigenvalues_warns(self) -> None:
+        # Relative to each other ev[1] and ev[2] differ by 1e-9, but LAPACK
+        # rounding scales with ev[0], against which they are 1e-15 apart
+        X = _data_with_spectrum([1.0, 1e-6, 1e-6 * (1 - 1e-9), 1e-7, 1e-8, 1e-9])
+        with pytest.warns(RuntimeWarning, match=r"eigenvalues 1 and 2 are degenerate"):
+            PCANormalizer(n_components=3).fit(X)
+
+    def test_first_degenerate_pair_is_reported(self) -> None:
+        # Two degenerate pairs: the suggestion must avoid both, not only the later one
+        X = _data_with_spectrum([8.0, 6.0, 6.0, 4.0, 4.0, 1.0])
+        with pytest.warns(RuntimeWarning, match=r"eigenvalues 1 and 2 .*Reduce n_components to 1,") as record:
+            PCANormalizer(n_components=4).fit(X)
+        assert len(record) == 1
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            PCANormalizer(n_components=1).fit(X)
+
+    def test_degeneracy_at_first_eigenvalue_suggests_no_smaller_n_components(self) -> None:
+        X = _data_with_spectrum([6.0, 6.0, 4.0, 1.0])
+        with pytest.warns(RuntimeWarning, match=r"eigenvalues 0 and 1 .*No smaller n_components avoids this") as record:
+            PCANormalizer(n_components=2).fit(X)
+        assert "Reduce n_components to 0" not in str(record[0].message)
+
+    @pytest.mark.parametrize("method", ["fit", "fit_transform"])
+    def test_warning_points_at_the_caller(self, method: str) -> None:
+        X = _data_with_spectrum([8.0, 6.0, 6.0, 4.0, 2.0, 1.0])
+        with pytest.warns(RuntimeWarning, match=r"degenerate") as record:
+            getattr(PCANormalizer(n_components=4), method)(X)
+        assert record[0].filename == __file__

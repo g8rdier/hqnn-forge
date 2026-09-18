@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=42", "wheel"]
+requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,7 @@ name = "hqnn-forge"
 version = "0.1.0"
 description = "Parameter-efficient Hybrid Quantum Neural Networks for imbalanced tabular classification."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 authors = [{ name = "HQNN-Forge Contributors" }]
 keywords = [
@@ -23,8 +23,10 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: Apache Software License",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Scientific/Engineering :: Physics",
 ]
@@ -33,13 +35,13 @@ dependencies = [
     "torch>=2.2",
     # floor is the lowest CI-tested version; 0.38 breaks with autoray>=0.7
     # (NumpyMimic removed) and PennyLane declares no upper bound of its own
-    "pennylane>=0.42",
+    "pennylane>=0.45",
     "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
 lightning = [
-    "pennylane-lightning>=0.42",  # enables adjoint diff on CPU
+    "pennylane-lightning>=0.45",  # enables adjoint diff on CPU
 ]
 dev = [
     "pytest>=8.0",
@@ -57,11 +59,16 @@ examples = [
 where = ["."]
 include = ["hqnn_forge*"]
 
+[tool.setuptools.package-data]
+hqnn_forge = ["py.typed"]
+
 [tool.ruff]
 line-length = 99
-target-version = "py310"
+target-version = "py311"
 
 [tool.mypy]
-python_version = "3.10"
+# 3.12, not the 3.11 floor: the numpy stubs use the PEP 695 `type` statement,
+# which mypy only accepts at a target of 3.12 or later (see #102)
+python_version = "3.12"
 ignore_missing_imports = true
 strict = false
