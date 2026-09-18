@@ -17,10 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - HybridBinaryClassifier end-to-end model
 - Smoke tests for quantum encoding layer
 - Quick-start example for training
+- `entangler` (`"ring"` / `"strongly_entangling"`) and `readout` (`"all"` / `"first"`) on the
+  encoding layers; `embedding_rotation`, `entangler`, `readout`, `encoder_activation` and
+  `init_strategy="normal"` on the classifiers, and `HybridBinaryClassifier.published_shnn()` for
+  the thesis's 122-parameter SHNN configuration
 
 ### Changed
-- Raised the `pennylane` and `pennylane-lightning` floors from `>=0.38` to `>=0.42`, the lowest
-  version CI runs; 0.38 is incompatible with `autoray>=0.7`
+- Raised the `pennylane` and `pennylane-lightning` floors from `>=0.38` to `>=0.45`, the lowest
+  version CI runs; 0.38 is incompatible with `autoray>=0.7`, and 0.42 was only tested on
+  Python 3.10
 
 ### Removed
 - `requirements.txt`; `pyproject.toml` is now the only place dependencies are declared
+- Python 3.10 support; `requires-python` is now `>=3.11`. 3.10 reaches end of life in
+  October 2026 and current PennyLane releases no longer install on it, so CI tests 3.11
+  (the floor) and 3.14 (the newest) instead
