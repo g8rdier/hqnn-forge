@@ -46,7 +46,6 @@ lightning = [
 dev = [
     "pytest>=8.0",
     "pytest-cov",
-    "black",
     "ruff",
     "mypy",
 ]
@@ -62,6 +61,8 @@ include = ["hqnn_forge*"]
 [tool.setuptools.package-data]
 hqnn_forge = ["py.typed"]
 
+# ruff is the only formatter and linter; black is deliberately not declared,
+# so there is one line length (99) and one formatting style (see #133)
 [tool.ruff]
 line-length = 99
 target-version = "py311"
