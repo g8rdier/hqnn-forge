@@ -1,7 +1,7 @@
 """
 hqnn_forge.initializers
 =======================
-Barren-plateau-aware weight initialisation strategies for variational quantum circuits.
+Small-angle (restricted-variance) weight initialisation for variational quantum circuits.
 
 Exported symbols
 ----------------

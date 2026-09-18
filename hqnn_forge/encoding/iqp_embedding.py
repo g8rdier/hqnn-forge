@@ -13,7 +13,8 @@ Design Rationale
 * **Strongly-Entangling Ansatz** — after embedding, L layers of a CNOT ring
   followed by per-qubit SU(2) Rot(φ, θ, ω) gates are applied.
 * **Adjoint Differentiation** — the QNode is configured for the `adjoint` method.
-* **Barren Plateau Avoidance** — use `restricted_normal_init_` on the returned layer.
+* **Initialisation** — use `restricted_normal_init_` on the returned layer; see
+  `hqnn_forge.initializers` for what the small-angle init does and does not guarantee.
 """
 
 from __future__ import annotations
@@ -74,8 +75,12 @@ def _make_iqp_embedding_circuit(
         # This is qml.IQPEmbedding's decomposition written out gate by gate,
         # with the two-qubit MultiRZ replaced by its exact CNOT·RZ·CNOT form.
         # Written out so that a batched ``inputs`` of shape (batch, n_qubits)
-        # broadcasts through single-parameter gates only: lightning.qubit's
-        # adjoint path returns mis-shaped results for a broadcasted MultiRZ.
+        # broadcasts through single-parameter gates only.  The QNode wrapper
+        # (_expand_batch_dimension) already splits the batch into one tape per
+        # sample for every method except backprop, so lightning.qubit's adjoint
+        # path -- which mis-shapes results for a broadcasted MultiRZ -- never
+        # sees a broadcasted tape here; this form is a safeguard in case the
+        # circuit is ever executed broadcasted without that wrapper.
         # ``inputs[..., i]`` selects feature i for one sample or a batch alike.
         for _ in range(n_repeats):
             for qubit in range(n_qubits):

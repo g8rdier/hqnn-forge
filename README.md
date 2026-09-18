@@ -10,7 +10,7 @@
 
 | Feature | Detail |
 |---|---|
-| **Barren-plateau-safe init** | Block-local restricted-variance initialisation (Cerezo et al. 2021) |
+| **Small-angle init** | Gaussian initialisation with σ shrinking in width and depth, global or per-layer (this library's heuristic, in the spirit of Zhang et al. 2022). Measured with `hqnn_forge.diagnostics.gradient_variance` on the default 8-qubit circuit: a constant-factor gain in initial gradient variance over uniform init, not an escape from its ~4x-per-two-qubits decay, because the cascaded CNOT ring makes every ⟨Z_i⟩ a global cost |
 | **Adjoint differentiation** | Exact gradients via `lightning.qubit` — no finite-difference approximation |
 | **Custom angle encoding** | 8-qubit angle-embedding feature map with strongly-entangled VQC ansatz |
 | **Imbalance-robust losses** | Focal Loss & inverse-frequency weighted BCE |
@@ -61,7 +61,7 @@ See `examples/quick_start.py` for a full training loop on a synthetic imbalanced
 hqnn_forge/
 ├── encoding/        Quantum feature maps (angle embedding, IQP placeholder)
 ├── circuits/        Reusable VQC ansatz primitives
-├── initializers/    Barren-plateau-aware weight initialisation
+├── initializers/    Small-angle (restricted-variance) weight initialisation
 ├── preprocessing/   Classical PCA + normalisation (no sklearn runtime dep)
 ├── models/          Full hybrid architectures
 └── utils/           Imbalance-robust losses and helpers
@@ -78,7 +78,8 @@ and versioning policy this project follows.
 
 ## References
 
-- Cerezo et al. (2021) — *Barren plateaus in quantum neural network training landscapes*
+- Cerezo et al. (2021) — *Cost function dependent barren plateaus in shallow parametrized quantum circuits*
 - McClean et al. (2018) — *Barren plateaus in quantum neural network training landscapes*
+- Zhang et al. (2022) — *Escaping from the barren plateau via Gaussian initializations in deep variational quantum circuits*
 - Lin et al. (2017) — *Focal Loss for Dense Object Detection*
 - Bergholm et al. (2022) — *PennyLane: Automatic differentiation of hybrid quantum-classical computations*

@@ -5,22 +5,71 @@ Barren-plateau-aware weight initialisation for variational quantum circuits.
 
 Theory
 ------
-In deep variational quantum circuits initialised with uniform random weights
-(i.e. a 2-design), the gradient variance decays *exponentially* in the number
-of qubits n and layers L:
+In variational circuits whose parameters are drawn uniformly at random (so
+that the circuit approximates a 2-design), the gradient variance decays
+exponentially in the number of qubits n:
 
     Var[∂L/∂θ] ∝ 2^{-n}   (global cost, McClean et al. 2018)
 
-This makes training effectively impossible beyond ~10 qubits with naive init.
+Two published results bound that decay.  Cerezo et al. (2021) show that for
+*local* cost functions and shallow circuits (depth O(log n)) the decay is
+only polynomial -- the per-qubit ⟨Z_i⟩ readouts used throughout this library
+are local costs for that reason.  Zhang et al. (2022) show that drawing the
+parameters from N(0, σ²) with σ² = O(1/L) instead of uniformly bounds the
+gradient norm below by a polynomial in n and L, for deep circuits too.
 
-**Block-local restricted-variance initialisation** (Cerezo et al. 2021) mitigates
-this by keeping individual rotation angles small — drawn from N(0, σ²) with σ
-chosen to preserve O(1) gradient variance at initialisation:
+The two initialisers here are **this library's own heuristics** in the
+spirit of the second result; neither formula is taken from a paper:
 
-    σ = π / sqrt(n_qubits * n_layers)
+    restricted_normal_init_:  σ   = scale / sqrt(n_qubits * n_layers)
+    block_local_init_:        σ_ℓ = scale / sqrt(n_qubits * (ℓ + 1))
 
-This ensures that at t=0 the circuit is "close to the identity" so that local
-cost-function gradients remain polynomial.
+Shrinking σ with both width and depth keeps the initial parameters far from
+the uniform-over-[0, 2π) regime that the 2-design argument needs.  With the
+default ``scale = π`` and 8 qubits × 2 layers that gives σ = π/4 ≈ 0.79 rad:
+a *small-angle* initialisation, not an identity one -- the initial circuit is
+not close to the identity, and the σ are not derived to guarantee any
+particular gradient variance.  Grant et al. (2019) is a different strategy
+(identity blocks: parameters chosen so that consecutive blocks compose to
+the identity) and is not implemented here; it is cited for contrast.
+
+What the initialiser does for this library's circuits (measured)
+----------------------------------------------------------------
+The local-cost argument above does not apply to the library's default
+circuit: its CNOT ring is a cascade, so the backward light cone of every
+⟨Z_i⟩ spans all n qubits after one layer and the readouts behave as global
+costs.  Measured with :func:`hqnn_forge.diagnostics.gradient_variance` on
+``QuantumEncodingLayer`` (2 layers, cost ⟨Z_0⟩, ``default.qubit``, mean
+per-weight gradient variance over 5 seeds × 300 draws of weights and inputs),
+the ratio of restricted-init to uniform-init variance is:
+
+    inputs uniform in   n=4    n=6    n=8
+    {0}                 1.09   1.52   1.75
+    ±π/4                1.00   1.20   1.53
+    ±π                  0.97   0.97   1.00     (5-seed range at n=8: 0.80–1.12)
+
+and the uniform-init variance itself at ±π falls 0.0153 → 0.00428 → 0.00166
+from 4 to 8 qubits, about 3x per two qubits, with the restricted init
+following the same curve (0.0149 → 0.0042 → 0.0017).
+
+So:
+
+* With inputs spread over (-π, π), which is what both classifiers feed the
+  circuit (``tanh(·)·π``) and what ``PCANormalizer(scale_to_pi=True)``
+  produces, the initialiser makes **no measurable difference**: the angle
+  embedding already randomises the state, and shrinking the weight angles
+  cannot bring it back near the identity.
+* With inputs near zero it keeps a **constant factor** more gradient
+  variance (1.5–1.8x at 8 qubits), and the factor grows with n.
+* It does **not** change the exponential decay with qubit count under either
+  input range; that is set by the circuit, not the initialisation.
+
+The initialisers are kept as the default because they are harmless and
+cheap, and because the ``scale`` argument gives a one-parameter handle on
+the initial angle spread.  They should not be relied on for trainability at
+larger qubit counts; a locality-preserving entangler is the lever for that
+(see the brickwork entangler issue).  ``tests/test_gradient_variance.py``
+pins the three statements above so a change that alters them is noticed.
 
 Functions
 ---------
@@ -35,6 +84,8 @@ References
   parametrized quantum circuits", Nature Communications 12, 1791.
 * Grant et al. (2019) "An initialization strategy for addressing barren
   plateaus in parametrized quantum circuits", Quantum 3, 214.
+* Zhang et al. (2022) "Escaping from the barren plateau via Gaussian
+  initializations in deep variational quantum circuits", NeurIPS 35.
 """
 
 from __future__ import annotations
@@ -60,8 +111,11 @@ def restricted_normal_init_(
 
         σ = scale / sqrt(n_qubits * n_layers)
 
-    This keeps the initial circuit "close to the identity" and preserves
-    O(1) gradient variance for local cost functions.
+    A small-angle initialisation: σ shrinks with both width and depth so the
+    initial parameters stay far from uniform over [0, 2π), the regime in which
+    gradients vanish exponentially.  The formula is this library's heuristic
+    (see the module docstring), not a published prescription, and it does not
+    by itself guarantee O(1) gradient variance.
 
     Parameters
     ----------
@@ -123,8 +177,10 @@ def block_local_init_(
 
         σ_ℓ = scale / sqrt(n_qubits * (ℓ + 1))
 
-    This is the "layer-wise" variant recommended by Grant et al. (2019) for
-    deeper circuits where a global σ may be too aggressive.
+    A per-layer variant of :func:`restricted_normal_init_` for deeper circuits:
+    early layers keep a wider σ and only the later ones are narrowed, instead
+    of narrowing every layer by the full depth.  The schedule is this library's
+    heuristic; it is not the identity-block scheme of Grant et al. (2019).
 
     Parameters
     ----------
@@ -173,7 +229,7 @@ def apply_restricted_init(
     scale: float = math.pi,
 ) -> None:
     """
-    Apply barren-plateau-safe initialisation to **all parameters** in *module*
+    Apply the small-angle initialisation to **all parameters** in *module*
     whose shape starts with ``(n_layers, ...)``.
 
     This is a convenience wrapper; for fine-grained control call

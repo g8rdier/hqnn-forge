@@ -32,7 +32,9 @@ Design Notes
   input reaches the circuit unscaled, so it must already lie in (-π, π).
 
 * The quantum layer is initialised with ``restricted_normal_init_`` immediately
-  after construction to avoid barren plateaus.
+  after construction.  For this circuit that is a constant-factor gain in
+  initial gradient variance, not barren-plateau immunity: see
+  :mod:`hqnn_forge.initializers` for the measured behaviour.
 
 * The model exposes ``predict_proba(x)`` for inference (applies sigmoid).
 
@@ -179,7 +181,7 @@ class HybridBinaryClassifier(nn.Module):
         # ── Classical head ────────────────────────────────────────────────
         self.head = nn.Linear(n_qubits, 1)
 
-        # ── Barren-plateau-safe initialisation ────────────────────────────
+        # ── Small-angle (restricted-variance) initialisation ─────────────
         self._initialise_weights()
 
     # ------------------------------------------------------------------
@@ -192,7 +194,7 @@ class HybridBinaryClassifier(nn.Module):
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
 
-        # Quantum weights: barren-plateau-safe init
+        # Quantum weights: small-angle init (see hqnn_forge.initializers)
         weights = self.quantum_layer.qlayer.weights  # shape (n_layers, n_qubits, 3)
         if self.init_strategy == "block_local":
             block_local_init_(weights.data, n_qubits=self.n_qubits)
