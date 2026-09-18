@@ -15,7 +15,6 @@ jobs:
   # on the interpreter, and [tool.mypy] fixes python_version = "3.12" itself.
   # The tools come from uv.lock so a ruff release cannot change the rule set
   # under an open PR; Dependabot bumps them like every other dev dependency.
-  # mypy covers the package only: tests/ has its own baseline to fix first.
   lint:
     runs-on: ubuntu-latest
 
@@ -38,7 +37,7 @@ jobs:
       run: uv run --frozen ruff format --check hqnn_forge tests examples
 
     - name: Type-check
-      run: uv run --frozen mypy hqnn_forge
+      run: uv run --frozen mypy hqnn_forge tests examples
 
     # Neither ruff nor mypy checks stdlib API usage against the 3.11 floor:
     # ruff's target-version covers syntax only, and mypy has to target 3.12

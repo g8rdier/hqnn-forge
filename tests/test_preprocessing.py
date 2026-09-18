@@ -16,6 +16,13 @@ import torch
 from hqnn_forge.preprocessing import PCANormalizer
 from hqnn_forge.preprocessing.pca_normalizer import EIGENVALUE_GAP_WARN
 
+
+def _fitted(value: np.ndarray | None) -> np.ndarray:
+    """A fitted attribute, narrowed from ``ndarray | None`` for the type checker."""
+    assert value is not None
+    return value
+
+
 N_SAMPLES = 100
 N_FEATURES = 12
 N_COMPONENTS = 4
@@ -43,10 +50,10 @@ class TestFitAttributes:
         assert fitted_pca.is_fitted_ is True
 
     def test_components_shape(self, fitted_pca: PCANormalizer) -> None:
-        assert fitted_pca.components_.shape == (N_COMPONENTS, N_FEATURES)
+        assert _fitted(fitted_pca.components_).shape == (N_COMPONENTS, N_FEATURES)
 
     def test_explained_variance_sorted_descending(self, fitted_pca: PCANormalizer) -> None:
-        ev = fitted_pca.explained_variance_
+        ev = _fitted(fitted_pca.explained_variance_)
         for i in range(len(ev) - 1):
             assert ev[i] >= ev[i + 1]
 
@@ -57,7 +64,7 @@ class TestFitAttributes:
         # it, which is sound precisely because the fixture has one clearly
         # largest entry per component -- guarded by
         # TestGoldenFixtureIsWellConditioned::test_sign_convention_is_unambiguous
-        components = fitted_pca.components_
+        components = _fitted(fitted_pca.components_)
         leading = np.abs(components).argmax(axis=1)
         assert np.all(components[np.arange(components.shape[0]), leading] > 0)
 
@@ -89,7 +96,7 @@ class TestFitAttributes:
         monkeypatch.setattr(np.linalg, "eigh", flipped_eigh)
         flipped = PCANormalizer(n_components=N_COMPONENTS, scale_to_pi=True).fit(training_data)
 
-        np.testing.assert_allclose(flipped.components_, fitted_pca.components_)
+        np.testing.assert_allclose(_fitted(flipped.components_), _fitted(fitted_pca.components_))
 
     def test_mirrored_feature_pair_keeps_a_stable_sign(self) -> None:
         # A tie for the largest-magnitude entry is structural, not a freak of
@@ -105,7 +112,7 @@ class TestFitAttributes:
         base[:, 0] *= 3.0
         X = np.column_stack([base, -base[:, 0]])
 
-        reference = PCANormalizer(n_components=3, scale_to_pi=True).fit(X).components_
+        reference = _fitted(PCANormalizer(n_components=3, scale_to_pi=True).fit(X).components_)
 
         # Guard the premise: if the fixture ever stops producing a tie, this
         # test silently stops covering the tie-break rather than failing
@@ -119,7 +126,9 @@ class TestFitAttributes:
 
         for seed in range(8):
             perm = np.random.default_rng(seed).permutation(X.shape[0])
-            permuted = PCANormalizer(n_components=3, scale_to_pi=True).fit(X[perm]).components_
+            permuted = _fitted(
+                PCANormalizer(n_components=3, scale_to_pi=True).fit(X[perm]).components_
+            )
             np.testing.assert_allclose(permuted, reference, atol=1e-8)
 
 
@@ -183,7 +192,7 @@ class TestGoldenFixtureIsWellConditioned:
         )
 
     def test_sign_convention_is_unambiguous(self, fitted_pca: PCANormalizer) -> None:
-        magnitudes = np.sort(np.abs(fitted_pca.components_), axis=1)
+        magnitudes = np.sort(np.abs(_fitted(fitted_pca.components_)), axis=1)
         margins = (magnitudes[:, -1] - magnitudes[:, -2]) / magnitudes[:, -1]
         assert margins.min() > 0.001, (
             f"a component's two largest entries are nearly equal (smallest "
@@ -214,7 +223,9 @@ class TestTransformUsesFitStatistics:
     def test_matches_manual_projection(
         self, fitted_pca: PCANormalizer, held_out_data: np.ndarray
     ) -> None:
-        z = ((held_out_data - fitted_pca.mean_) @ fitted_pca.components_.T) / fitted_pca.std_
+        z = (
+            (held_out_data - _fitted(fitted_pca.mean_)) @ _fitted(fitted_pca.components_).T
+        ) / _fitted(fitted_pca.std_)
         expected = torch.tensor(np.tanh(z) * np.pi, dtype=torch.float32)
         torch.testing.assert_close(fitted_pca.transform(held_out_data), expected)
 
@@ -246,11 +257,11 @@ class TestTransformUsesFitStatistics:
         k = 2.0
         # Shift every row along the first principal axis; components are orthonormal,
         # so only the first standardised column should move, by exactly k / std_[0].
-        delta = pca.transform(held_out_data + k * pca.components_[0]) - pca.transform(
+        delta = pca.transform(held_out_data + k * _fitted(pca.components_)[0]) - pca.transform(
             held_out_data
         )
         expected = torch.zeros_like(delta)
-        expected[:, 0] = k / pca.std_[0]
+        expected[:, 0] = k / _fitted(pca.std_)[0]
         torch.testing.assert_close(delta, expected, atol=1e-5, rtol=0.0)
 
     def test_training_output_is_standardised(self, training_data: np.ndarray) -> None:
@@ -377,10 +388,10 @@ class TestErrors:
         X = rng.standard_normal((N_SAMPLES, N_FEATURES))
         pca = PCANormalizer(n_components=N_COMPONENTS).fit(X)
         before = (
-            pca.mean_.copy(),
-            pca.components_.copy(),
-            pca.explained_variance_.copy(),
-            pca.std_.copy(),
+            _fitted(pca.mean_).copy(),
+            _fitted(pca.components_).copy(),
+            _fitted(pca.explained_variance_).copy(),
+            _fitted(pca.std_).copy(),
         )
         expected = pca.transform(X)
 
@@ -400,7 +411,12 @@ class TestErrors:
         for name, old, new_ in zip(
             ("mean_", "components_", "explained_variance_", "std_"),
             before,
-            (pca.mean_, pca.components_, pca.explained_variance_, pca.std_),
+            (
+                _fitted(pca.mean_),
+                _fitted(pca.components_),
+                _fitted(pca.explained_variance_),
+                _fitted(pca.std_),
+            ),
         ):
             assert np.array_equal(old, new_), f"{name} changed across a failed re-fit"
         # and the fit is still usable, not merely still present
@@ -414,11 +430,11 @@ class TestErrors:
         X = 1e-7 * np.random.default_rng(0).standard_normal((N_SAMPLES, N_FEATURES))
         pca = PCANormalizer(n_components=N_COMPONENTS).fit(X)
         assert pca.is_fitted_ is True
-        assert pca.explained_variance_.max() < 1e-13
+        assert _fitted(pca.explained_variance_).max() < 1e-13
         # and the components carry real variance, not the 1e-8 epsilon.
         # std_ is std + 1e-8, so compare the excess: a true std of 1e-12 would
         # still clear a bare "> 1e-8" while being 99.99% epsilon
-        assert np.all(pca.std_ - 1e-8 > 1e-8)
+        assert np.all(_fitted(pca.std_) - 1e-8 > 1e-8)
 
     def test_full_rank_at_heterogeneous_scales_still_fits(self) -> None:
         # Guards the tolerance against living in eigenvalue space.  Thresholding
@@ -436,15 +452,17 @@ class TestErrors:
             pca = PCANormalizer(n_components=N_COMPONENTS).fit(X)
         assert pca.is_fitted_ is True
         # every retained component carries real variance, not the 1e-8 epsilon
-        assert np.all(pca.std_ - 1e-8 > 1e-8)
+        assert np.all(_fitted(pca.std_) - 1e-8 > 1e-8)
 
     def test_minimum_samples_fit_has_nonzero_variance(self) -> None:
         X = np.random.default_rng(0).standard_normal((N_COMPONENTS + 1, N_FEATURES))
         pca = PCANormalizer(n_components=N_COMPONENTS).fit(X)
         # Degenerate components fall back to std_ == 1e-8; every one must be far above it
-        assert pca.std_.shape == (N_COMPONENTS,)
-        assert np.all(pca.std_ > 0.1)
-        np.testing.assert_allclose(pca.std_, np.sqrt(pca.explained_variance_) + 1e-8, rtol=1e-10)
+        assert _fitted(pca.std_).shape == (N_COMPONENTS,)
+        assert np.all(_fitted(pca.std_) > 0.1)
+        np.testing.assert_allclose(
+            _fitted(pca.std_), np.sqrt(_fitted(pca.explained_variance_)) + 1e-8, rtol=1e-10
+        )
 
     # Warnings as errors: with a single row np.cov/eigh warn and then raise
     # LinAlgError (a ValueError subclass), so the check must fire before any of that
@@ -465,7 +483,7 @@ class TestErrors:
     @pytest.mark.filterwarnings("error")
     @pytest.mark.parametrize("n_components", [2.5, 3.0, "4", None])
     def test_non_integer_n_components(self, n_components: object) -> None:
-        pca = PCANormalizer(n_components=n_components)
+        pca = PCANormalizer(n_components=n_components)  # type: ignore[arg-type]
         X = np.random.default_rng(0).standard_normal((N_SAMPLES, N_FEATURES))
         with pytest.raises(
             ValueError,
@@ -486,8 +504,8 @@ class TestErrors:
     @pytest.mark.parametrize("n_components", [np.int64(4), np.int32(4), np.uint8(4)])
     def test_numpy_integer_n_components_fits(self, n_components: np.integer) -> None:
         X = np.random.default_rng(0).standard_normal((N_SAMPLES, N_FEATURES))
-        pca = PCANormalizer(n_components=n_components).fit(X)
-        assert pca.components_.shape == (4, N_FEATURES)
+        pca = PCANormalizer(n_components=n_components).fit(X)  # type: ignore[arg-type]
+        assert _fitted(pca.components_).shape == (4, N_FEATURES)
         assert pca.transform(X).shape == (N_SAMPLES, 4)
 
     # Warnings as errors: a fixed-width NumPy integer at its maximum would wrap
@@ -497,7 +515,7 @@ class TestErrors:
     @pytest.mark.parametrize("n_components", [np.uint8(255), np.int8(127)])
     def test_numpy_integer_n_components_does_not_overflow(self, n_components: np.integer) -> None:
         n = int(n_components)
-        pca = PCANormalizer(n_components=n_components)
+        pca = PCANormalizer(n_components=n_components)  # type: ignore[arg-type]
         X = np.random.default_rng(0).standard_normal((100, n + 45))
         with pytest.raises(
             ValueError,
@@ -522,7 +540,7 @@ class TestErrors:
         # The lower bound is 2, not higher: the smallest decomposable case must work
         X = np.random.default_rng(0).standard_normal((10, 2))
         pca = PCANormalizer(n_components=2).fit(X)
-        assert pca.components_.shape == (2, 2)
+        assert _fitted(pca.components_).shape == (2, 2)
 
     def test_fit_1d_input(self) -> None:
         pca = PCANormalizer(n_components=N_COMPONENTS)
@@ -601,8 +619,10 @@ class TestDegenerateEigenvalueWarning:
         # The fit itself is still valid: pinned so the behaviour at exact
         # degeneracy is recorded rather than discovered later
         assert pca.is_fitted_ is True
-        assert pca.components_.shape == (4, 6)
-        np.testing.assert_allclose(pca.explained_variance_, [8.0, 6.0, 6.0, 4.0], rtol=1e-10)
+        assert _fitted(pca.components_).shape == (4, 6)
+        np.testing.assert_allclose(
+            _fitted(pca.explained_variance_), [8.0, 6.0, 6.0, 4.0], rtol=1e-10
+        )
 
     def test_degenerate_pair_at_cutoff_warns(self) -> None:
         # ev[3] == ev[4] with n_components=4: which of the two is kept is arbitrary
