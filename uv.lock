@@ -755,14 +755,14 @@ requires-dist = [
     { name = "black", marker = "extra == 'dev'" },
     { name = "matplotlib", marker = "extra == 'examples'" },
     { name = "mypy", marker = "extra == 'dev'" },
-    { name = "numpy", specifier = ">=1.26" },
+    { name = "numpy", specifier = ">=2.0" },
     { name = "pennylane", specifier = ">=0.45" },
     { name = "pennylane-lightning", marker = "extra == 'lightning'", specifier = ">=0.45" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "scikit-learn", marker = "extra == 'examples'" },
-    { name = "torch", specifier = ">=2.2" },
+    { name = "torch", specifier = ">=2.3" },
 ]
 provides-extras = ["lightning", "dev", "examples"]
 
