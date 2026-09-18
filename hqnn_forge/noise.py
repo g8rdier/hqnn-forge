@@ -26,6 +26,17 @@ depolarizing, and ``p`` is restricted to [0, 3/4].
 ``p = 0`` is a no-op: the original QNode stays in place, so the output is
 bit-identical to the noiseless model rather than merely close to it.
 
+Training-time noise
+-------------------
+The encoding layers and hybrid classifiers also take ``noise_level`` and
+``noise_position`` at construction.  With ``noise_level > 0`` the layer runs
+the same noisy QNode (built by :func:`training_noise_qnode`) whenever it is
+in **train mode**, so gradients are computed through the noisy circuit, and
+the noiseless QNode in eval mode, like dropout.  Evaluation under noise is
+then done with :func:`apply_depolarizing_noise` / :func:`noise_sweep`, which
+take precedence over the training-time channel if both are active at once.
+``noise_level=0`` (the default) leaves the layer exactly as before.
+
 Mixed-state simulation costs ``O(4^n)`` memory and is differentiated with
 backprop; it is intended for the library's qubit counts (≤ ~10).
 """
@@ -62,10 +73,62 @@ def _resolve_qlayer(target: nn.Module) -> tuple[qml.qnn.TorchLayer, int]:
     return qlayer, n_qubits
 
 
+def validate_noise(p: float, position: str) -> None:
+    """Raise ``ValueError`` unless ``0 <= p <= MAX_P`` and ``position`` is known."""
+    if not 0.0 <= p <= MAX_P:
+        raise ValueError(f"p must lie in [0, {MAX_P}]; got {p}.")
+    if position not in ("all", "end"):
+        raise ValueError(f"position must be 'all' or 'end'; got {position!r}.")
+
+
 def _noisy_qnode(qnode: qml.QNode, n_qubits: int, p: float, position: Position) -> qml.QNode:
     device = qml.device("default.mixed", wires=n_qubits)
     base = qml.QNode(qnode.func, device, diff_method="backprop", interface="torch")
     return _insert(base, qml.DepolarizingChannel, p, position=position)
+
+
+def training_noise_qnode(
+    qnode: qml.QNode, n_qubits: int, p: float, position: Position = "all"
+) -> qml.QNode:
+    """
+    The noisy counterpart of ``qnode`` an encoding layer runs in train mode.
+
+    Same construction as :func:`apply_depolarizing_noise` uses: the layer's
+    circuit function on ``default.mixed`` with ``DepolarizingChannel(p)``
+    inserted at ``position``, differentiated with backprop.  The layer's own
+    ``device_name`` and ``diff_method`` apply to its noiseless path only;
+    mixed-state simulation costs ``O(4^n)`` memory.
+
+    Raises
+    ------
+    ValueError
+        If ``p`` is outside ``(0, 0.75]`` or ``position`` is unknown.
+    """
+    validate_noise(p, position)
+    if p == 0.0:
+        raise ValueError("training_noise_qnode needs p > 0; p = 0 is the noiseless QNode itself.")
+    return _noisy_qnode(qnode, n_qubits, p, position)
+
+
+def run_with_training_noise(
+    qlayer: qml.qnn.TorchLayer, noisy_qnode: qml.QNode, x: torch.Tensor
+) -> torch.Tensor:
+    """
+    Evaluate ``qlayer`` on ``x`` with ``noisy_qnode`` in place of its QNode.
+
+    If :func:`apply_depolarizing_noise` currently holds the layer's QNode,
+    that channel is kept and the training-time one is not applied: the
+    post-hoc wrapper is the evaluation instrument and wins.  The original
+    QNode is restored afterwards, including when the forward pass raises.
+    """
+    if getattr(qlayer, "_hqnn_noise_original", None) is not None:
+        return qlayer(x)
+    original = qlayer.qnode
+    qlayer.qnode = noisy_qnode
+    try:
+        return qlayer(x)
+    finally:
+        qlayer.qnode = original
 
 
 @contextmanager
@@ -107,10 +170,7 @@ def apply_depolarizing_noise(
     Gradients flow through the noisy circuit, so the block can also be used to
     fine-tune under noise.
     """
-    if not 0.0 <= p <= MAX_P:
-        raise ValueError(f"p must lie in [0, {MAX_P}]; got {p}.")
-    if position not in ("all", "end"):
-        raise ValueError(f"position must be 'all' or 'end'; got {position!r}.")
+    validate_noise(p, position)
     qlayer, n_qubits = _resolve_qlayer(model)
     if getattr(qlayer, "_hqnn_noise_original", None) is not None:
         raise RuntimeError("apply_depolarizing_noise cannot be nested on the same layer.")

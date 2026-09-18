@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - HybridBinaryClassifier end-to-end model
 - Smoke tests for quantum encoding layer
 - Quick-start example for training
+- `noise_level` / `noise_position` on the encoding layers and classifiers: depolarizing noise
+  applied in train mode so gradients flow through the noisy circuit; `examples/noise_aware_training.py`
+  compares noiseless and noise-aware training under the post-hoc noise sweep
 
 ### Changed
 - Raised the `pennylane` and `pennylane-lightning` floors from `>=0.38` to `>=0.45`, the lowest

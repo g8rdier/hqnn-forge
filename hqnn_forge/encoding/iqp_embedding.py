@@ -27,7 +27,8 @@ import pennylane as qml
 import torch
 import torch.nn as nn
 
-from hqnn_forge.encoding.angle_embedding import _expand_batch_dimension
+from hqnn_forge.encoding.angle_embedding import _build_training_noise, _expand_batch_dimension
+from hqnn_forge.noise import run_with_training_noise
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +139,9 @@ def build_iqp_qnode(
 class IQPEncodingLayer(nn.Module):
     """
     A PyTorch nn.Module wrapping the IQP-embedding QNode.
+
+    ``noise_level`` / ``noise_position`` add training-time depolarizing
+    noise exactly as in :class:`~hqnn_forge.encoding.QuantumEncodingLayer`.
     """
 
     def __init__(
@@ -147,12 +151,16 @@ class IQPEncodingLayer(nn.Module):
         n_repeats: int = 1,
         device_name: DeviceName = "lightning.qubit",
         diff_method: DiffMethod = "adjoint",
+        noise_level: float = 0.0,
+        noise_position: str = "all",
     ) -> None:
         super().__init__()
 
         self.n_qubits = n_qubits
         self.n_layers = n_layers
         self.n_repeats = n_repeats
+        self.noise_level = noise_level
+        self.noise_position = noise_position
 
         qnode = build_iqp_qnode(
             n_qubits=n_qubits,
@@ -167,6 +175,10 @@ class IQPEncodingLayer(nn.Module):
         }
 
         self.qlayer = qml.qnn.TorchLayer(qnode, weight_shapes)
+        # Training-time depolarizing noise; see QuantumEncodingLayer.
+        self._training_noise_qnode = _build_training_noise(
+            qnode, n_qubits, noise_level, noise_position
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Embed a batch of feature vectors."""
@@ -176,6 +188,8 @@ class IQPEncodingLayer(nn.Module):
                 f"n_qubits={self.n_qubits}."
             )
         # Whole batch in one call; see QuantumEncodingLayer.forward.
+        if self.training and self._training_noise_qnode is not None:
+            return run_with_training_noise(self.qlayer, self._training_noise_qnode, x)
         return self.qlayer(x)
 
     def extra_repr(self) -> str:

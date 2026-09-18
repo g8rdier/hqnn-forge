@@ -42,6 +42,8 @@ import pennylane as qml
 import torch
 import torch.nn as nn
 
+from hqnn_forge.noise import run_with_training_noise, training_noise_qnode, validate_noise
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -340,11 +342,24 @@ class QuantumEncodingLayer(nn.Module):
     diff_method:
         Gradient method.  Use ``"adjoint"`` with ``lightning.qubit`` for
         exact, efficient gradients during state-vector simulation.
+    noise_level:
+        Depolarizing probability applied to the circuit in **train mode**,
+        in ``[0, 0.75]``; ``0`` (default) is the plain noiseless layer.  With
+        ``noise_level > 0`` the train-mode forward pass runs the circuit on
+        ``default.mixed`` with a ``DepolarizingChannel`` inserted, so
+        gradients are computed through the noisy circuit (noise-aware
+        training); eval mode is always noiseless, like dropout.  See
+        :mod:`hqnn_forge.noise`.
+    noise_position:
+        ``"all"`` (after every gate, default) or ``"end"`` (before
+        measurement), as in :func:`hqnn_forge.noise.apply_depolarizing_noise`.
 
     Attributes
     ----------
     n_qubits : int
     n_layers : int
+    noise_level : float
+    noise_position : str
     qlayer : pennylane.qnn.TorchLayer
         The underlying differentiable quantum layer.
 
@@ -370,11 +385,15 @@ class QuantumEncodingLayer(nn.Module):
         rotation: RotationAxis = "X",
         device_name: DeviceName = "lightning.qubit",
         diff_method: DiffMethod = "adjoint",
+        noise_level: float = 0.0,
+        noise_position: str = "all",
     ) -> None:
         super().__init__()
 
         self.n_qubits = n_qubits
         self.n_layers = n_layers
+        self.noise_level = noise_level
+        self.noise_position = noise_position
 
         # Build the QNode ─────────────────────────────────────────────────
         qnode = build_encoding_qnode(
@@ -396,6 +415,11 @@ class QuantumEncodingLayer(nn.Module):
 
         # Wrap QNode as an nn.Module with registered Parameters ───────────
         self.qlayer = qml.qnn.TorchLayer(qnode, weight_shapes)
+
+        # Training-time depolarizing noise (see hqnn_forge.noise) ─────────
+        self._training_noise_qnode = _build_training_noise(
+            qnode, n_qubits, noise_level, noise_position
+        )
 
     # ------------------------------------------------------------------
     # Forward pass
@@ -435,6 +459,8 @@ class QuantumEncodingLayer(nn.Module):
         # broadcasted tape or split into one tape per sample is decided in
         # build_encoding_qnode (see _expand_batch_dimension); the outputs and
         # gradients are the same either way.
+        if self.training and self._training_noise_qnode is not None:
+            return run_with_training_noise(self.qlayer, self._training_noise_qnode, x)
         return self.qlayer(x)
 
     # ------------------------------------------------------------------
@@ -442,11 +468,26 @@ class QuantumEncodingLayer(nn.Module):
     # ------------------------------------------------------------------
 
     def extra_repr(self) -> str:
+        noise = f", noise_level={self.noise_level}" if self.noise_level else ""
         return (
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "
-            f"n_params={self.n_layers * self.n_qubits * 3}"
+            f"n_params={self.n_layers * self.n_qubits * 3}{noise}"
         )
+
+
+def _build_training_noise(
+    qnode: qml.QNode, n_qubits: int, noise_level: float, noise_position: str
+) -> qml.QNode | None:
+    """
+    The train-mode QNode for ``noise_level > 0``, or ``None`` for the
+    noiseless default.  Shared by every encoding layer; validation happens
+    here so a bad ``noise_level`` fails at construction.
+    """
+    validate_noise(noise_level, noise_position)
+    if noise_level == 0.0:
+        return None
+    return training_noise_qnode(qnode, n_qubits, noise_level, noise_position)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
