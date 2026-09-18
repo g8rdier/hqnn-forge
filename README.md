@@ -154,6 +154,27 @@ hqnn_forge/
 
 ---
 
+## Development Setup
+
+```bash
+pip install -e ".[lightning,dev]"
+pre-commit install
+```
+
+The `dev` extra brings `ruff`, `mypy` and `pytest`. `pre-commit install` registers the hooks in
+`.pre-commit-config.yaml`, which run `ruff format` and `ruff check --fix` on every commit with
+the settings from `pyproject.toml`; CI runs the same two checks, so a commit that passes the
+hooks passes the lint job. To run them over the whole tree at any time:
+
+```bash
+pre-commit run --all-files
+```
+
+`pre-commit` itself is not part of the `dev` extra; install it once with `pip install pre-commit`
+or run it with `uvx pre-commit`.
+
+---
+
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the issue/branch/PR workflow, commit conventions,
