@@ -42,6 +42,8 @@ import pennylane as qml
 import torch
 import torch.nn as nn
 
+from hqnn_forge.noise import run_with_training_noise, training_noise_qnode, validate_noise
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -180,6 +182,41 @@ def _make_angle_embedding_circuit(
 
 
 # ---------------------------------------------------------------------------
+# Batching
+# ---------------------------------------------------------------------------
+
+def _expand_batch_dimension(qnode: qml.QNode, diff_method: str) -> qml.QNode:
+    """
+    Make *qnode* accept a batched ``inputs`` tensor of shape ``(batch, n_qubits)``
+    under every supported differentiation method.
+
+    A 2-D ``inputs`` reaches the circuit as a *broadcasted* tape: one tape whose
+    embedding gates carry a batch of angles.  How that is executed depends on
+    ``diff_method``:
+
+    * ``"backprop"`` differentiates through the simulator, which handles the
+      batch natively as one vectorised state-vector evolution.  This is the fast
+      path and the tape is left broadcasted.
+    * Every other method (``"adjoint"``, ``"parameter-shift"``,
+      ``"finite-diff"``) is a gradient *transform* on the tape, and the
+      parameter-shift and finite-difference transforms refuse a broadcasted
+      tape when the gradient with respect to the broadcasted parameters is
+      requested -- which is exactly the case when a classical encoder upstream
+      needs input gradients.  ``lightning.qubit``'s adjoint path also
+      mis-shapes results for some broadcasted two-qubit rotations.  For these
+      the tape is split into one tape per sample *before* the gradient
+      transform sees it, so each tape is unbroadcasted and the whole batch is
+      still handed to the device as a single list of tapes.
+
+    Either way the QNode's signature and results are unchanged: it returns
+    ``n_qubits`` expectation values, each of shape ``(batch,)``.
+    """
+    if diff_method == "backprop":
+        return qnode
+    return qml.transforms.broadcast_expand(qnode)
+
+
+# ---------------------------------------------------------------------------
 # Public QNode factory
 # ---------------------------------------------------------------------------
 
@@ -250,6 +287,7 @@ def build_encoding_qnode(
         diff_method=diff_method,
         interface="torch",  # enables PyTorch autograd interop
     )
+    qnode = _expand_batch_dimension(qnode, diff_method)
 
     logger.info(
         "QNode built | device=%s | qubits=%d | layers=%d | diff=%s | rotation=%s",
@@ -304,11 +342,24 @@ class QuantumEncodingLayer(nn.Module):
     diff_method:
         Gradient method.  Use ``"adjoint"`` with ``lightning.qubit`` for
         exact, efficient gradients during state-vector simulation.
+    noise_level:
+        Depolarizing probability applied to the circuit in **train mode**,
+        in ``[0, 0.75]``; ``0`` (default) is the plain noiseless layer.  With
+        ``noise_level > 0`` the train-mode forward pass runs the circuit on
+        ``default.mixed`` with a ``DepolarizingChannel`` inserted, so
+        gradients are computed through the noisy circuit (noise-aware
+        training); eval mode is always noiseless, like dropout.  See
+        :mod:`hqnn_forge.noise`.
+    noise_position:
+        ``"all"`` (after every gate, default) or ``"end"`` (before
+        measurement), as in :func:`hqnn_forge.noise.apply_depolarizing_noise`.
 
     Attributes
     ----------
     n_qubits : int
     n_layers : int
+    noise_level : float
+    noise_position : str
     qlayer : pennylane.qnn.TorchLayer
         The underlying differentiable quantum layer.
 
@@ -334,11 +385,15 @@ class QuantumEncodingLayer(nn.Module):
         rotation: RotationAxis = "X",
         device_name: DeviceName = "lightning.qubit",
         diff_method: DiffMethod = "adjoint",
+        noise_level: float = 0.0,
+        noise_position: str = "all",
     ) -> None:
         super().__init__()
 
         self.n_qubits = n_qubits
         self.n_layers = n_layers
+        self.noise_level = noise_level
+        self.noise_position = noise_position
 
         # Build the QNode ─────────────────────────────────────────────────
         qnode = build_encoding_qnode(
@@ -360,6 +415,11 @@ class QuantumEncodingLayer(nn.Module):
 
         # Wrap QNode as an nn.Module with registered Parameters ───────────
         self.qlayer = qml.qnn.TorchLayer(qnode, weight_shapes)
+
+        # Training-time depolarizing noise (see hqnn_forge.noise) ─────────
+        self._training_noise_qnode = _build_training_noise(
+            qnode, n_qubits, noise_level, noise_position
+        )
 
     # ------------------------------------------------------------------
     # Forward pass
@@ -394,22 +454,40 @@ class QuantumEncodingLayer(nn.Module):
                 f"features before passing to QuantumEncodingLayer."
             )
 
-        # TorchLayer processes one sample at a time; vmap over batch dim.
-        # torch.vmap is experimental — fall back to a list comprehension which
-        # is safe and readable.  For high-throughput production use, replace
-        # with torch.vmap once PennyLane adds full vmap support.
-        return torch.stack([self.qlayer(sample) for sample in x])
+        # TorchLayer hands the whole batch to the QNode in one call and reshapes
+        # the result to (batch, n_qubits).  Whether the batch is executed as one
+        # broadcasted tape or split into one tape per sample is decided in
+        # build_encoding_qnode (see _expand_batch_dimension); the outputs and
+        # gradients are the same either way.
+        if self.training and self._training_noise_qnode is not None:
+            return run_with_training_noise(self.qlayer, self._training_noise_qnode, x)
+        return self.qlayer(x)
 
     # ------------------------------------------------------------------
     # Utility
     # ------------------------------------------------------------------
 
     def extra_repr(self) -> str:
+        noise = f", noise_level={self.noise_level}" if self.noise_level else ""
         return (
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "
-            f"n_params={self.n_layers * self.n_qubits * 3}"
+            f"n_params={self.n_layers * self.n_qubits * 3}{noise}"
         )
+
+
+def _build_training_noise(
+    qnode: qml.QNode, n_qubits: int, noise_level: float, noise_position: str
+) -> qml.QNode | None:
+    """
+    The train-mode QNode for ``noise_level > 0``, or ``None`` for the
+    noiseless default.  Shared by every encoding layer; validation happens
+    here so a bad ``noise_level`` fails at construction.
+    """
+    validate_noise(noise_level, noise_position)
+    if noise_level == 0.0:
+        return None
+    return training_noise_qnode(qnode, n_qubits, noise_level, noise_position)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

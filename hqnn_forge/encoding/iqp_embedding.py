@@ -20,11 +20,15 @@ from __future__ import annotations
 
 import logging
 import warnings
+from itertools import combinations
 from typing import Literal
 
 import pennylane as qml
 import torch
 import torch.nn as nn
+
+from hqnn_forge.encoding.angle_embedding import _build_training_noise, _expand_batch_dimension
+from hqnn_forge.noise import run_with_training_noise
 
 logger = logging.getLogger(__name__)
 
@@ -60,17 +64,32 @@ def _make_iqp_embedding_circuit(
     """
     Factory returning the bare quantum function for the IQP embedding.
     """
+    # All-to-all entangling pattern, the same as qml.IQPEmbedding(pattern=None)
+    pairs = list(combinations(range(n_qubits), 2))
+
     def circuit(
         inputs: torch.Tensor,
         weights: torch.Tensor,
     ) -> list[qml.measurements.ExpectationMP]:
-        # ── 1. IQP embedding: H → RZ(x_i) → IsingZZ(x_i*x_j) ────────────
-        qml.IQPEmbedding(
-            features=inputs,
-            wires=range(n_qubits),
-            n_repeats=n_repeats,
-            pattern=None, # full entanglement pattern
-        )
+        # ── 1. IQP embedding: H → RZ(x_i) → exp(-i x_i x_j Z_i Z_j / 2) ─────
+        # This is qml.IQPEmbedding's decomposition written out gate by gate,
+        # with the two-qubit MultiRZ replaced by its exact CNOT·RZ·CNOT form.
+        # Written out so that a batched ``inputs`` of shape (batch, n_qubits)
+        # broadcasts through single-parameter gates only.  The QNode wrapper
+        # (_expand_batch_dimension) already splits the batch into one tape per
+        # sample for every method except backprop, so lightning.qubit's adjoint
+        # path -- which mis-shapes results for a broadcasted MultiRZ -- never
+        # sees a broadcasted tape here; this form is a safeguard in case the
+        # circuit is ever executed broadcasted without that wrapper.
+        # ``inputs[..., i]`` selects feature i for one sample or a batch alike.
+        for _ in range(n_repeats):
+            for qubit in range(n_qubits):
+                qml.Hadamard(wires=qubit)
+                qml.RZ(inputs[..., qubit], wires=qubit)
+            for i, j in pairs:
+                qml.CNOT(wires=[i, j])
+                qml.RZ(inputs[..., i] * inputs[..., j], wires=j)
+                qml.CNOT(wires=[i, j])
 
         # ── 2 & 3. Strongly entangling layers ────────────────────────────
         for layer in range(n_layers):
@@ -113,13 +132,16 @@ def build_iqp_qnode(
         diff_method=diff_method,
         interface="torch",
     )
-
-    return qnode
+    # Batched inputs: see angle_embedding._expand_batch_dimension
+    return _expand_batch_dimension(qnode, diff_method)
 
 
 class IQPEncodingLayer(nn.Module):
     """
     A PyTorch nn.Module wrapping the IQP-embedding QNode.
+
+    ``noise_level`` / ``noise_position`` add training-time depolarizing
+    noise exactly as in :class:`~hqnn_forge.encoding.QuantumEncodingLayer`.
     """
 
     def __init__(
@@ -129,12 +151,16 @@ class IQPEncodingLayer(nn.Module):
         n_repeats: int = 1,
         device_name: DeviceName = "lightning.qubit",
         diff_method: DiffMethod = "adjoint",
+        noise_level: float = 0.0,
+        noise_position: str = "all",
     ) -> None:
         super().__init__()
 
         self.n_qubits = n_qubits
         self.n_layers = n_layers
         self.n_repeats = n_repeats
+        self.noise_level = noise_level
+        self.noise_position = noise_position
 
         qnode = build_iqp_qnode(
             n_qubits=n_qubits,
@@ -149,6 +175,10 @@ class IQPEncodingLayer(nn.Module):
         }
 
         self.qlayer = qml.qnn.TorchLayer(qnode, weight_shapes)
+        # Training-time depolarizing noise; see QuantumEncodingLayer.
+        self._training_noise_qnode = _build_training_noise(
+            qnode, n_qubits, noise_level, noise_position
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Embed a batch of feature vectors."""
@@ -157,7 +187,10 @@ class IQPEncodingLayer(nn.Module):
                 f"Input feature dimension {x.shape[-1]} does not match "
                 f"n_qubits={self.n_qubits}."
             )
-        return torch.stack([self.qlayer(sample) for sample in x])
+        # Whole batch in one call; see QuantumEncodingLayer.forward.
+        if self.training and self._training_noise_qnode is not None:
+            return run_with_training_noise(self.qlayer, self._training_noise_qnode, x)
+        return self.qlayer(x)
 
     def extra_repr(self) -> str:
         return (
