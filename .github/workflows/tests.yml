@@ -69,3 +69,39 @@ jobs:
 
     - name: Run pytest
       run: uv run --frozen pytest tests/ -v
+
+  # The two matrices above never install the declared floors: test resolves to
+  # the newest versions the ">=" constraints allow and test-locked to whatever
+  # uv.lock pins, so a floor in pyproject.toml is otherwise only tested by
+  # coincidence, and a lockfile bump can silently leave it untested. This job
+  # installs every direct runtime dependency at exactly its floor (transitive
+  # ones resolve normally) on 3.11, the requires-python floor, so every floor
+  # is exercised on every PR and has to be raised when it stops working.
+  #
+  # Only the runtime deps and the lightning extra are resolved lowest: the dev
+  # tools are declared without floors, and lowest-direct would pick mypy 0.1
+  # and ruff 0.0.x, which do not even build. pytest is installed afterwards at
+  # its normal resolution, which leaves the runtime pins untouched.
+  test-lowest:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v10.1.0
+      with:
+        python-version: "3.11"
+        enable-cache: true
+
+    - name: Install the declared floors
+      run: |
+        uv venv
+        uv pip install --resolution lowest-direct -e ".[lightning]"
+        uv pip install "pytest>=8.0"
+
+    - name: Show the resolved floors
+      run: uv pip list | grep -i -E "^(torch|numpy|pennylane|pennylane-lightning) "
+
+    - name: Run pytest
+      run: uv run --no-sync pytest tests/ -v

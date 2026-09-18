@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Raised the `pennylane` and `pennylane-lightning` floors from `>=0.38` to `>=0.45`, the lowest
   version CI runs; 0.38 is incompatible with `autoray>=0.7`, and 0.42 was only tested on
   Python 3.10
+- Raised the `torch` floor from `>=2.2` to `>=2.3` and the `numpy` floor from `>=1.26` to
+  `>=2.0`. `pennylane>=0.45` requires NumPy 2, and the torch 2.2 wheels were compiled against
+  NumPy 1.x and fail to initialise NumPy 2; CI now installs every declared floor
+  (`test-lowest` job) so a floor that stops working fails a PR instead of a user install
 
 ### Fixed
 - `disable_quantum_layer` fills the quantum layer's readout width (`n_outputs`) rather than
