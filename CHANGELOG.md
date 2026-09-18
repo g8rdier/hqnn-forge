@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with zero-padding and L2 normalisation in `forward`, ahead of the same entangling ansatz
 - `DataReuploadingLayer`: angle embedding repeated before every variational layer
   (Pérez-Salinas et al. 2020), with optional trainable per-upload input scaling
+- `hqnn_forge.kernels.quantum_kernel_matrix`: pairwise state-fidelity kernel
+  `|⟨Φ(x_i)|Φ(x_j)⟩|²` from any encoding layer, for `SVC(kernel="precomputed")`
 
 ### Changed
 - Raised the `pennylane` and `pennylane-lightning` floors from `>=0.38` to `>=0.45`, the lowest

@@ -64,7 +64,8 @@ hqnn_forge/
 ├── initializers/    Barren-plateau-aware weight initialisation
 ├── preprocessing/   Classical PCA + normalisation (no sklearn runtime dep)
 ├── models/          Full hybrid architectures
-└── utils/           Imbalance-robust losses and helpers
+├── utils/           Imbalance-robust losses and helpers
+└── kernels.py       Quantum kernel matrices from the encoding layers (QSVM)
 ```
 
 ---
