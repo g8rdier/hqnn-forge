@@ -293,6 +293,11 @@ class AmplitudeEncodingLayer(nn.Module):
         ``2**n_qubits``.
     qlayer : pennylane.qnn.TorchLayer
 
+    Methods
+    -------
+    prepare_inputs(x)
+        The padding and normalisation ``forward`` applies before the QNode.
+
     Examples
     --------
     >>> import torch
@@ -345,8 +350,14 @@ class AmplitudeEncodingLayer(nn.Module):
         self.qlayer = qml.qnn.TorchLayer(qnode, weight_shapes)
 
     # ------------------------------------------------------------------
-    def _prepare_amplitudes(self, x: torch.Tensor) -> torch.Tensor:
-        """Zero-pad ``x`` to ``2**n_qubits`` and L2-normalise each sample."""
+    def prepare_inputs(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Zero-pad ``x`` to ``2**n_qubits`` and L2-normalise each sample.
+
+        This is the classical step ``forward`` applies before the QNode; it is
+        public so that tools which replay the circuit (``hqnn_forge.kernels``)
+        can feed the QNode the same amplitudes ``forward`` would.
+        """
         if x.shape[-1] != self.n_features:
             raise ValueError(
                 f"Input feature dimension {x.shape[-1]} does not match "
@@ -401,7 +412,7 @@ class AmplitudeEncodingLayer(nn.Module):
             If ``x`` requires a gradient and ``diff_method`` is not
             ``"backprop"`` (see *Differentiation methods*).
         """
-        amplitudes = self._prepare_amplitudes(x)
+        amplitudes = self.prepare_inputs(x)
         # Whole batch in one call; see QuantumEncodingLayer.forward.
         return self.qlayer(amplitudes)
 

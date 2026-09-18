@@ -149,7 +149,8 @@ hqnn_forge/
 ├── preprocessing/   Classical PCA + normalisation (no sklearn runtime dep)
 ├── models/          Full hybrid architectures
 ├── diagnostics/     Circuit depth, gate and parameter counts
-└── utils/           Imbalance-robust losses and helpers
+├── utils/           Imbalance-robust losses and helpers
+└── kernels.py       Quantum kernel matrices from the encoding layers (QSVM)
 ```
 
 ---
