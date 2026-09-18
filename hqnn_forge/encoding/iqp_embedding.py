@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import warnings
+from collections.abc import Callable
 from itertools import combinations
 from typing import Literal
 
@@ -58,7 +59,7 @@ def _make_iqp_embedding_circuit(
     n_qubits: int,
     n_layers: int,
     n_repeats: int = 1,
-) -> callable:
+) -> Callable[[torch.Tensor, torch.Tensor], list[qml.measurements.ExpectationMP]]:
     """
     Factory returning the bare quantum function for the IQP embedding.
     """

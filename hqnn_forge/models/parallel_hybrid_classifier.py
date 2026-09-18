@@ -85,7 +85,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from hqnn_forge.encoding.angle_embedding import QuantumEncodingLayer
+from hqnn_forge.encoding.angle_embedding import DeviceName, DiffMethod, QuantumEncodingLayer
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.initializers.restricted_variance import (
     block_local_init_,
@@ -155,8 +155,8 @@ class ParallelHybridClassifier(nn.Module):
         classical_hidden_dim: int = 16,
         use_classical_encoder: bool = True,
         dropout_p: float = 0.0,
-        device_name: str = "lightning.qubit",
-        diff_method: str = "adjoint",
+        device_name: DeviceName = "lightning.qubit",
+        diff_method: DiffMethod = "adjoint",
         init_strategy: str = "restricted",
         encoding_type: str = "angle",
     ) -> None:
@@ -193,7 +193,7 @@ class ParallelHybridClassifier(nn.Module):
 
         # ── Quantum branch: quantum encoding layer ────────────────────────
         if encoding_type == "angle":
-            self.quantum_layer = QuantumEncodingLayer(
+            self.quantum_layer: QuantumEncodingLayer | IQPEncodingLayer = QuantumEncodingLayer(
                 n_qubits=n_qubits,
                 n_layers=n_layers,
                 device_name=device_name,

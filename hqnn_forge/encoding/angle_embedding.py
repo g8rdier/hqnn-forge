@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 import warnings
+from collections.abc import Callable
 from typing import Literal
 
 import pennylane as qml
@@ -99,7 +100,7 @@ def _make_angle_embedding_circuit(
     n_qubits: int,
     n_layers: int,
     rotation: RotationAxis,
-) -> callable:
+) -> Callable[[torch.Tensor, torch.Tensor], list[qml.measurements.ExpectationMP]]:
     """
     Factory returning the *bare quantum function* (not yet a QNode) that
     implements the angle-embedding feature map + strongly-entangled ansatz.
