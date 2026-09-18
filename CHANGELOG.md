@@ -34,6 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a time keeps the `"strongly_entangling"` ranges of the whole ansatz
 - `hqnn_forge.kernels.quantum_kernel_matrix`: pairwise state-fidelity kernel
   `|⟨Φ(x_i)|Φ(x_j)⟩|²` from any encoding layer, for `SVC(kernel="precomputed")`
+- `hqnn_forge.diagnostics.fisher_information_matrix` and `effective_dimension`: Fisher
+  information spectrum of the quantum weights and the effective dimension of Abbas et al. (2021)
 
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from
