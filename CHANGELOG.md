@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - HybridBinaryClassifier end-to-end model
 - Smoke tests for quantum encoding layer
 - Quick-start example for training
+- `lightning.gpu` and `lightning.kokkos` accepted as `device_name`, with a fallback chain
+  through `lightning.qubit` to `default.qubit` and a `RuntimeWarning` per step
+
+### Fixed
+- Device fallback raised `AttributeError` on PennyLane 0.45, where `qml.DeviceError` no longer
+  exists; the chain now catches `pennylane.exceptions.DeviceError` and is exercised by a test
 
 ### Changed
 - Raised the `pennylane` and `pennylane-lightning` floors from `>=0.38` to `>=0.45`, the lowest
