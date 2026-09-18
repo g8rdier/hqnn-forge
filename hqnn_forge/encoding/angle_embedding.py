@@ -180,6 +180,41 @@ def _make_angle_embedding_circuit(
 
 
 # ---------------------------------------------------------------------------
+# Batching
+# ---------------------------------------------------------------------------
+
+def _expand_batch_dimension(qnode: qml.QNode, diff_method: str) -> qml.QNode:
+    """
+    Make *qnode* accept a batched ``inputs`` tensor of shape ``(batch, n_qubits)``
+    under every supported differentiation method.
+
+    A 2-D ``inputs`` reaches the circuit as a *broadcasted* tape: one tape whose
+    embedding gates carry a batch of angles.  How that is executed depends on
+    ``diff_method``:
+
+    * ``"backprop"`` differentiates through the simulator, which handles the
+      batch natively as one vectorised state-vector evolution.  This is the fast
+      path and the tape is left broadcasted.
+    * Every other method (``"adjoint"``, ``"parameter-shift"``,
+      ``"finite-diff"``) is a gradient *transform* on the tape, and the
+      parameter-shift and finite-difference transforms refuse a broadcasted
+      tape when the gradient with respect to the broadcasted parameters is
+      requested -- which is exactly the case when a classical encoder upstream
+      needs input gradients.  ``lightning.qubit``'s adjoint path also
+      mis-shapes results for some broadcasted two-qubit rotations.  For these
+      the tape is split into one tape per sample *before* the gradient
+      transform sees it, so each tape is unbroadcasted and the whole batch is
+      still handed to the device as a single list of tapes.
+
+    Either way the QNode's signature and results are unchanged: it returns
+    ``n_qubits`` expectation values, each of shape ``(batch,)``.
+    """
+    if diff_method == "backprop":
+        return qnode
+    return qml.transforms.broadcast_expand(qnode)
+
+
+# ---------------------------------------------------------------------------
 # Public QNode factory
 # ---------------------------------------------------------------------------
 
@@ -250,6 +285,7 @@ def build_encoding_qnode(
         diff_method=diff_method,
         interface="torch",  # enables PyTorch autograd interop
     )
+    qnode = _expand_batch_dimension(qnode, diff_method)
 
     logger.info(
         "QNode built | device=%s | qubits=%d | layers=%d | diff=%s | rotation=%s",
@@ -394,11 +430,12 @@ class QuantumEncodingLayer(nn.Module):
                 f"features before passing to QuantumEncodingLayer."
             )
 
-        # TorchLayer processes one sample at a time; vmap over batch dim.
-        # torch.vmap is experimental — fall back to a list comprehension which
-        # is safe and readable.  For high-throughput production use, replace
-        # with torch.vmap once PennyLane adds full vmap support.
-        return torch.stack([self.qlayer(sample) for sample in x])
+        # TorchLayer hands the whole batch to the QNode in one call and reshapes
+        # the result to (batch, n_qubits).  Whether the batch is executed as one
+        # broadcasted tape or split into one tape per sample is decided in
+        # build_encoding_qnode (see _expand_batch_dimension); the outputs and
+        # gradients are the same either way.
+        return self.qlayer(x)
 
     # ------------------------------------------------------------------
     # Utility
