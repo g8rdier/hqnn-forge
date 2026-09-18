@@ -11,7 +11,6 @@ import torch
 
 from hqnn_forge.models import HybridBinaryClassifier
 
-
 BATCH = 8
 N_QUBITS = 4
 N_LAYERS = 2
@@ -39,7 +38,9 @@ def random_raw_batch() -> torch.Tensor:
 
 
 class TestForwardShape:
-    def test_output_shape(self, classifier: HybridBinaryClassifier, random_raw_batch: torch.Tensor) -> None:
+    def test_output_shape(
+        self, classifier: HybridBinaryClassifier, random_raw_batch: torch.Tensor
+    ) -> None:
         out = classifier(random_raw_batch)
         assert out.shape == (BATCH, 1)
 
@@ -50,28 +51,38 @@ class TestForwardShape:
 
 
 class TestPredictProba:
-    def test_output_in_zero_one(self, classifier: HybridBinaryClassifier, random_raw_batch: torch.Tensor) -> None:
+    def test_output_in_zero_one(
+        self, classifier: HybridBinaryClassifier, random_raw_batch: torch.Tensor
+    ) -> None:
         probs = classifier.predict_proba(random_raw_batch)
         assert probs.min().item() >= 0.0 - 1e-6
         assert probs.max().item() <= 1.0 + 1e-6
 
-    def test_output_shape(self, classifier: HybridBinaryClassifier, random_raw_batch: torch.Tensor) -> None:
+    def test_output_shape(
+        self, classifier: HybridBinaryClassifier, random_raw_batch: torch.Tensor
+    ) -> None:
         probs = classifier.predict_proba(random_raw_batch)
         assert probs.shape == (BATCH,)
 
-    def test_no_grad(self, classifier: HybridBinaryClassifier, random_raw_batch: torch.Tensor) -> None:
+    def test_no_grad(
+        self, classifier: HybridBinaryClassifier, random_raw_batch: torch.Tensor
+    ) -> None:
         probs = classifier.predict_proba(random_raw_batch)
         assert not probs.requires_grad
 
 
 class TestPredict:
-    def test_returns_binary(self, classifier: HybridBinaryClassifier, random_raw_batch: torch.Tensor) -> None:
+    def test_returns_binary(
+        self, classifier: HybridBinaryClassifier, random_raw_batch: torch.Tensor
+    ) -> None:
         preds = classifier.predict(random_raw_batch)
         unique_vals = torch.unique(preds)
         for v in unique_vals:
             assert v.item() in (0, 1)
 
-    def test_output_shape(self, classifier: HybridBinaryClassifier, random_raw_batch: torch.Tensor) -> None:
+    def test_output_shape(
+        self, classifier: HybridBinaryClassifier, random_raw_batch: torch.Tensor
+    ) -> None:
         preds = classifier.predict(random_raw_batch)
         assert preds.shape == (BATCH,)
         assert preds.dtype == torch.long
@@ -174,17 +185,25 @@ class TestEncoderBypass:
 class TestInitStrategies:
     def test_restricted_strategy(self) -> None:
         model = HybridBinaryClassifier(
-            n_input_features=4, n_qubits=4, n_layers=2,
-            use_classical_encoder=False, device_name="default.qubit",
-            diff_method="parameter-shift", init_strategy="restricted",
+            n_input_features=4,
+            n_qubits=4,
+            n_layers=2,
+            use_classical_encoder=False,
+            device_name="default.qubit",
+            diff_method="parameter-shift",
+            init_strategy="restricted",
         )
         assert model is not None
 
     def test_block_local_strategy(self) -> None:
         model = HybridBinaryClassifier(
-            n_input_features=4, n_qubits=4, n_layers=2,
-            use_classical_encoder=False, device_name="default.qubit",
-            diff_method="parameter-shift", init_strategy="block_local",
+            n_input_features=4,
+            n_qubits=4,
+            n_layers=2,
+            use_classical_encoder=False,
+            device_name="default.qubit",
+            diff_method="parameter-shift",
+            init_strategy="block_local",
         )
         assert model is not None
 
@@ -192,9 +211,13 @@ class TestInitStrategies:
 class TestEncodingTypes:
     def test_angle_encoding(self) -> None:
         model = HybridBinaryClassifier(
-            n_input_features=4, n_qubits=4, n_layers=1,
-            use_classical_encoder=False, device_name="default.qubit",
-            diff_method="parameter-shift", encoding_type="angle",
+            n_input_features=4,
+            n_qubits=4,
+            n_layers=1,
+            use_classical_encoder=False,
+            device_name="default.qubit",
+            diff_method="parameter-shift",
+            encoding_type="angle",
         )
         x = torch.randn(2, 4)
         out = model(x)
@@ -202,9 +225,13 @@ class TestEncodingTypes:
 
     def test_iqp_encoding(self) -> None:
         model = HybridBinaryClassifier(
-            n_input_features=4, n_qubits=4, n_layers=1,
-            use_classical_encoder=False, device_name="default.qubit",
-            diff_method="parameter-shift", encoding_type="iqp",
+            n_input_features=4,
+            n_qubits=4,
+            n_layers=1,
+            use_classical_encoder=False,
+            device_name="default.qubit",
+            diff_method="parameter-shift",
+            encoding_type="iqp",
         )
         x = torch.randn(2, 4)
         out = model(x)
@@ -213,6 +240,5 @@ class TestEncodingTypes:
     def test_invalid_encoding(self) -> None:
         with pytest.raises(ValueError, match="Unsupported encoding_type"):
             HybridBinaryClassifier(
-                n_input_features=4, n_qubits=4, n_layers=1,
-                encoding_type="unknown_encoding"
+                n_input_features=4, n_qubits=4, n_layers=1, encoding_type="unknown_encoding"
             )

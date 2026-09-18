@@ -34,8 +34,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Type aliases
 # ---------------------------------------------------------------------------
-DiffMethod   = Literal["adjoint", "parameter-shift", "backprop", "finite-diff"]
-DeviceName   = Literal["lightning.qubit", "default.qubit"]
+DiffMethod = Literal["adjoint", "parameter-shift", "backprop", "finite-diff"]
+DeviceName = Literal["lightning.qubit", "default.qubit"]
 
 
 def _resolve_device(device_name: DeviceName, n_qubits: int) -> qml.Device:
@@ -47,8 +47,7 @@ def _resolve_device(device_name: DeviceName, n_qubits: int) -> qml.Device:
     except (qml.DeviceError, ImportError) as exc:
         fallback = "default.qubit"
         warnings.warn(
-            f"Could not initialise '{device_name}' ({exc}).  "
-            f"Falling back to '{fallback}'.",
+            f"Could not initialise '{device_name}' ({exc}).  Falling back to '{fallback}'.",
             RuntimeWarning,
             stacklevel=3,
         )
@@ -172,8 +171,7 @@ class IQPEncodingLayer(nn.Module):
         """Embed a batch of feature vectors."""
         if x.shape[-1] != self.n_qubits:
             raise ValueError(
-                f"Input feature dimension {x.shape[-1]} does not match "
-                f"n_qubits={self.n_qubits}."
+                f"Input feature dimension {x.shape[-1]} does not match n_qubits={self.n_qubits}."
             )
         # Whole batch in one call; see QuantumEncodingLayer.forward.
         return self.qlayer(x)

@@ -20,7 +20,7 @@ from hqnn_forge.utils.modes import eval_mode
 
 __all__: list[str] = [
     "FocalLoss",
-    "weighted_bce_loss",
     "compute_class_weights",
     "eval_mode",
+    "weighted_bce_loss",
 ]

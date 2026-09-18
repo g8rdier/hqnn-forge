@@ -13,8 +13,7 @@ import torch.optim as optim
 
 from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
 from hqnn_forge.preprocessing import PCANormalizer
-from hqnn_forge.utils import FocalLoss, compute_class_weights
-
+from hqnn_forge.utils import FocalLoss
 
 N_QUBITS = 4
 N_LAYERS = 2
@@ -38,7 +37,9 @@ def synthetic_dataset() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
 
 
 class TestEndToEndPipeline:
-    def test_training_loss_decreases(self, synthetic_dataset: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]) -> None:
+    def test_training_loss_decreases(
+        self, synthetic_dataset: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+    ) -> None:
         X_train_np, y_train_np, _, _ = synthetic_dataset
 
         pca = PCANormalizer(n_components=N_QUBITS, scale_to_pi=True)
@@ -70,7 +71,9 @@ class TestEndToEndPipeline:
 
         assert losses[-1] < losses[0]
 
-    def test_predict_proba_after_training(self, synthetic_dataset: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]) -> None:
+    def test_predict_proba_after_training(
+        self, synthetic_dataset: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+    ) -> None:
         X_train_np, y_train_np, X_test_np, _ = synthetic_dataset
 
         pca = PCANormalizer(n_components=N_QUBITS, scale_to_pi=True)
@@ -79,8 +82,11 @@ class TestEndToEndPipeline:
         y_train = torch.tensor(y_train_np, dtype=torch.float32)
 
         model = HybridBinaryClassifier(
-            n_input_features=N_QUBITS, n_qubits=N_QUBITS, n_layers=N_LAYERS,
-            use_classical_encoder=False, device_name="default.qubit",
+            n_input_features=N_QUBITS,
+            n_qubits=N_QUBITS,
+            n_layers=N_LAYERS,
+            use_classical_encoder=False,
+            device_name="default.qubit",
             diff_method="parameter-shift",
         )
 
@@ -112,8 +118,11 @@ class TestEndToEndPipeline:
         X_train = PCANormalizer(n_components=N_QUBITS, scale_to_pi=True).fit_transform(X_train_np)
 
         model = model_cls(
-            n_input_features=N_QUBITS, n_qubits=N_QUBITS, n_layers=N_LAYERS,
-            use_classical_encoder=False, device_name="default.qubit",
+            n_input_features=N_QUBITS,
+            n_qubits=N_QUBITS,
+            n_layers=N_LAYERS,
+            use_classical_encoder=False,
+            device_name="default.qubit",
             diff_method="parameter-shift",
         )
 

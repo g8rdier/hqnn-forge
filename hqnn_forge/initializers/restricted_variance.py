@@ -44,10 +44,10 @@ import math
 import torch
 import torch.nn as nn
 
-
 # ---------------------------------------------------------------------------
 # In-place initialiser: single call, shared σ across all parameters
 # ---------------------------------------------------------------------------
+
 
 def restricted_normal_init_(
     tensor: torch.Tensor,
@@ -96,8 +96,7 @@ def restricted_normal_init_(
     """
     if n_qubits < 1 or n_layers < 1:
         raise ValueError(
-            f"n_qubits and n_layers must be ≥ 1; "
-            f"got n_qubits={n_qubits}, n_layers={n_layers}."
+            f"n_qubits and n_layers must be ≥ 1; got n_qubits={n_qubits}, n_layers={n_layers}."
         )
 
     std = scale / math.sqrt(n_qubits * n_layers)
@@ -109,6 +108,7 @@ def restricted_normal_init_(
 # ---------------------------------------------------------------------------
 # Block-local variant: each layer initialised with its own restricted σ
 # ---------------------------------------------------------------------------
+
 
 def block_local_init_(
     tensor: torch.Tensor,
@@ -163,6 +163,7 @@ def block_local_init_(
 # ---------------------------------------------------------------------------
 # Convenience: apply to all VQC parameters in an nn.Module
 # ---------------------------------------------------------------------------
+
 
 def apply_restricted_init(
     module: nn.Module,

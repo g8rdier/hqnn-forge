@@ -24,7 +24,6 @@ Expected output (approximate, values depend on random seed):
 
 from __future__ import annotations
 
-import math
 import time
 
 import numpy as np
@@ -32,14 +31,15 @@ import torch
 import torch.optim as optim
 
 # ── hqnn-forge imports ────────────────────────────────────────────────────
-from hqnn_forge.models          import HybridBinaryClassifier, ParallelHybridClassifier
-from hqnn_forge.preprocessing   import PCANormalizer
-from hqnn_forge.utils           import FocalLoss, compute_class_weights
+from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
+from hqnn_forge.preprocessing import PCANormalizer
+from hqnn_forge.utils import FocalLoss, compute_class_weights
 
 # Optional: scikit-learn only used for synthetic data generation
 try:
     from sklearn.datasets import make_classification
     from sklearn.model_selection import train_test_split
+
     HAS_SKLEARN = True
 except ImportError:
     HAS_SKLEARN = False
@@ -48,16 +48,16 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Hyperparameters
 # ---------------------------------------------------------------------------
-SEED              = 42
-N_SAMPLES         = 500   # total dataset size (small for demo speed)
-N_RAW_FEATURES    = 20    # raw feature dimensionality
-N_PCA_COMPONENTS  = 8     # PCA output = n_qubits
-N_QUBITS          = 8
-N_LAYERS          = 2
+SEED = 42
+N_SAMPLES = 500  # total dataset size (small for demo speed)
+N_RAW_FEATURES = 20  # raw feature dimensionality
+N_PCA_COMPONENTS = 8  # PCA output = n_qubits
+N_QUBITS = 8
+N_LAYERS = 2
 CLASSICAL_HIDDEN_DIM = 16  # ParallelHybridClassifier MLP branch width
-BATCH_SIZE        = 16
-N_EPOCHS          = 10
-LR                = 0.02
+BATCH_SIZE = 16
+N_EPOCHS = 10
+LR = 0.02
 MINORITY_FRACTION = 0.05  # ~5% fraud rate
 
 
@@ -77,8 +77,10 @@ print("=" * 60)
 print()
 
 if HAS_SKLEARN:
-    print(f"[1/5] Generating synthetic data ({N_SAMPLES} samples, "
-          f"imbalance ratio {1 - MINORITY_FRACTION:.0%}/{MINORITY_FRACTION:.0%}) …")
+    print(
+        f"[1/5] Generating synthetic data ({N_SAMPLES} samples, "
+        f"imbalance ratio {1 - MINORITY_FRACTION:.0%}/{MINORITY_FRACTION:.0%}) …"
+    )
     X_raw, y = make_classification(
         n_samples=N_SAMPLES,
         n_features=N_RAW_FEATURES,
@@ -96,10 +98,10 @@ else:
     print("[1/5] scikit-learn not available — generating pure-numpy synthetic data …")
     n_train, n_test = int(N_SAMPLES * 0.8), int(N_SAMPLES * 0.2)
     X_train_np = rng.standard_normal((n_train, N_RAW_FEATURES))
-    X_test_np  = rng.standard_normal((n_test, N_RAW_FEATURES))
+    X_test_np = rng.standard_normal((n_test, N_RAW_FEATURES))
     # Imbalanced labels
     y_train_np = (rng.random(n_train) < MINORITY_FRACTION).astype(int)
-    y_test_np  = (rng.random(n_test)  < MINORITY_FRACTION).astype(int)
+    y_test_np = (rng.random(n_test) < MINORITY_FRACTION).astype(int)
 
 
 pos_rate = y_train_np.mean()
@@ -112,16 +114,17 @@ print()
 # ---------------------------------------------------------------------------
 print(f"[2/5] PCA reduction: {N_RAW_FEATURES}D → {N_PCA_COMPONENTS}D …")
 pca = PCANormalizer(n_components=N_PCA_COMPONENTS, scale_to_pi=True)
-X_train = pca.fit_transform(X_train_np)   # torch.Tensor, (n_train, 8)
-X_test  = pca.transform(X_test_np)        # torch.Tensor, (n_test, 8)
+X_train = pca.fit_transform(X_train_np)  # torch.Tensor, (n_train, 8)
+X_test = pca.transform(X_test_np)  # torch.Tensor, (n_test, 8)
 
 y_train = torch.tensor(y_train_np, dtype=torch.float32)
-y_test  = torch.tensor(y_test_np,  dtype=torch.float32)
+y_test = torch.tensor(y_test_np, dtype=torch.float32)
 
-print(f"    Explained variance (top {N_PCA_COMPONENTS}): "
-      f"{pca.explained_variance_ratio_.sum() * 100:.1f}%")
-print(f"    Feature range after tanh-π scaling: "
-      f"[{X_train.min():.2f}, {X_train.max():.2f}]")
+print(
+    f"    Explained variance (top {N_PCA_COMPONENTS}): "
+    f"{pca.explained_variance_ratio_.sum() * 100:.1f}%"
+)
+print(f"    Feature range after tanh-π scaling: [{X_train.min():.2f}, {X_train.max():.2f}]")
 print()
 
 
@@ -144,7 +147,7 @@ def train_and_evaluate(model: torch.nn.Module, model_name: str, banner: str) -> 
     print(f"[3/5] {model_name}: {model.count_parameters()} trainable params")
     print()
 
-    loss_fn   = FocalLoss(alpha=0.25, gamma=2.0)
+    loss_fn = FocalLoss(alpha=0.25, gamma=2.0)
     optimizer = optim.Adam(model.parameters(), lr=LR)
 
     cw = compute_class_weights(y_train)
@@ -158,24 +161,24 @@ def train_and_evaluate(model: torch.nn.Module, model_name: str, banner: str) -> 
 
     for epoch in range(1, N_EPOCHS + 1):
         model.train()
-        perm       = torch.randperm(dataset_size)
+        perm = torch.randperm(dataset_size)
         epoch_loss = 0.0
-        n_batches  = 0
+        n_batches = 0
 
         t0 = time.perf_counter()
         for start in range(0, dataset_size, BATCH_SIZE):
-            idx  = perm[start : start + BATCH_SIZE]
-            xb   = X_train[idx]
-            yb   = y_train[idx]
+            idx = perm[start : start + BATCH_SIZE]
+            xb = X_train[idx]
+            yb = y_train[idx]
 
             optimizer.zero_grad()
-            logits = model(xb).squeeze(-1)      # (batch,)
-            loss   = loss_fn(logits, yb)
+            logits = model(xb).squeeze(-1)  # (batch,)
+            loss = loss_fn(logits, yb)
             loss.backward()
             optimizer.step()
 
             epoch_loss += loss.item()
-            n_batches  += 1
+            n_batches += 1
 
         elapsed = time.perf_counter() - t0
 
@@ -184,8 +187,8 @@ def train_and_evaluate(model: torch.nn.Module, model_name: str, banner: str) -> 
         with torch.no_grad():
             train_probs = model.predict_proba(X_train)
             train_preds = (train_probs >= 0.5).long()
-            train_acc   = (train_preds == y_train.long()).float().mean().item()
-            avg_loss    = epoch_loss / n_batches
+            train_acc = (train_preds == y_train.long()).float().mean().item()
+            avg_loss = epoch_loss / n_batches
 
         print(
             f"Epoch {epoch:2d}/{N_EPOCHS} | "
@@ -200,12 +203,16 @@ def train_and_evaluate(model: torch.nn.Module, model_name: str, banner: str) -> 
     model.eval()
     with torch.no_grad():
         test_preds = model.predict(X_test, threshold=0.5)
-        test_acc   = (test_preds == y_test.long()).float().mean().item()
+        test_acc = (test_preds == y_test.long()).float().mean().item()
 
-        neg_mask  = (y_test == 0)
-        pos_mask  = (y_test == 1)
-        neg_acc   = (test_preds[neg_mask] == 0).float().mean().item() if neg_mask.any() else float("nan")
-        pos_acc   = (test_preds[pos_mask] == 1).float().mean().item() if pos_mask.any() else float("nan")
+        neg_mask = y_test == 0
+        pos_mask = y_test == 1
+        neg_acc = (
+            (test_preds[neg_mask] == 0).float().mean().item() if neg_mask.any() else float("nan")
+        )
+        pos_acc = (
+            (test_preds[pos_mask] == 1).float().mean().item() if pos_mask.any() else float("nan")
+        )
 
     print()
     print(f"Hold-out evaluation ({model_name}):")
@@ -249,16 +256,16 @@ parallel_model = ParallelHybridClassifier(
 # so seeding alone leaves the two topologies with different quantum weights.
 # Copy them across so the only difference that remains is the architecture.
 with torch.no_grad():
-    parallel_model.quantum_layer.qlayer.weights.copy_(
-        serial_model.quantum_layer.qlayer.weights
-    )
+    parallel_model.quantum_layer.qlayer.weights.copy_(serial_model.quantum_layer.qlayer.weights)
 
 serial_results = train_and_evaluate(
-    serial_model, "HybridBinaryClassifier",
+    serial_model,
+    "HybridBinaryClassifier",
     "Model 1/2: HybridBinaryClassifier (serial topology)",
 )
 parallel_results = train_and_evaluate(
-    parallel_model, "ParallelHybridClassifier",
+    parallel_model,
+    "ParallelHybridClassifier",
     "Model 2/2: ParallelHybridClassifier (parallel topology)",
 )
 
@@ -272,9 +279,15 @@ print("=" * 60)
 print(f"{'Metric':<20}{'Serial (Hybrid)':>20}{'Parallel (PHNN)':>20}")
 print("-" * 60)
 print(f"{'Trainable params':<20}{serial_results['params']:>20}{parallel_results['params']:>20}")
-print(f"{'Overall accuracy':<20}{serial_results['test_acc']:>20.3f}{parallel_results['test_acc']:>20.3f}")
-print(f"{'Negative (maj.)':<20}{serial_results['neg_acc']:>20.3f}{parallel_results['neg_acc']:>20.3f}")
-print(f"{'Positive (min.)':<20}{serial_results['pos_acc']:>20.3f}{parallel_results['pos_acc']:>20.3f}")
+print(
+    f"{'Overall accuracy':<20}{serial_results['test_acc']:>20.3f}{parallel_results['test_acc']:>20.3f}"
+)
+print(
+    f"{'Negative (maj.)':<20}{serial_results['neg_acc']:>20.3f}{parallel_results['neg_acc']:>20.3f}"
+)
+print(
+    f"{'Positive (min.)':<20}{serial_results['pos_acc']:>20.3f}{parallel_results['pos_acc']:>20.3f}"
+)
 print("-" * 60)
 print(f"Both models trained from seed {SEED} with a shared quantum-branch init")
 print("and identical batch ordering, so the gap above reflects topology rather")
