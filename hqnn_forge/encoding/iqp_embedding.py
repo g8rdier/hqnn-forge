@@ -27,7 +27,14 @@ import pennylane as qml
 import torch
 import torch.nn as nn
 
-from hqnn_forge.encoding.angle_embedding import _expand_batch_dimension
+from hqnn_forge.encoding.angle_embedding import (
+    Entangler,
+    Readout,
+    _expand_batch_dimension,
+    apply_variational_layers,
+    measure_z,
+    readout_wires,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +66,19 @@ def _make_iqp_embedding_circuit(
     n_qubits: int,
     n_layers: int,
     n_repeats: int = 1,
+    entangler: Entangler = "ring",
+    readout: Readout = "all",
 ) -> callable:
     """
     Factory returning the bare quantum function for the IQP embedding.
+
+    ``entangler`` and ``readout`` are as in
+    :func:`hqnn_forge.encoding.angle_embedding.apply_variational_layers` and
+    :func:`~hqnn_forge.encoding.angle_embedding.measure_z`.
     """
+    readout_wires(n_qubits, readout)  # validate early
+    if entangler not in ("ring", "strongly_entangling"):
+        raise ValueError(f"entangler must be 'ring' or 'strongly_entangling'; got {entangler!r}.")
     # All-to-all entangling pattern, the same as qml.IQPEmbedding(pattern=None)
     pairs = list(combinations(range(n_qubits), 2))
 
@@ -90,23 +106,9 @@ def _make_iqp_embedding_circuit(
                 qml.RZ(inputs[..., i] * inputs[..., j], wires=j)
                 qml.CNOT(wires=[i, j])
 
-        # ── 2 & 3. Strongly entangling layers ────────────────────────────
-        for layer in range(n_layers):
-            # 2a. CNOT entangling ring
-            for qubit in range(n_qubits):
-                qml.CNOT(wires=[qubit, (qubit + 1) % n_qubits])
-
-            # 2b. Per-qubit SU(2) rotation block
-            for qubit in range(n_qubits):
-                qml.Rot(
-                    weights[layer, qubit, 0],  # φ
-                    weights[layer, qubit, 1],  # θ
-                    weights[layer, qubit, 2],  # ω
-                    wires=qubit,
-                )
-
-        # ── 3. Measurement: Pauli-Z expectation on every qubit ────────────
-        return [qml.expval(qml.PauliZ(i)) for i in range(n_qubits)]
+        # ── 2 & 3. Variational layers, then ⟨Z⟩ on the readout wires ─────
+        apply_variational_layers(weights, n_qubits, n_layers, entangler)
+        return measure_z(n_qubits, readout)
 
     return circuit
 
@@ -117,13 +119,15 @@ def build_iqp_qnode(
     n_repeats: int = 1,
     device_name: DeviceName = "lightning.qubit",
     diff_method: DiffMethod = "adjoint",
+    entangler: Entangler = "ring",
+    readout: Readout = "all",
 ) -> qml.QNode:
     """Build and return a PennyLane QNode for the IQP feature map."""
     if n_qubits < 2:
         raise ValueError(f"n_qubits must be ≥ 2; got {n_qubits}.")
 
     device = _resolve_device(device_name, n_qubits)
-    circuit_fn = _make_iqp_embedding_circuit(n_qubits, n_layers, n_repeats)
+    circuit_fn = _make_iqp_embedding_circuit(n_qubits, n_layers, n_repeats, entangler, readout)
 
     qnode = qml.QNode(
         func=circuit_fn,
@@ -138,6 +142,10 @@ def build_iqp_qnode(
 class IQPEncodingLayer(nn.Module):
     """
     A PyTorch nn.Module wrapping the IQP-embedding QNode.
+
+    ``entangler`` and ``readout`` are the options of
+    :class:`~hqnn_forge.encoding.QuantumEncodingLayer`; the output width is
+    ``n_outputs`` (``n_qubits``, or 1 with ``readout="first"``).
     """
 
     def __init__(
@@ -147,12 +155,17 @@ class IQPEncodingLayer(nn.Module):
         n_repeats: int = 1,
         device_name: DeviceName = "lightning.qubit",
         diff_method: DiffMethod = "adjoint",
+        entangler: Entangler = "ring",
+        readout: Readout = "all",
     ) -> None:
         super().__init__()
 
         self.n_qubits = n_qubits
         self.n_layers = n_layers
         self.n_repeats = n_repeats
+        self.entangler = entangler
+        self.readout = readout
+        self.n_outputs = len(readout_wires(n_qubits, readout))
 
         qnode = build_iqp_qnode(
             n_qubits=n_qubits,
@@ -160,6 +173,8 @@ class IQPEncodingLayer(nn.Module):
             n_repeats=n_repeats,
             device_name=device_name,
             diff_method=diff_method,
+            entangler=entangler,
+            readout=readout,
         )
 
         weight_shapes: dict[str, tuple[int, ...]] = {
