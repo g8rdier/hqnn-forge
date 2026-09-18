@@ -3,8 +3,10 @@ name: Tests
 on:
   push:
     branches: [ "main" ]
+  # Every pull request, whatever its base: stacked PRs (base = another
+  # feature branch) otherwise get no CI until their parent merges and GitHub
+  # retargets them to main, which is after the parent was reviewed.
   pull_request:
-    branches: [ "main" ]
 
 permissions:
   contents: read
