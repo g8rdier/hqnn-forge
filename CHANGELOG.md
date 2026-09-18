@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Python 3.10
 
 ### Removed
+- `black` from the `dev` extra; `ruff format` is the only formatter, sharing the
+  `line-length = 99` ruff already enforces, so the two tools can no longer disagree
 - `requirements.txt`; `pyproject.toml` is now the only place dependencies are declared
 - Python 3.10 support; `requires-python` is now `>=3.11`. 3.10 reaches end of life in
   October 2026 and current PennyLane releases no longer install on it, so CI tests 3.11

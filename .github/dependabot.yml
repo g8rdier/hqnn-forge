@@ -11,7 +11,6 @@ updates:
       dev-dependencies:
         patterns:
           - "pytest*"
-          - "black"
           - "ruff"
           - "mypy"
 
