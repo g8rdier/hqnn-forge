@@ -19,6 +19,9 @@ Design Rationale
   on a `lightning.qubit` device.  Adjoint diff computes exact gradients in a
   single forward + backward pass and scales as O(p) in the number of parameters p,
   making it strictly superior to the parameter-shift rule for state-vector sims.
+  The GPU-accelerated ``lightning.gpu`` and ``lightning.kokkos`` devices support
+  the same method; ``_resolve_device`` falls back through ``lightning.qubit`` to
+  ``default.qubit`` when a backend is not installed or has no usable hardware.
 
 * **Barren Plateau Avoidance** — weights are *not* initialised here; callers should
   use `hqnn_forge.initializers.restricted_normal_init_` on the returned layer.
@@ -42,6 +45,7 @@ from typing import Literal
 import pennylane as qml
 import torch
 import torch.nn as nn
+from pennylane.exceptions import DeviceError
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +54,20 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 RotationAxis = Literal["X", "Y", "Z"]
 DiffMethod = Literal["adjoint", "parameter-shift", "backprop", "finite-diff"]
-DeviceName = Literal["lightning.qubit", "default.qubit"]
+DeviceName = Literal["lightning.gpu", "lightning.kokkos", "lightning.qubit", "default.qubit"]
 Entangler = Literal["ring", "strongly_entangling"]
 Readout = Literal["all", "first"]
+
+#: Devices tried, in order, after the requested one fails.  Each is a strict
+#: subset of the previous one's requirements: ``lightning.qubit`` needs only
+#: the ``pennylane-lightning`` wheel, ``default.qubit`` ships with PennyLane.
+FALLBACK_CHAIN: tuple[str, ...] = ("lightning.qubit", "default.qubit")
+
+#: What creating a device raises when its plugin or hardware is missing:
+#: ``DeviceError`` for an unknown or unregistered device name, ``ImportError``
+#: / ``OSError`` when a plugin's compiled extension or a CUDA library cannot
+#: be loaded, ``RuntimeError`` when the plugin loads but finds no usable GPU.
+_DEVICE_FAILURES: tuple[type[BaseException], ...] = (DeviceError, ImportError, OSError, RuntimeError)
 
 
 # ---------------------------------------------------------------------------
@@ -170,41 +185,68 @@ def measure_z(n_qubits: int, readout: Readout = "all") -> list[qml.measurements.
 
 
 # ---------------------------------------------------------------------------
-# Device factory — graceful fallback from lightning.qubit to default.qubit
+# Device factory — graceful fallback down to default.qubit
 # ---------------------------------------------------------------------------
 
 
-def _resolve_device(device_name: DeviceName, n_qubits: int) -> qml.Device:
+def _resolve_device(device_name: DeviceName, n_qubits: int) -> qml.devices.Device:
     """
-    Attempt to create *device_name*; fall back to ``default.qubit`` when
-    ``pennylane-lightning`` is not installed, emitting a warning in that case.
+    Create *device_name*, falling back along :data:`FALLBACK_CHAIN` when a
+    backend is not installed or has no usable hardware, with one
+    ``RuntimeWarning`` per failed step.
+
+    The chain is ``requested → lightning.qubit → default.qubit``; entries at
+    or before the requested device are skipped, so ``lightning.qubit`` falls
+    straight to ``default.qubit`` and ``default.qubit`` has no fallback.
 
     Parameters
     ----------
     device_name:
-        Preferred PennyLane device string, e.g. ``"lightning.qubit"``.
+        Preferred PennyLane device string.  ``"lightning.gpu"`` (cuQuantum,
+        NVIDIA) and ``"lightning.kokkos"`` (Kokkos: OpenMP on the PyPI wheel,
+        CUDA/HIP when built from source) are the accelerated backends; see
+        the README for their prerequisites.
     n_qubits:
         Number of qubits to allocate.
 
     Returns
     -------
-    qml.Device
+    qml.devices.Device
         An initialised PennyLane device ready for QNode attachment.
+
+    Raises
+    ------
+    The last backend's own exception if every step of the chain fails, which
+    can only happen if PennyLane itself is broken (``default.qubit`` has no
+    dependencies).
     """
-    try:
-        dev = qml.device(device_name, wires=n_qubits)
-        logger.debug("Quantum device initialised: %s (%d qubits)", device_name, n_qubits)
+    start = FALLBACK_CHAIN.index(device_name) + 1 if device_name in FALLBACK_CHAIN else 0
+    candidates = [device_name, *FALLBACK_CHAIN[start:]]
+    for attempt, name in enumerate(candidates):
+        try:
+            dev = qml.device(name, wires=n_qubits)
+        except _DEVICE_FAILURES as exc:
+            if attempt == len(candidates) - 1:
+                raise
+            fallback = candidates[attempt + 1]
+            hint = (
+                "  Install pennylane-lightning for adjoint differentiation support and "
+                "significantly faster simulation."
+                if fallback == "default.qubit"
+                else ""
+            )
+            warnings.warn(
+                f"Could not initialise '{name}' ({type(exc).__name__}: {exc}).  "
+                f"Falling back to '{fallback}'.{hint}",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            continue
+        if attempt:
+            logger.info("Quantum device fell back from %s to %s", device_name, name)
+        logger.debug("Quantum device initialised: %s (%d qubits)", name, n_qubits)
         return dev
-    except (qml.DeviceError, ImportError) as exc:
-        fallback = "default.qubit"
-        warnings.warn(
-            f"Could not initialise '{device_name}' ({exc}).  "
-            f"Falling back to '{fallback}'.  Install pennylane-lightning for "
-            f"adjoint differentiation support and significantly faster simulation.",
-            RuntimeWarning,
-            stacklevel=3,
-        )
-        return qml.device(fallback, wires=n_qubits)
+    raise AssertionError("unreachable: the fallback chain always ends in a raise or a return")
 
 
 # ---------------------------------------------------------------------------
