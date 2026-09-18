@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - HybridBinaryClassifier end-to-end model
 - Smoke tests for quantum encoding layer
 - Quick-start example for training
+- `AmplitudeEncodingLayer`: amplitude embedding of up to `2**n_qubits` features per sample,
+  with zero-padding and L2 normalisation in `forward`, ahead of the same entangling ansatz
 
 ### Changed
 - Raised the `pennylane` and `pennylane-lightning` floors from `>=0.38` to `>=0.45`, the lowest
