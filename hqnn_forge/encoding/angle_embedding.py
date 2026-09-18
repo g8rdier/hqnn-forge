@@ -51,6 +51,68 @@ logger = logging.getLogger(__name__)
 RotationAxis = Literal["X", "Y", "Z"]
 DiffMethod   = Literal["adjoint", "parameter-shift", "backprop", "finite-diff"]
 DeviceName   = Literal["lightning.qubit", "default.qubit"]
+Entangler    = Literal["ring", "strongly_entangling"]
+Readout      = Literal["all", "first"]
+
+
+# ---------------------------------------------------------------------------
+# Variational block and readout, shared by every encoding circuit
+# ---------------------------------------------------------------------------
+
+
+def apply_variational_layers(
+    weights: torch.Tensor,
+    n_qubits: int,
+    n_layers: int,
+    entangler: Entangler = "ring",
+) -> None:
+    """
+    Apply the ``n_layers`` variational blocks to the current circuit.
+
+    ``entangler`` selects the block:
+
+    * ``"ring"`` (the library's default): CNOT ring ``CNOT(i → i+1 mod n)``,
+      then ``Rot(φ, θ, ω)`` on every qubit.
+    * ``"strongly_entangling"``: ``qml.StronglyEntanglingLayers``, i.e.
+      ``Rot`` on every qubit **then** a CNOT ring whose range grows with the
+      layer index, ``r = ℓ mod (n-1) + 1``.  This is the block the published
+      SHNN uses (Schuld et al. 2020, PennyLane template).
+
+    Both take ``weights`` of shape ``(n_layers, n_qubits, 3)`` and use
+    ``n_layers · n_qubits`` ``Rot`` and CNOT gates; they differ in gate order
+    and, from the second layer on, in which qubits the CNOTs connect.
+    """
+    if entangler == "strongly_entangling":
+        qml.StronglyEntanglingLayers(weights, wires=range(n_qubits))
+        return
+    if entangler != "ring":
+        raise ValueError(f"entangler must be 'ring' or 'strongly_entangling'; got {entangler!r}.")
+    for layer in range(n_layers):
+        # CNOT entangling ring (cyclic: last qubit → first qubit)
+        for qubit in range(n_qubits):
+            qml.CNOT(wires=[qubit, (qubit + 1) % n_qubits])
+        # Per-qubit SU(2) rotation block
+        for qubit in range(n_qubits):
+            qml.Rot(
+                weights[layer, qubit, 0],  # φ
+                weights[layer, qubit, 1],  # θ
+                weights[layer, qubit, 2],  # ω
+                wires=qubit,
+            )
+
+
+def readout_wires(n_qubits: int, readout: Readout = "all") -> list[int]:
+    """Wires measured in ⟨Z⟩: every qubit (``"all"``) or qubit 0 only (``"first"``)."""
+    if readout == "all":
+        return list(range(n_qubits))
+    if readout == "first":
+        return [0]
+    raise ValueError(f"readout must be 'all' or 'first'; got {readout!r}.")
+
+
+def measure_z(n_qubits: int, readout: Readout = "all") -> list[qml.measurements.ExpectationMP]:
+    """``[⟨Z_i⟩ for i in readout_wires(...)]``: the circuit's return value."""
+    return [qml.expval(qml.PauliZ(i)) for i in readout_wires(n_qubits, readout)]
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +160,8 @@ def _make_angle_embedding_circuit(
     n_qubits: int,
     n_layers: int,
     rotation: RotationAxis,
+    entangler: Entangler = "ring",
+    readout: Readout = "all",
 ) -> Callable[[torch.Tensor, torch.Tensor], list[qml.measurements.ExpectationMP]]:
     """
     Factory returning the *bare quantum function* (not yet a QNode) that
@@ -142,12 +206,23 @@ def _make_angle_embedding_circuit(
         Number of variational layers L.  Depth = O(n_qubits * n_layers).
     rotation:
         Pauli axis used by AngleEmbedding: ``"X"`` | ``"Y"`` | ``"Z"``.
+    entangler:
+        ``"ring"`` (steps 2 and 3 above) or ``"strongly_entangling"``
+        (``qml.StronglyEntanglingLayers``: Rot first, then a CNOT ring of
+        range ``ℓ mod (n-1) + 1``).  See :func:`apply_variational_layers`.
+    readout:
+        ``"all"`` (step 4 above) or ``"first"`` (``[⟨Z_0⟩]`` only, as in the
+        published SHNN).
 
     Returns
     -------
     callable
         A plain Python function suitable for ``@qml.qnode`` decoration.
     """
+    readout_wires(n_qubits, readout)  # validate early
+    if entangler not in ("ring", "strongly_entangling"):
+        raise ValueError(f"entangler must be 'ring' or 'strongly_entangling'; got {entangler!r}.")
+
     def circuit(
         inputs: torch.Tensor,
         weights: torch.Tensor,
@@ -159,23 +234,11 @@ def _make_angle_embedding_circuit(
             rotation=rotation,
         )
 
-        # ── 2 & 3. Strongly entangling layers ────────────────────────────
-        for layer in range(n_layers):
-            # 2a. CNOT entangling ring  (cyclic: last qubit → first qubit)
-            for qubit in range(n_qubits):
-                qml.CNOT(wires=[qubit, (qubit + 1) % n_qubits])
+        # ── 2 & 3. Variational layers ────────────────────────────────────
+        apply_variational_layers(weights, n_qubits, n_layers, entangler)
 
-            # 2b. Per-qubit SU(2) rotation block
-            for qubit in range(n_qubits):
-                qml.Rot(
-                    weights[layer, qubit, 0],  # φ
-                    weights[layer, qubit, 1],  # θ
-                    weights[layer, qubit, 2],  # ω
-                    wires=qubit,
-                )
-
-        # ── 3. Measurement: Pauli-Z expectation on every qubit ────────────
-        return [qml.expval(qml.PauliZ(i)) for i in range(n_qubits)]
+        # ── 4. Measurement: Pauli-Z expectation on the readout wires ─────
+        return measure_z(n_qubits, readout)
 
     return circuit
 
@@ -225,6 +288,8 @@ def build_encoding_qnode(
     rotation: RotationAxis = "X",
     device_name: DeviceName = "lightning.qubit",
     diff_method: DiffMethod = "adjoint",
+    entangler: Entangler = "ring",
+    readout: Readout = "all",
 ) -> qml.QNode:
     """
     Build and return a PennyLane QNode for the angle-embedding feature map.
@@ -252,13 +317,19 @@ def build_encoding_qnode(
         - ``"parameter-shift"`` — exact, hardware-compatible, O(p) circuit evals.
         - ``"backprop"``        — auto-diff through simulator; requires default.qubit.
         - ``"finite-diff"``     — approximate; avoid for training.
+    entangler:
+        ``"ring"`` (default) or ``"strongly_entangling"``; see
+        :func:`apply_variational_layers`.
+    readout:
+        ``"all"`` (default): ⟨Z_i⟩ on every qubit.  ``"first"``: ⟨Z_0⟩ only.
 
     Returns
     -------
     qml.QNode
         A callable QNode with signature
         ``(inputs: Tensor, weights: Tensor) -> Tensor``
-        where outputs are ⟨Z_i⟩ expectation values, shape ``(n_qubits,)``.
+        where outputs are ⟨Z_i⟩ expectation values, shape ``(n_qubits,)``
+        (or ``(1,)`` with ``readout="first"``).
 
     Raises
     ------
@@ -278,7 +349,7 @@ def build_encoding_qnode(
         )
 
     device = _resolve_device(device_name, n_qubits)
-    circuit_fn = _make_angle_embedding_circuit(n_qubits, n_layers, rotation)
+    circuit_fn = _make_angle_embedding_circuit(n_qubits, n_layers, rotation, entangler, readout)
 
     qnode = qml.QNode(
         func=circuit_fn,
@@ -289,12 +360,15 @@ def build_encoding_qnode(
     qnode = _expand_batch_dimension(qnode, diff_method)
 
     logger.info(
-        "QNode built | device=%s | qubits=%d | layers=%d | diff=%s | rotation=%s",
+        "QNode built | device=%s | qubits=%d | layers=%d | diff=%s | rotation=%s | "
+        "entangler=%s | readout=%s",
         device.name,
         n_qubits,
         n_layers,
         diff_method,
         rotation,
+        entangler,
+        readout,
     )
     return qnode
 
@@ -342,11 +416,21 @@ class QuantumEncodingLayer(nn.Module):
     diff_method:
         Gradient method.  Use ``"adjoint"`` with ``lightning.qubit`` for
         exact, efficient gradients during state-vector simulation.
+    entangler:
+        ``"ring"`` (default) or ``"strongly_entangling"``; see
+        :func:`apply_variational_layers`.  Same parameter count either way.
+    readout:
+        ``"all"`` (default): the layer returns ``(batch, n_qubits)``.
+        ``"first"``: ⟨Z_0⟩ only, ``(batch, 1)``, the published SHNN readout.
 
     Attributes
     ----------
     n_qubits : int
     n_layers : int
+    n_outputs : int
+        Width of the output: ``n_qubits`` or 1.
+    entangler : str
+    readout : str
     qlayer : pennylane.qnn.TorchLayer
         The underlying differentiable quantum layer.
 
@@ -372,11 +456,16 @@ class QuantumEncodingLayer(nn.Module):
         rotation: RotationAxis = "X",
         device_name: DeviceName = "lightning.qubit",
         diff_method: DiffMethod = "adjoint",
+        entangler: Entangler = "ring",
+        readout: Readout = "all",
     ) -> None:
         super().__init__()
 
         self.n_qubits = n_qubits
         self.n_layers = n_layers
+        self.entangler = entangler
+        self.readout = readout
+        self.n_outputs = len(readout_wires(n_qubits, readout))
 
         # Build the QNode ─────────────────────────────────────────────────
         qnode = build_encoding_qnode(
@@ -385,6 +474,8 @@ class QuantumEncodingLayer(nn.Module):
             rotation=rotation,
             device_name=device_name,
             diff_method=diff_method,
+            entangler=entangler,
+            readout=readout,
         )
 
         # Declare the trainable weight tensor shape for TorchLayer ─────────
@@ -417,8 +508,8 @@ class QuantumEncodingLayer(nn.Module):
         Returns
         -------
         torch.Tensor
-            Quantum expectation values of shape ``(batch_size, n_qubits)``,
-            with each element ∈ [-1, 1].
+            Quantum expectation values of shape ``(batch_size, n_outputs)``
+            (``n_qubits``, or 1 with ``readout="first"``), each ∈ [-1, 1].
 
         Raises
         ------
@@ -444,10 +535,15 @@ class QuantumEncodingLayer(nn.Module):
     # ------------------------------------------------------------------
 
     def extra_repr(self) -> str:
+        options = ""
+        if self.entangler != "ring":
+            options += f", entangler={self.entangler!r}"
+        if self.readout != "all":
+            options += f", readout={self.readout!r}"
         return (
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "
-            f"n_params={self.n_layers * self.n_qubits * 3}"
+            f"n_params={self.n_layers * self.n_qubits * 3}{options}"
         )
 
 

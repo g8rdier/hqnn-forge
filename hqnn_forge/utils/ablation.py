@@ -64,8 +64,10 @@ def disable_quantum_layer(model: nn.Module, fill: float = 0.0) -> Iterator[nn.Mo
     Replace ``model.quantum_layer``'s output with the constant ``fill``.
 
     Inside the block the layer returns a tensor of shape
-    ``(*batch_dims, n_qubits)`` filled with ``fill``, in the input's dtype and
-    device, without running the circuit.  The output therefore carries no
+    ``(*batch_dims, n_outputs)`` filled with ``fill``, in the input's dtype and
+    device, without running the circuit.  ``n_outputs`` is the layer's readout
+    width -- ``n_qubits`` for ``readout="all"``, 1 for ``readout="first"`` --
+    so the head downstream sees the width it was built for.  The output therefore carries no
     gradient to the quantum weights or to anything upstream of the layer.  The
     original ``forward`` is restored on exit, including when the block raises.
 
@@ -103,6 +105,11 @@ def disable_quantum_layer(model: nn.Module, fill: float = 0.0) -> Iterator[nn.Mo
             f"disable_quantum_layer expects a model with a quantum_layer attribute; "
             f"got {type(model).__name__}."
         )
+    # The readout decides how wide the layer's output is, and the head is built
+    # for that width; filling n_qubits wide would break readout="first".
+    n_outputs = getattr(layer, "n_outputs", None)
+    if not isinstance(n_outputs, int):
+        n_outputs = n_qubits
     if not -1.0 <= fill <= 1.0:
         raise ValueError(f"fill must lie in [-1, 1], the range of <Z>; got {fill}.")
     if "forward" in vars(layer):
@@ -121,7 +128,7 @@ def disable_quantum_layer(model: nn.Module, fill: float = 0.0) -> Iterator[nn.Mo
                 f"n_qubits={n_qubits}."
             )
         return torch.full(
-            (*x.shape[:-1], n_qubits), fill, dtype=x.dtype, device=x.device
+            (*x.shape[:-1], n_outputs), fill, dtype=x.dtype, device=x.device
         )
 
     # nn.Module.__call__ dispatches to self.forward, so an instance attribute

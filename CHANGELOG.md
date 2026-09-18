@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - HybridBinaryClassifier end-to-end model
 - Smoke tests for quantum encoding layer
 - Quick-start example for training
+- `entangler` (`"ring"` / `"strongly_entangling"`) and `readout` (`"all"` / `"first"`) on the
+  encoding layers; `embedding_rotation`, `entangler`, `readout`, `encoder_activation` and
+  `init_strategy="normal"` on the classifiers, and `HybridBinaryClassifier.published_shnn()` for
+  the thesis's 122-parameter SHNN configuration
 
 ### Changed
 - Raised the `pennylane` and `pennylane-lightning` floors from `>=0.38` to `>=0.45`, the lowest

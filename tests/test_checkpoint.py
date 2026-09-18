@@ -22,6 +22,17 @@ MODELS = [
     pytest.param(HybridBinaryClassifier, dict(encoding_type="angle"), id="serial-angle"),
     pytest.param(HybridBinaryClassifier, dict(encoding_type="iqp", init_strategy="block_local"), id="serial-iqp"),
     pytest.param(ParallelHybridClassifier, dict(classical_hidden_dim=5, dropout_p=0.2), id="parallel"),
+    pytest.param(
+        HybridBinaryClassifier,
+        dict(
+            embedding_rotation="Y",
+            entangler="strongly_entangling",
+            readout="first",
+            encoder_activation="sigmoid",
+            init_strategy="normal",
+        ),
+        id="serial-published",
+    ),
 ]
 
 
