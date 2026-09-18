@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - HybridBinaryClassifier end-to-end model
 - Smoke tests for quantum encoding layer
 - Quick-start example for training
+- `hqnn_forge.diagnostics.fisher_information_matrix` and `effective_dimension`: Fisher
+  information spectrum of the quantum weights and the effective dimension of Abbas et al. (2021)
 
 ### Changed
 - Raised the `pennylane` and `pennylane-lightning` floors from `>=0.38` to `>=0.42`, the lowest
