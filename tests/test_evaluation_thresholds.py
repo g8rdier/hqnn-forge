@@ -211,6 +211,20 @@ class TestParameterEfficiency:
         assert parameter_efficiency(module, 0.10) == pytest.approx(10.0)
 
     def test_uses_count_parameters_when_available(self) -> None:
+        """count_parameters() wins over the raw requires_grad sum, per issue #28."""
+
+        class Counted(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.weight = torch.nn.Parameter(torch.zeros(500))
+
+            def count_parameters(self) -> int:
+                # Deliberately not the 500 the fallback branch would find
+                return 2000
+
+        assert parameter_efficiency(Counted(), 0.4) == pytest.approx(0.2)
+
+    def test_hybrid_classifier_is_counted_through_its_own_method(self) -> None:
         from hqnn_forge.models import HybridBinaryClassifier
 
         model = HybridBinaryClassifier(
