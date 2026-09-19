@@ -64,7 +64,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from hqnn_forge.encoding.angle_embedding import QuantumEncodingLayer
+from hqnn_forge.encoding.angle_embedding import DeviceName, DiffMethod, QuantumEncodingLayer
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.initializers.restricted_variance import (
     restricted_normal_init_,
@@ -93,9 +93,13 @@ class HybridBinaryClassifier(BinaryClassifierBase):
     dropout_p:
         Dropout probability applied after the quantum layer.  Default: 0.0.
     device_name:
-        PennyLane device string.  Default: ``"lightning.qubit"``.
+        PennyLane device string, type-checked as ``"lightning.qubit"`` or
+        ``"default.qubit"``.  Default: ``"lightning.qubit"``.  Any other device name
+        still runs — it is handed to ``qml.device``, which falls back to
+        ``"default.qubit"`` with a warning if the device cannot be initialised.
     diff_method:
-        Gradient method.  Default: ``"adjoint"``.
+        Gradient method: ``"adjoint"``, ``"parameter-shift"``, ``"backprop"`` or
+        ``"finite-diff"``.  Default: ``"adjoint"``.
     init_strategy:
         ``"restricted"`` or ``"block_local"``.  Default: ``"restricted"``.
     encoding_type:
@@ -126,8 +130,8 @@ class HybridBinaryClassifier(BinaryClassifierBase):
         *,
         use_classical_encoder: bool = True,
         dropout_p: float = 0.0,
-        device_name: str = "lightning.qubit",
-        diff_method: str = "adjoint",
+        device_name: DeviceName = "lightning.qubit",
+        diff_method: DiffMethod = "adjoint",
         init_strategy: str = "restricted",
         encoding_type: str = "angle",
     ) -> None:
@@ -155,7 +159,7 @@ class HybridBinaryClassifier(BinaryClassifierBase):
 
         # ── Quantum encoding layer ────────────────────────────────────────
         if encoding_type == "angle":
-            self.quantum_layer = QuantumEncodingLayer(
+            self.quantum_layer: QuantumEncodingLayer | IQPEncodingLayer = QuantumEncodingLayer(
                 n_qubits=n_qubits,
                 n_layers=n_layers,
                 device_name=device_name,
