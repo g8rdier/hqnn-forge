@@ -77,7 +77,6 @@ from __future__ import annotations
 import math
 
 import torch
-import torch.nn as nn
 
 
 # ---------------------------------------------------------------------------
@@ -204,50 +203,3 @@ def block_local_init_(
             std = scale / math.sqrt(n_qubits * (layer_idx + 1))
             tensor[layer_idx].normal_(mean=0.0, std=std)
     return tensor
-
-
-# ---------------------------------------------------------------------------
-# Convenience: apply to all VQC parameters in an nn.Module
-# ---------------------------------------------------------------------------
-
-def apply_restricted_init(
-    module: nn.Module,
-    n_qubits: int,
-    n_layers: int,
-    *,
-    block_local: bool = False,
-    scale: float = math.pi,
-) -> None:
-    """
-    Apply small-angle restricted-variance initialisation to **all parameters**
-    in *module*
-    whose shape starts with ``(n_layers, ...)``.
-
-    This is a convenience wrapper; for fine-grained control call
-    :func:`restricted_normal_init_` or :func:`block_local_init_` directly.
-
-    Parameters
-    ----------
-    module:
-        The PyTorch module (e.g. a ``QuantumEncodingLayer`` or the full
-        ``HybridBinaryClassifier``) whose quantum weight parameters should be
-        initialised.
-    n_qubits:
-        Number of qubits.
-    n_layers:
-        Number of variational layers.
-    block_local:
-        If ``True``, use :func:`block_local_init_` (per-layer σ).
-        If ``False`` (default), use :func:`restricted_normal_init_` (global σ).
-    scale:
-        Standard deviation numerator.  Default: π.
-    """
-    for name, param in module.named_parameters():
-        if param.ndim >= 1 and param.shape[0] == n_layers:
-            if block_local:
-                block_local_init_(param.data, n_qubits=n_qubits, scale=scale)
-            else:
-                restricted_normal_init_(
-                    param.data, n_qubits=n_qubits, n_layers=n_layers, scale=scale
-                )
-            # Do not update running stats / non-trainable buffers
