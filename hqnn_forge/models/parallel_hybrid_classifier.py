@@ -70,9 +70,12 @@ use_classical_encoder:
     lie in (-π, π) (e.g. ``PCANormalizer(scale_to_pi=True)``); the quantum
     branch then passes it to the circuit unscaled.
 device_name:
-    PennyLane device.
+    PennyLane device string, type-checked as ``"lightning.qubit"`` or ``"default.qubit"``.
+    Any other device name still runs — it is handed to ``qml.device``, which falls back
+    to ``"default.qubit"`` with a warning if the device cannot be initialised.
 diff_method:
-    Gradient computation method.
+    Gradient computation method: ``"adjoint"``, ``"parameter-shift"``, ``"backprop"``
+    or ``"finite-diff"``.
 init_strategy:
     ``"restricted"`` (default) — global restricted-normal init.
     ``"block_local"``           — per-layer decreasing variance.
@@ -120,9 +123,13 @@ class ParallelHybridClassifier(nn.Module):
     dropout_p:
         Dropout probability applied to the fused branch outputs.  Default: 0.0.
     device_name:
-        PennyLane device string.  Default: ``"lightning.qubit"``.
+        PennyLane device string, type-checked as ``"lightning.qubit"`` or
+        ``"default.qubit"``.  Default: ``"lightning.qubit"``.  Any other device name
+        still runs — it is handed to ``qml.device``, which falls back to
+        ``"default.qubit"`` with a warning if the device cannot be initialised.
     diff_method:
-        Gradient method.  Default: ``"adjoint"``.
+        Gradient method: ``"adjoint"``, ``"parameter-shift"``, ``"backprop"`` or
+        ``"finite-diff"``.  Default: ``"adjoint"``.
     init_strategy:
         ``"restricted"`` or ``"block_local"``.  Default: ``"restricted"``.
     encoding_type:
