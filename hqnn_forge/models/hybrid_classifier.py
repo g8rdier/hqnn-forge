@@ -67,7 +67,6 @@ import torch.nn as nn
 from hqnn_forge.encoding.angle_embedding import QuantumEncodingLayer
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.initializers.restricted_variance import (
-    apply_restricted_init,
     restricted_normal_init_,
     block_local_init_,
 )
