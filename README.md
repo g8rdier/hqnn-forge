@@ -88,4 +88,5 @@ and versioning policy this project follows.
 - Kandala et al. (2017) — *Hardware-efficient variational quantum eigensolver for small molecules and quantum magnets*
 - Havlíček et al. (2019) — *Supervised learning with quantum-enhanced feature spaces*
 - Lin et al. (2017) — *Focal Loss for Dense Object Detection*
+- King & Zeng (2001) — *Logistic Regression in Rare Events Data*
 - Bergholm et al. (2022) — *PennyLane: Automatic differentiation of hybrid quantum-classical computations*
