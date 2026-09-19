@@ -6,6 +6,8 @@ Unit tests for hqnn_forge.evaluation: metrics, threshold search, efficiency.
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import pytest
 import torch
@@ -98,10 +100,31 @@ class TestFindOptimalThreshold:
         assert result.score == pytest.approx(0.8)
 
     def test_ties_resolve_towards_half(self) -> None:
-        # Every threshold in (0.2, 0.8] gives the same perfect labelling
+        # Every threshold in (0.2, 0.8] gives the same perfect labelling, and
+        # the one reported is the midpoint of that interval, not its upper end
         y = torch.tensor([0, 1])
         p = torch.tensor([0.2, 0.8])
-        assert find_optimal_threshold(y, p).threshold == pytest.approx(0.8)
+        assert find_optimal_threshold(y, p).threshold == pytest.approx(0.5)
+
+    def test_wide_gap_does_not_resolve_to_an_extreme_threshold(self) -> None:
+        # The optimum is flat across (0.08, 0.92]; an operating point at 0.92
+        # would sit on top of a validation sample
+        y = torch.tensor([0, 0, 1, 1])
+        p = torch.tensor([0.04, 0.08, 0.92, 0.96])
+        result = find_optimal_threshold(y, p)
+        assert result.score == pytest.approx(1.0)
+        assert result.threshold == pytest.approx(0.5)
+
+    def test_all_negative_labelling_reachable_with_probability_one(self) -> None:
+        # float32 sigmoid saturates to exactly 1.0, which must not cost the
+        # search the all-negative candidate
+        y = torch.tensor([0] * 9 + [1])
+        p = torch.tensor([1.0, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05])
+        accuracy = lambda t, q: float((torch.as_tensor(t) == torch.as_tensor(q)).float().mean())
+        result = find_optimal_threshold(y, p, metric=accuracy)
+        assert result.score == pytest.approx(0.9)
+        assert result.threshold > 1.0
+        assert not (p >= result.threshold).any()
 
     def test_single_class_labels_do_not_raise(self) -> None:
         # MCC is 0 for every threshold; the search still returns a result
@@ -109,9 +132,12 @@ class TestFindOptimalThreshold:
         assert result.score == 0.0
 
     def test_degenerate_constant_probabilities(self) -> None:
-        result = find_optimal_threshold(Y, torch.full((10,), 0.3))
-        assert result.threshold in (pytest.approx(0.3), pytest.approx(0.3 + 1e-12))
+        p = torch.full((10,), 0.3)
+        result = find_optimal_threshold(Y, p)
         assert result.score == 0.0
+        # Only the two constant labellings exist; whichever is returned, the
+        # threshold must reproduce it
+        assert (p >= result.threshold).unique().numel() == 1
 
     def test_all_negative_labelling_is_a_candidate(self) -> None:
         # Predicting nothing positive is the best accuracy when positives are rare noise
@@ -134,6 +160,29 @@ class TestFindOptimalThreshold:
     def test_numpy_inputs(self) -> None:
         result = find_optimal_threshold(Y.numpy(), P.numpy())
         assert result == find_optimal_threshold(Y, P)
+
+
+    @pytest.mark.parametrize("metric", sorted(METRICS))
+    def test_vectorised_score_matches_the_scalar_metric(self, metric: str) -> None:
+        """The cumulative-count path agrees with the public metric on labels."""
+        rng = np.random.default_rng(3)
+        scorer = METRICS[metric]
+        for _ in range(10):
+            y = torch.as_tensor(rng.integers(0, 2, 60))
+            p = torch.as_tensor(rng.random(60))
+            result = find_optimal_threshold(y, p, metric=metric)
+            assert result.score == pytest.approx(scorer(y, (p >= result.threshold).long()))
+            brute = max(scorer(y, (p >= t).long()) for t in p.tolist())
+            assert result.score >= brute - 1e-12
+
+    def test_large_input_is_not_quadratic(self) -> None:
+        """20k samples take a sort, not one metric pass per unique probability."""
+        rng = np.random.default_rng(4)
+        y = torch.as_tensor(rng.integers(0, 2, 20_000))
+        p = torch.as_tensor(rng.random(20_000))
+        start = time.perf_counter()
+        find_optimal_threshold(y, p)
+        assert time.perf_counter() - start < 5.0
 
 
 class TestParameterEfficiency:
