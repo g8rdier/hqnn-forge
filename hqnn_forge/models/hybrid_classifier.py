@@ -179,7 +179,7 @@ class HybridBinaryClassifier(nn.Module):
         # ── Classical head ────────────────────────────────────────────────
         self.head = nn.Linear(n_qubits, 1)
 
-        # ── Barren-plateau-safe initialisation ────────────────────────────
+        # ── Small-angle restricted-variance initialisation ─────────────────
         self._initialise_weights()
 
     # ------------------------------------------------------------------
@@ -192,7 +192,7 @@ class HybridBinaryClassifier(nn.Module):
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
 
-        # Quantum weights: barren-plateau-safe init
+        # Quantum weights: small-angle restricted-variance init
         weights = self.quantum_layer.qlayer.weights  # shape (n_layers, n_qubits, 3)
         if self.init_strategy == "block_local":
             block_local_init_(weights.data, n_qubits=self.n_qubits)

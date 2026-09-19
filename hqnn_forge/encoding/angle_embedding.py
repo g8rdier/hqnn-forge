@@ -324,7 +324,8 @@ class QuantumEncodingLayer(nn.Module):
 
     **Important**: Call ``hqnn_forge.initializers.restricted_normal_init_``
     on ``layer.qlayer.weights`` immediately after construction to obtain
-    barren-plateau-safe initial values (see :mod:`hqnn_forge.initializers`).
+    small-angle initial values (see :mod:`hqnn_forge.initializers` for what
+    that heuristic does and does not guarantee).
 
     Parameters
     ----------

@@ -44,7 +44,7 @@ Design Notes
 
 * The quantum branch mirrors ``HybridBinaryClassifier`` in *topology* (same
   classical encoder + ``QuantumEncodingLayer`` / ``IQPEncodingLayer`` choice,
-  same barren-plateau-safe initialisation scheme).  Note that seeding the two
+  same restricted-variance initialisation scheme).  Note that seeding the two
   architectures identically does **not** give them identical quantum weights:
   this model builds more classical layers before the quantum init runs, so it
   draws from a different RNG state.  To compare the two topologies fairly,
@@ -216,7 +216,7 @@ class ParallelHybridClassifier(nn.Module):
         # ── Classical head ────────────────────────────────────────────────
         self.head = nn.Linear(classical_hidden_dim + n_qubits, 1)
 
-        # ── Barren-plateau-safe initialisation ────────────────────────────
+        # ── Small-angle restricted-variance initialisation ─────────────────
         self._initialise_weights()
 
     # ------------------------------------------------------------------
@@ -241,7 +241,7 @@ class ParallelHybridClassifier(nn.Module):
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
 
-        # Quantum weights: barren-plateau-safe init
+        # Quantum weights: small-angle restricted-variance init
         weights = self.quantum_layer.qlayer.weights  # shape (n_layers, n_qubits, 3)
         if self.init_strategy == "block_local":
             block_local_init_(weights.data, n_qubits=self.n_qubits)
