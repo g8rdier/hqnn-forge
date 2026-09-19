@@ -10,7 +10,7 @@
 
 | Feature | Detail |
 |---|---|
-| **Barren-plateau-aware init** | Small-angle Gaussian initialisation with σ shrinking in width and depth, global or per-layer (this library's heuristic, in the spirit of Zhang et al. 2022) |
+| **Barren-plateau-aware init** | Small-angle Gaussian initialisation: global σ = π/√(n·L), or a per-layer schedule (this library's own heuristics — see the module docstring for what they do and do not guarantee) |
 | **Adjoint differentiation** | Exact gradients via `lightning.qubit` — no finite-difference approximation |
 | **Custom angle encoding** | 8-qubit angle-embedding feature map with strongly-entangled VQC ansatz |
 | **Imbalance-robust losses** | Focal Loss & inverse-frequency weighted BCE |

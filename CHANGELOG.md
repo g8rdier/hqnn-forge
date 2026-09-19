@@ -10,7 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Project scaffold and packaging setup
 - PCANormalizer (pure-NumPy) for quantum angle encoding
-- Barren-plateau-safe restricted-variance initialiser
+- Small-angle restricted-variance initialiser (barren-plateau-aware; the σ formulas are
+  this library's own heuristics, not a published prescription)
 - Angle-embedding quantum encoding layer with adjoint diff
 - Strongly-entangling and hardware-efficient VQC primitives
 - Focal loss and weighted BCE for imbalanced classification
