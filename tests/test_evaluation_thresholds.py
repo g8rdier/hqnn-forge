@@ -66,6 +66,18 @@ class TestMetrics:
             assert matthews_corrcoef(y_true, y_pred) == pytest.approx(sk.matthews_corrcoef(y_true, y_pred), abs=1e-12)
             assert f1_score(y_true, y_pred) == pytest.approx(sk.f1_score(y_true, y_pred, zero_division=0), abs=1e-12)
             assert balanced_accuracy(y_true, y_pred) == pytest.approx(sk.balanced_accuracy_score(y_true, y_pred), abs=1e-12)
+        # The random labellings above always contain both classes; the
+        # undefined cases are where the conventions have to be pinned down
+        for y_true, y_pred in [([0, 0, 0], [0, 0, 1]), ([0, 1, 1], [1, 1, 1]), ([0, 0], [0, 0])]:
+            assert matthews_corrcoef(y_true, y_pred) == pytest.approx(sk.matthews_corrcoef(y_true, y_pred))
+            assert f1_score(y_true, y_pred) == pytest.approx(sk.f1_score(y_true, y_pred, zero_division=0))
+
+    def test_balanced_accuracy_departs_from_scikit_learn_on_an_absent_class(self) -> None:
+        """A single-class split must not score 1.0, or the search would chase it."""
+        sk = pytest.importorskip("sklearn.metrics")
+        assert sk.balanced_accuracy_score([0, 0, 0], [0, 0, 0]) == pytest.approx(1.0)
+        assert balanced_accuracy([0, 0, 0], [0, 0, 0]) == 0.0
+        assert balanced_accuracy([1, 1], [1, 0]) == 0.0
 
 
 class TestFindOptimalThreshold:

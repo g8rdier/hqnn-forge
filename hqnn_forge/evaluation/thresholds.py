@@ -21,6 +21,11 @@ Conventions
   true class, F1 with no positives anywhere) return ``0.0`` rather than NaN,
   the same convention scikit-learn uses, so a threshold search never picks a
   NaN over a number.
+* :func:`balanced_accuracy` departs from scikit-learn deliberately when a
+  class is absent from ``y_true``: scikit-learn averages recall over the
+  classes that are present, which scores an all-negative labelling of an
+  all-negative split 1.0, while this one returns 0.0 so that a search cannot
+  rank a degenerate operating point top.
 """
 
 from __future__ import annotations
@@ -122,7 +127,15 @@ def f1_score(y_true: object, y_pred: object) -> float:
 
 
 def balanced_accuracy(y_true: object, y_pred: object) -> float:
-    """Mean of the recall on each class; 0.5 is chance, 0.0 if a class is absent from y_true."""
+    """
+    Mean of the recall on each class; 0.5 is chance.
+
+    Returns 0.0 when a class is absent from ``y_true`` and the mean is
+    therefore taken over one class only.  scikit-learn returns that one
+    class's recall instead (1.0 for a perfect labelling of a single-class
+    split); 0.0 is used here so that :func:`find_optimal_threshold` cannot
+    prefer such a labelling.
+    """
     return _scalar(_balanced_accuracy_counts, y_true, y_pred)
 
 
