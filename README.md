@@ -132,6 +132,7 @@ hqnn_forge/
 ├── initializers/    Barren-plateau-aware weight initialisation
 ├── preprocessing/   Classical PCA + normalisation (no sklearn runtime dep)
 ├── models/          Full hybrid architectures
+├── diagnostics/     Circuit depth, gate and parameter counts
 └── utils/           Imbalance-robust losses and helpers
 ```
 
