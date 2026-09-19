@@ -44,7 +44,7 @@ Design Notes
 
 * The quantum branch mirrors ``HybridBinaryClassifier`` in *topology* (same
   classical encoder + ``QuantumEncodingLayer`` / ``IQPEncodingLayer`` choice,
-  same barren-plateau-safe initialisation scheme).  Note that seeding the two
+  same restricted-variance initialisation scheme).  Note that seeding the two
   architectures identically does **not** give them identical quantum weights:
   this model builds more classical layers before the quantum init runs, so it
   draws from a different RNG state.  To compare the two topologies fairly,
@@ -70,9 +70,12 @@ use_classical_encoder:
     lie in (-π, π) (e.g. ``PCANormalizer(scale_to_pi=True)``); the quantum
     branch then passes it to the circuit unscaled.
 device_name:
-    PennyLane device.
+    PennyLane device string, type-checked as ``"lightning.qubit"`` or ``"default.qubit"``.
+    Any other device name still runs — it is handed to ``qml.device``, which falls back
+    to ``"default.qubit"`` with a warning if the device cannot be initialised.
 diff_method:
-    Gradient computation method.
+    Gradient computation method: ``"adjoint"``, ``"parameter-shift"``, ``"backprop"``
+    or ``"finite-diff"``.
 init_strategy:
     ``"restricted"`` (default) — global restricted-normal init.
     ``"block_local"``           — per-layer decreasing variance.
@@ -85,16 +88,16 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from hqnn_forge.encoding.angle_embedding import QuantumEncodingLayer
+from hqnn_forge.encoding.angle_embedding import DeviceName, DiffMethod, QuantumEncodingLayer
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.initializers.restricted_variance import (
     restricted_normal_init_,
     block_local_init_,
 )
-from hqnn_forge.utils.modes import eval_mode
+from hqnn_forge.models.base import BinaryClassifierBase
 
 
-class ParallelHybridClassifier(nn.Module):
+class ParallelHybridClassifier(BinaryClassifierBase):
     """
     Parallel-topology hybrid quantum-classical binary classifier.
 
@@ -120,9 +123,13 @@ class ParallelHybridClassifier(nn.Module):
     dropout_p:
         Dropout probability applied to the fused branch outputs.  Default: 0.0.
     device_name:
-        PennyLane device string.  Default: ``"lightning.qubit"``.
+        PennyLane device string, type-checked as ``"lightning.qubit"`` or
+        ``"default.qubit"``.  Default: ``"lightning.qubit"``.  Any other device name
+        still runs — it is handed to ``qml.device``, which falls back to
+        ``"default.qubit"`` with a warning if the device cannot be initialised.
     diff_method:
-        Gradient method.  Default: ``"adjoint"``.
+        Gradient method: ``"adjoint"``, ``"parameter-shift"``, ``"backprop"`` or
+        ``"finite-diff"``.  Default: ``"adjoint"``.
     init_strategy:
         ``"restricted"`` or ``"block_local"``.  Default: ``"restricted"``.
     encoding_type:
@@ -155,8 +162,8 @@ class ParallelHybridClassifier(nn.Module):
         classical_hidden_dim: int = 16,
         use_classical_encoder: bool = True,
         dropout_p: float = 0.0,
-        device_name: str = "lightning.qubit",
-        diff_method: str = "adjoint",
+        device_name: DeviceName = "lightning.qubit",
+        diff_method: DiffMethod = "adjoint",
         init_strategy: str = "restricted",
         encoding_type: str = "angle",
     ) -> None:
@@ -193,7 +200,7 @@ class ParallelHybridClassifier(nn.Module):
 
         # ── Quantum branch: quantum encoding layer ────────────────────────
         if encoding_type == "angle":
-            self.quantum_layer = QuantumEncodingLayer(
+            self.quantum_layer: QuantumEncodingLayer | IQPEncodingLayer = QuantumEncodingLayer(
                 n_qubits=n_qubits,
                 n_layers=n_layers,
                 device_name=device_name,
@@ -216,7 +223,7 @@ class ParallelHybridClassifier(nn.Module):
         # ── Classical head ────────────────────────────────────────────────
         self.head = nn.Linear(classical_hidden_dim + n_qubits, 1)
 
-        # ── Barren-plateau-safe initialisation ────────────────────────────
+        # ── Small-angle restricted-variance initialisation ─────────────────
         self._initialise_weights()
 
     # ------------------------------------------------------------------
@@ -241,7 +248,7 @@ class ParallelHybridClassifier(nn.Module):
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
 
-        # Quantum weights: barren-plateau-safe init
+        # Quantum weights: small-angle restricted-variance init
         weights = self.quantum_layer.qlayer.weights  # shape (n_layers, n_qubits, 3)
         if self.init_strategy == "block_local":
             block_local_init_(weights.data, n_qubits=self.n_qubits)
@@ -285,63 +292,6 @@ class ParallelHybridClassifier(nn.Module):
 
         # Classification head
         return self.head(fused)                     # (B, 1)
-
-    # ------------------------------------------------------------------
-    @torch.no_grad()
-    def predict_proba(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Compute positive-class probabilities (inference mode, no gradients).
-
-        Runs in eval mode whatever mode the model is in, so dropout is off and
-        repeated calls on the same input agree.  Every submodule's ``training``
-        flag is restored afterwards, so calling this mid-training leaves the
-        model exactly as it was.
-
-        Parameters
-        ----------
-        x:
-            Input tensor, shape ``(batch_size, n_input_features)``.
-
-        Returns
-        -------
-        torch.Tensor
-            Probability of class 1, shape ``(batch_size,)``, values ∈ [0, 1].
-        """
-        # no_grad alone leaves nn.Dropout active: it checks self.training, not
-        # grad mode.
-        with eval_mode(self):
-            logits = self.forward(x)
-        return torch.sigmoid(logits).squeeze(-1)
-
-    # ------------------------------------------------------------------
-    @torch.no_grad()
-    def predict(self, x: torch.Tensor, threshold: float = 0.5) -> torch.Tensor:
-        """
-        Predict binary labels.  Runs in eval mode, like ``predict_proba``.
-
-        Parameters
-        ----------
-        x:
-            Input tensor, shape ``(batch_size, n_input_features)``.
-        threshold:
-            Decision threshold.  Default: 0.5.
-            For imbalanced datasets consider tuning via ROC/PR curves.
-
-        Returns
-        -------
-        torch.Tensor
-            Binary label tensor of shape ``(batch_size,)``, dtype ``torch.long``.
-        """
-        return (self.predict_proba(x) >= threshold).long()
-
-    # ------------------------------------------------------------------
-    def count_parameters(self, trainable_only: bool = True) -> int:
-        """Return total parameter count (quantum + classical, both branches)."""
-        params = (
-            self.parameters() if not trainable_only
-            else (p for p in self.parameters() if p.requires_grad)
-        )
-        return sum(p.numel() for p in params)
 
     # ------------------------------------------------------------------
     def extra_repr(self) -> str:

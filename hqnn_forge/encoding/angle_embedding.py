@@ -28,7 +28,7 @@ References
 * Schuld et al. (2020) "Circuit-centric quantum classifiers", PRA 101, 032308.
 * Sim et al. (2019) "Expressibility and entangling capability of PQCs", Adv. Quantum
   Technol. 2, 1900070.
-* Jones & Gacon (2021) "Efficient calculation of gradients in classical simulations
+* Jones & Gacon (2020) "Efficient calculation of gradients in classical simulations
   of variational quantum algorithms" arXiv:2009.02823.
 """
 
@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 import warnings
+from collections.abc import Callable
 from typing import Literal
 
 import pennylane as qml
@@ -97,7 +98,7 @@ def _make_angle_embedding_circuit(
     n_qubits: int,
     n_layers: int,
     rotation: RotationAxis,
-) -> callable:
+) -> Callable[[torch.Tensor, torch.Tensor], list[qml.measurements.ExpectationMP]]:
     """
     Factory returning the *bare quantum function* (not yet a QNode) that
     implements the angle-embedding feature map + strongly-entangled ansatz.
@@ -324,7 +325,8 @@ class QuantumEncodingLayer(nn.Module):
 
     **Important**: Call ``hqnn_forge.initializers.restricted_normal_init_``
     on ``layer.qlayer.weights`` immediately after construction to obtain
-    barren-plateau-safe initial values (see :mod:`hqnn_forge.initializers`).
+    small-angle initial values (see :mod:`hqnn_forge.initializers` for what
+    that heuristic does and does not guarantee).
 
     Parameters
     ----------

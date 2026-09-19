@@ -35,11 +35,24 @@ Notes
 
 from __future__ import annotations
 
+import operator
+import warnings
 from typing import Optional
 
 import numpy as np
 import numpy.typing as npt
 import torch
+
+# Eigenvalue gap, relative to the largest eigenvalue, below which fit warns that the retained basis is not
+# reproducible.  Chosen from measurement, not intuition: perturbing the
+# covariance by 1e-16 relative (the scale on which two LAPACK builds disagree
+# about the same matrix, i.e. relative to the largest eigenvalue) rotates the affected components by ~0.002 deg at a gap
+# of 1e-12, ~3 deg at 1e-14 and ~20 deg when exactly degenerate, and by nothing
+# measurable at 1e-8.  Rotation scales as ||E|| / gap, and ||E|| scales with
+# the largest eigenvalue, so the gap is measured against that rather than
+# against the pair itself -- otherwise a close pair of small eigenvalues would
+# look well separated.  1e-12 sits safely inside the flat region.
+EIGENVALUE_GAP_WARN: float = 1e-12
 
 
 class PCANormalizer:
@@ -49,8 +62,10 @@ class PCANormalizer:
     Parameters
     ----------
     n_components:
-        Number of principal components to retain.  Must be ≥ 1; ``fit``
-        raises ``ValueError`` otherwise.  Default: 8.
+        Number of principal components to retain.  Must be an integer ≥ 1
+        (``int`` or a NumPy integer; ``bool`` and floats, even integral ones
+        such as ``3.0``, are rejected rather than coerced); ``fit`` raises
+        ``ValueError`` otherwise.  Default: 8.
     scale_to_pi:
         If ``True`` (default), rescale standardised components into ``[-π, π]``
         via ``tanh(x) * π`` before returning.  Ensures valid angle-embedding
@@ -69,7 +84,11 @@ class PCANormalizer:
         and holds whenever the eigenvalues are well separated.  Entries tied for
         largest magnitude are resolved by column order, so mirrored feature
         pairs are covered; near-degenerate eigenvalues, however, leave the basis
-        itself build-dependent, which no sign convention can repair.
+        itself build-dependent, which no sign convention can repair.  ``fit``
+        checks for this and emits a ``RuntimeWarning`` when two consecutive
+        eigenvalues among the retained ones (or at the cutoff) differ by less
+        than ``EIGENVALUE_GAP_WARN`` times the largest eigenvalue, which in
+        practice means exactly degenerate up to rounding.
         The convention is the one scikit-learn's ``svd_flip`` applies with
         ``u_based_decision=False``, reimplemented here rather than depended on.
     explained_variance_ : np.ndarray, shape (n_components,)
@@ -125,9 +144,9 @@ class PCANormalizer:
         ----------
         X:
             Training data array-like of shape ``(n_samples, n_features)``.
-            ``n_features`` must be ≥ ``n_components`` and ``n_samples`` must
-            be > ``n_components``.  Not copied when already ``float64``, and
-            never modified.
+            ``n_features`` must be ≥ 2 and ≥ ``n_components``, and
+            ``n_samples`` must be > ``n_components``.  Not copied when already
+            ``float64``, and never modified.
 
         Returns
         -------
@@ -137,8 +156,10 @@ class PCANormalizer:
         Raises
         ------
         ValueError
-            If ``X`` is not 2-D, if ``n_components < 1``, if
-            ``n_features < n_components``, or if ``n_samples <= n_components``
+            If ``X`` is not 2-D, if ``n_features < 2`` (a single column has no
+            covariance to decompose), if ``n_components`` is not an integer or
+            is ``< 1``, if ``n_features < n_components``, or if
+            ``n_samples <= n_components``
             (centred data then has rank below ``n_components``, so some
             components have zero variance).  Also if the centred data has rank
             below ``n_components`` for any other reason -- collinear features,
@@ -153,32 +174,69 @@ class PCANormalizer:
         exactly as it found it.  An instance that was already fitted keeps that
         fit and stays usable; one that was not stays unfitted.
         """
+        return self._fit(X, stacklevel=3)
+
+    def _fit(self, X: npt.ArrayLike, stacklevel: int) -> "PCANormalizer":
+        # Body of fit, shared with fit_transform so the degeneracy warning's
+        # stacklevel points at the caller of either public method.
         # asarray, not array: float64 input is used as-is rather than copied, so
         # X_arr may share memory with the caller.  Never write into it in place.
         X_arr: npt.NDArray[np.float64] = np.asarray(X, dtype=np.float64)
         self._check_2d(X_arr)
 
         n_samples, n_features = X_arr.shape
-        # Checked here rather than in __init__ because the attribute can be
-        # reassigned afterwards.  Values <= 0 pass both shape checks below and
-        # then silently slice off components from the end (-1 keeps all but one)
-        if self.n_components < 1:
+        # A single column clears every check below and then fails inside
+        # numpy: np.cov(..., rowvar=False) returns a 0-d array for it, which
+        # eigh rejects with a message about the array, not about the data
+        if n_features < 2:
             raise ValueError(
-                f"n_components={self.n_components} < 1.  Provide a positive "
+                f"n_features={n_features} < 2.  PCA needs at least two features "
+                f"to have a covariance to decompose; a single feature has "
+                f"nothing to project."
+            )
+
+        # Checked here rather than in __init__ because the attribute can be
+        # reassigned afterwards.  The comparisons below all accept a float, so
+        # a non-integer would clear them and fail on the top-k slice with a
+        # TypeError about slice indices.  operator.index accepts int and NumPy
+        # integers and rejects floats, integral ones included: 3.0 is not
+        # coerced, the caller casts.  bool is an int subclass and would keep
+        # one component for True; nobody means that, so it is rejected too.
+        # Everything below uses the plain int it returns, never the attribute:
+        # a fixed-width NumPy integer would wrap in the arithmetic of the error
+        # messages (np.uint8(255) + 1 == 0)
+        if isinstance(self.n_components, bool):
+            raise ValueError(
+                f"n_components={self.n_components!r} is a bool, not an integer.  "
+                f"Provide the number of components to retain."
+            )
+        try:
+            n_components = operator.index(self.n_components)
+        except TypeError:
+            raise ValueError(
+                f"n_components={self.n_components!r} is not an integer.  "
+                f"Provide an int (or NumPy integer); a float such as 3.0 is "
+                f"rejected rather than coerced."
+            ) from None
+        # Values <= 0 pass both shape checks below and then silently slice off
+        # components from the end (-1 keeps all but one)
+        if n_components < 1:
+            raise ValueError(
+                f"n_components={n_components} < 1.  Provide a positive "
                 f"number of components to retain."
             )
-        if n_features < self.n_components:
+        if n_features < n_components:
             raise ValueError(
-                f"n_features={n_features} < n_components={self.n_components}.  "
+                f"n_features={n_features} < n_components={n_components}.  "
                 f"Reduce n_components or provide higher-dimensional data."
             )
         # Centred data has rank <= n_samples - 1, so fewer rows leave some
         # kept components with zero variance
-        if n_samples <= self.n_components:
+        if n_samples <= n_components:
             raise ValueError(
-                f"n_samples={n_samples} <= n_components={self.n_components}.  "
+                f"n_samples={n_samples} <= n_components={n_components}.  "
                 f"Reduce n_components or provide at least "
-                f"{self.n_components + 1} samples."
+                f"{n_components + 1} samples."
             )
 
         # 1. Centre the data.  mean_ is assigned only once the rank check below
@@ -220,7 +278,7 @@ class PCANormalizer:
         # one is not an option either: it would reject full-rank data that
         # merely has a small overall scale.
         rank = int(np.linalg.matrix_rank(X_centered))
-        if rank < self.n_components:
+        if rank < n_components:
             remedy = (
                 "Provide data that varies: every feature is constant, so the "
                 "centred data is all zeros."
@@ -231,16 +289,56 @@ class PCANormalizer:
             )
             raise ValueError(
                 f"centred data has rank {rank} < n_components="
-                f"{self.n_components}, so components {rank}.."
-                f"{self.n_components - 1} have zero variance and transform "
+                f"{n_components}, so components {rank}.."
+                f"{n_components - 1} have zero variance and transform "
                 f"would divide their projections by the 1e-8 epsilon.  {remedy}"
             )
-        kept = eigenvalues[: self.n_components]
+        kept = eigenvalues[:n_components]
+
+        # 5b. Warn when the retained basis is not reproducible.  Within a
+        # degenerate eigenspace eigh may return any orthonormal basis, and a
+        # rotation is not a sign flip, so step 6 cannot repair it; degeneracy
+        # *at* the cutoff additionally makes it arbitrary which component is
+        # kept at all.  Hence the gaps between consecutive eigenvalues among the
+        # kept ones and the first excluded one are all checked.  Gaps are
+        # relative to eigenvalues[0], the scale of the rounding that rotates the
+        # basis (see EIGENVALUE_GAP_WARN); the rank check above guarantees it is
+        # > 0.  The first offending pair is reported, so that n_components=first
+        # keeps only well-separated eigenvalues, cutoff included.  A warning and
+        # not an error: the fit is still a valid PCA, it just is not the same
+        # one on every platform, which only matters to callers who rely on the
+        # components_ contract.
+        kept_and_next = eigenvalues[: n_components + 1]
+        if kept_and_next.shape[0] > 1:
+            gaps = (kept_and_next[:-1] - kept_and_next[1:]) / eigenvalues[0]
+            degenerate = np.flatnonzero(gaps < EIGENVALUE_GAP_WARN)
+            if degenerate.size:
+                first = int(degenerate[0])
+                where = (
+                    "at the n_components cutoff, so which component is retained "
+                    "is arbitrary"
+                    if first == n_components - 1
+                    else "among the retained components"
+                )
+                remedy = (
+                    f"Reduce n_components to {first}, or accept"
+                    if first > 0
+                    else "No smaller n_components avoids this; accept"
+                )
+                warnings.warn(
+                    f"eigenvalues {first} and {first + 1} are degenerate "
+                    f"(gap {gaps[first]:.1e} of the largest eigenvalue < "
+                    f"{EIGENVALUE_GAP_WARN:.0e}) {where}: components_ and "
+                    f"transform are not reproducible across platforms for this "
+                    f"data.  {remedy} a basis that depends on the LAPACK build.",
+                    RuntimeWarning,
+                    stacklevel=stacklevel,
+                )
 
         self.mean_ = mean
         self.explained_variance_ = kept
         # rows = components (shape: n_components × n_features)
-        components = eigenvectors[:, : self.n_components].T
+        components = eigenvectors[:, :n_components].T
 
         # 6. Canonicalise the sign of each component.  eigh returns eigenvectors
         # up to an arbitrary sign, so another LAPACK build may hand back a
@@ -347,7 +445,7 @@ class PCANormalizer:
         torch.Tensor
             Transformed tensor, shape ``(n_samples, n_components)``.
         """
-        return self.fit(X).transform(X)
+        return self._fit(X, stacklevel=3).transform(X)
 
     # ------------------------------------------------------------------
     @property

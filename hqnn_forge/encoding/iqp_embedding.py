@@ -14,12 +14,19 @@ Design Rationale
   followed by per-qubit SU(2) Rot(φ, θ, ω) gates are applied.
 * **Adjoint Differentiation** — the QNode is configured for the `adjoint` method.
 * **Barren Plateau Avoidance** — use `restricted_normal_init_` on the returned layer.
+
+References
+----------
+* Havlíček et al. (2019) "Supervised learning with quantum-enhanced feature
+  spaces", Nature 567, 209–212.  Introduces the IQP-type feature map
+  (Hadamards, diagonal phases in the features and their pairwise products).
 """
 
 from __future__ import annotations
 
 import logging
 import warnings
+from collections.abc import Callable
 from itertools import combinations
 from typing import Literal
 
@@ -59,7 +66,7 @@ def _make_iqp_embedding_circuit(
     n_qubits: int,
     n_layers: int,
     n_repeats: int = 1,
-) -> callable:
+) -> Callable[[torch.Tensor, torch.Tensor], list[qml.measurements.ExpectationMP]]:
     """
     Factory returning the bare quantum function for the IQP embedding.
     """
