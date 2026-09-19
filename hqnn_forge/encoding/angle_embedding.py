@@ -28,7 +28,7 @@ References
 * Schuld et al. (2020) "Circuit-centric quantum classifiers", PRA 101, 032308.
 * Sim et al. (2019) "Expressibility and entangling capability of PQCs", Adv. Quantum
   Technol. 2, 1900070.
-* Jones & Gacon (2021) "Efficient calculation of gradients in classical simulations
+* Jones & Gacon (2020) "Efficient calculation of gradients in classical simulations
   of variational quantum algorithms" arXiv:2009.02823.
 """
 

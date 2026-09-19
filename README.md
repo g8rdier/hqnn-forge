@@ -81,5 +81,12 @@ and versioning policy this project follows.
 - Cerezo et al. (2021) — *Cost function dependent barren plateaus in shallow parametrized quantum circuits*
 - McClean et al. (2018) — *Barren plateaus in quantum neural network training landscapes*
 - Zhang et al. (2022) — *Escaping from the barren plateau via Gaussian initializations in deep variational quantum circuits*
+- Grant et al. (2019) — *An initialization strategy for addressing barren plateaus in parametrized quantum circuits*
+- Schuld et al. (2020) — *Circuit-centric quantum classifiers*
+- Sim et al. (2019) — *Expressibility and entangling capability of parameterized quantum circuits for hybrid quantum-classical algorithms*
+- Jones & Gacon (2020) — *Efficient calculation of gradients in classical simulations of variational quantum algorithms*
+- Kandala et al. (2017) — *Hardware-efficient variational quantum eigensolver for small molecules and quantum magnets*
+- Havlíček et al. (2019) — *Supervised learning with quantum-enhanced feature spaces*
 - Lin et al. (2017) — *Focal Loss for Dense Object Detection*
+- King & Zeng (2001) — *Logistic Regression in Rare Events Data*
 - Bergholm et al. (2022) — *PennyLane: Automatic differentiation of hybrid quantum-classical computations*
