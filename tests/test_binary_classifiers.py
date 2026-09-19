@@ -24,6 +24,7 @@ from hqnn_forge.models import (
     HybridBinaryClassifier,
     ParallelHybridClassifier,
 )
+from hqnn_forge.utils.modes import eval_mode
 
 BATCH = 8
 N_QUBITS = 4
@@ -105,8 +106,10 @@ class TestPredictProba:
         assert not classifier.predict_proba(random_raw_batch).requires_grad
 
     def test_is_sigmoid_of_forward(self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor) -> None:
-        classifier.eval()
-        with torch.no_grad():
+        # predict_proba runs its forward under eval_mode, so the expectation has to
+        # as well; a bare classifier.eval() would also leak eval mode into every later
+        # test through the module-scoped fixture.
+        with eval_mode(classifier), torch.no_grad():
             expected = torch.sigmoid(classifier(random_raw_batch)).squeeze(-1)
         torch.testing.assert_close(classifier.predict_proba(random_raw_batch), expected)
 
