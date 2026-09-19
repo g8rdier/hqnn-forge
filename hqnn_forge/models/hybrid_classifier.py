@@ -71,10 +71,10 @@ from hqnn_forge.initializers.restricted_variance import (
     restricted_normal_init_,
     block_local_init_,
 )
-from hqnn_forge.utils.modes import eval_mode
+from hqnn_forge.models.base import BinaryClassifierBase
 
 
-class HybridBinaryClassifier(nn.Module):
+class HybridBinaryClassifier(BinaryClassifierBase):
     """
     Hybrid quantum-classical binary classifier.
 
@@ -133,6 +133,17 @@ class HybridBinaryClassifier(nn.Module):
         encoding_type: str = "angle",
     ) -> None:
         super().__init__()
+        self._config = dict(
+            n_input_features=n_input_features,
+            n_qubits=n_qubits,
+            n_layers=n_layers,
+            use_classical_encoder=use_classical_encoder,
+            dropout_p=dropout_p,
+            device_name=device_name,
+            diff_method=diff_method,
+            init_strategy=init_strategy,
+            encoding_type=encoding_type,
+        )
 
         self.n_input_features = n_input_features
         self.n_qubits         = n_qubits
@@ -233,63 +244,6 @@ class HybridBinaryClassifier(nn.Module):
 
         # Classification head
         return self.head(x)                  # (B, 1)
-
-    # ------------------------------------------------------------------
-    @torch.no_grad()
-    def predict_proba(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Compute positive-class probabilities (inference mode, no gradients).
-
-        Runs in eval mode whatever mode the model is in, so dropout is off and
-        repeated calls on the same input agree.  Every submodule's ``training``
-        flag is restored afterwards, so calling this mid-training leaves the
-        model exactly as it was.
-
-        Parameters
-        ----------
-        x:
-            Input tensor, shape ``(batch_size, n_input_features)``.
-
-        Returns
-        -------
-        torch.Tensor
-            Probability of class 1, shape ``(batch_size,)``, values ∈ [0, 1].
-        """
-        # no_grad alone leaves nn.Dropout active: it checks self.training, not
-        # grad mode.
-        with eval_mode(self):
-            logits = self.forward(x)
-        return torch.sigmoid(logits).squeeze(-1)
-
-    # ------------------------------------------------------------------
-    @torch.no_grad()
-    def predict(self, x: torch.Tensor, threshold: float = 0.5) -> torch.Tensor:
-        """
-        Predict binary labels.  Runs in eval mode, like ``predict_proba``.
-
-        Parameters
-        ----------
-        x:
-            Input tensor, shape ``(batch_size, n_input_features)``.
-        threshold:
-            Decision threshold.  Default: 0.5.
-            For imbalanced datasets consider tuning via ROC/PR curves.
-
-        Returns
-        -------
-        torch.Tensor
-            Binary label tensor of shape ``(batch_size,)``, dtype ``torch.long``.
-        """
-        return (self.predict_proba(x) >= threshold).long()
-
-    # ------------------------------------------------------------------
-    def count_parameters(self, trainable_only: bool = True) -> int:
-        """Return total parameter count (quantum + classical)."""
-        params = (
-            self.parameters() if not trainable_only
-            else (p for p in self.parameters() if p.requires_grad)
-        )
-        return sum(p.numel() for p in params)
 
     # ------------------------------------------------------------------
     def extra_repr(self) -> str:
