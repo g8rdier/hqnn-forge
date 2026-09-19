@@ -12,7 +12,7 @@ build_encoding_qnode    Factory that wires the QNode to a device and diff method
 
 See Also
 --------
-hqnn_forge.encoding.iqp_embedding  IQP-style encoding (placeholder / future work).
+hqnn_forge.encoding.iqp_embedding  IQP embedding (pairwise IsingZZ phases) + entangling ansatz.
 """
 
 from hqnn_forge.encoding.angle_embedding import (
