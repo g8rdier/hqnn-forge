@@ -17,13 +17,15 @@ example, rewrites every ``Rot`` as ``RZ·RY·RZ``, which would make the same
 model report different counts depending on the simulator it happens to run
 on.  The gate set counted against is ``LOGICAL_GATE_SET``; everything is
 decomposed until only those gates remain.  Two-qubit gates are counted
-separately because they are what NISQ feasibility is usually judged by.
+separately because they are what NISQ feasibility is usually judged by; a
+gate on more than two wires counts once there, not at the number of CNOTs it
+would compile to.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any
 
 import pennylane as qml
@@ -58,7 +60,8 @@ class CircuitSummary:
     n_two_qubit_gates:
         Gates acting on two or more wires (CNOT, CZ, MultiRZ).
     gate_counts:
-        Count per gate name, sorted by name.
+        Count per gate name, sorted by name.  This field is a mapping, so the
+        dataclass is frozen for immutability but is **not** hashable.
     device_name:
         PennyLane device the layer's QNode is bound to, after any fallback.
     diff_method:
@@ -77,7 +80,9 @@ class CircuitSummary:
 
     def to_dict(self) -> dict[str, Any]:
         """Plain-dict form, for logging frameworks and JSON."""
-        d = asdict(self)
+        # Not dataclasses.asdict: it deep-copies, which raises for a
+        # gate_counts that is a Mapping but not a dict (e.g. a mappingproxy).
+        d = {f.name: getattr(self, f.name) for f in fields(self)}
         d["gate_counts"] = dict(self.gate_counts)
         return d
 
@@ -128,9 +133,12 @@ def _resolve_layer(target: nn.Module) -> tuple[nn.Module, qml.qnn.TorchLayer, in
     return layer, qlayer, n_qubits
 
 
-def _logical_tape(qlayer: qml.qnn.TorchLayer, n_qubits: int) -> qml.tape.QuantumScript:
+def _logical_tape(
+    qlayer: qml.qnn.TorchLayer, n_qubits: int, inputs: torch.Tensor | None = None
+) -> qml.tape.QuantumScript:
     """The tape the layer executes for one sample, decomposed to LOGICAL_GATE_SET."""
-    inputs = torch.zeros(n_qubits, dtype=torch.float64)
+    if inputs is None:
+        inputs = torch.zeros(n_qubits, dtype=torch.float64)
     weights = {name: param.detach() for name, param in qlayer.qnode_weights.items()}
     # level="top": the circuit as written, before the QNode's own transforms
     # (batch expansion) and before the device rewrites gates it cannot run.
@@ -194,17 +202,30 @@ def circuit_summary(target: nn.Module) -> CircuitSummary:
     )
 
 
-def draw_circuit(target: nn.Module, decimals: int = 2) -> str:
+def draw_circuit(
+    target: nn.Module, inputs: torch.Tensor | None = None, decimals: int = 2
+) -> str:
     """
-    Text drawing of the logical circuit, one sample, with the layer's current
-    weights.  Suitable for ``print`` or a log line alongside a training run.
+    Text drawing of the logical circuit for one sample, with the layer's
+    current weights.  Suitable for ``print`` or a log line alongside a
+    training run.
 
     Parameters
     ----------
     target:
         Same as for :func:`circuit_summary`.
+    inputs:
+        The one sample to draw the embedding angles for, shape ``(n_qubits,)``.
+        Default: zeros, which draws every embedding rotation as ``RX(0.00)``.
+        Pass a real sample to see the feature map it produces.
     decimals:
         Digits shown for gate parameters.  Default: 2.
+
+    Notes
+    -----
+    Only the printed angles depend on ``inputs``; the gates and the wiring do
+    not, which is why :func:`circuit_summary` does not take one.
     """
     _, qlayer, n_qubits = _resolve_layer(target)
-    return qml.drawer.tape_text(_logical_tape(qlayer, n_qubits), decimals=decimals)
+    tape = _logical_tape(qlayer, n_qubits, inputs)
+    return qml.drawer.tape_text(tape, decimals=decimals)

@@ -14,6 +14,7 @@ Trainable parameters are 3·n·L for both.
 from __future__ import annotations
 
 from math import comb
+from types import MappingProxyType
 
 import pytest
 import torch
@@ -23,7 +24,7 @@ from hqnn_forge.encoding import QuantumEncodingLayer
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
 
-CPU = dict(device_name="default.qubit", diff_method="backprop")
+CPU = {"device_name": "default.qubit", "diff_method": "backprop"}
 
 
 def _lightning_available() -> bool:
@@ -105,12 +106,16 @@ class TestModelPassthrough:
     @pytest.mark.parametrize("model_cls", [HybridBinaryClassifier, ParallelHybridClassifier])
     @pytest.mark.parametrize("encoding_type", ["angle", "iqp"])
     def test_model_summary_is_its_quantum_layer(self, model_cls: type, encoding_type: str) -> None:
-        model = model_cls(n_input_features=6, n_qubits=3, n_layers=2, encoding_type=encoding_type, **CPU)
+        model = model_cls(
+            n_input_features=6, n_qubits=3, n_layers=2, encoding_type=encoding_type, **CPU
+        )
         assert circuit_summary(model) == circuit_summary(model.quantum_layer)
 
     def test_published_configuration(self) -> None:
         """The thesis SHNN: 8 qubits, 2 layers, angle encoding."""
-        s = circuit_summary(HybridBinaryClassifier(n_input_features=8, n_qubits=8, n_layers=2, **CPU))
+        s = circuit_summary(
+            HybridBinaryClassifier(n_input_features=8, n_qubits=8, n_layers=2, **CPU)
+        )
         assert s.n_qubits == 8 and s.n_trainable_params == 48
         assert s.gate_counts["CNOT"] == 16 and s.depth == 19
 
@@ -128,9 +133,24 @@ class TestPresentation:
     def test_str_lists_every_field(self) -> None:
         s = circuit_summary(QuantumEncodingLayer(n_qubits=3, n_layers=2, **CPU))
         text = str(s)
-        assert text.splitlines()[0] == "Circuit summary: QuantumEncodingLayer on default.qubit (backprop)"
-        for label, value in [("qubits", 3), ("trainable params", 18), ("depth", 9), ("gates", 15), ("two-qubit gates", 6), ("CNOT", 6), ("RX", 3), ("Rot", 6)]:
-            assert any(line.strip().startswith(label) and line.rstrip().endswith(f": {value}") for line in text.splitlines()), label
+        assert text.splitlines()[0] == (
+            "Circuit summary: QuantumEncodingLayer on default.qubit (backprop)"
+        )
+        expected = [
+            ("qubits", 3),
+            ("trainable params", 18),
+            ("depth", 9),
+            ("gates", 15),
+            ("two-qubit gates", 6),
+            ("CNOT", 6),
+            ("RX", 3),
+            ("Rot", 6),
+        ]
+        for label, value in expected:
+            assert any(
+                line.strip().startswith(label) and line.rstrip().endswith(f": {value}")
+                for line in text.splitlines()
+            ), label
 
     def test_str_values_are_aligned(self) -> None:
         text = str(circuit_summary(IQPEncodingLayer(n_qubits=3, n_layers=1, **CPU)))
@@ -143,6 +163,21 @@ class TestPresentation:
         assert isinstance(d["gate_counts"], dict)
         assert CircuitSummary(**d) == s
 
+    def test_to_dict_accepts_any_mapping(self) -> None:
+        """gate_counts is annotated Mapping, so a non-dict one must convert."""
+        s = CircuitSummary(
+            layer_type="QuantumEncodingLayer",
+            n_qubits=2,
+            n_trainable_params=6,
+            depth=5,
+            n_gates=8,
+            n_two_qubit_gates=2,
+            gate_counts=MappingProxyType({"CNOT": 2, "RX": 2, "Rot": 2}),
+        )
+        d = s.to_dict()
+        assert type(d["gate_counts"]) is dict
+        assert d["gate_counts"] == {"CNOT": 2, "RX": 2, "Rot": 2}
+
     def test_is_immutable(self) -> None:
         s = circuit_summary(QuantumEncodingLayer(n_qubits=2, n_layers=1, **CPU))
         with pytest.raises(AttributeError):
@@ -152,6 +187,12 @@ class TestPresentation:
         drawing = draw_circuit(QuantumEncodingLayer(n_qubits=2, n_layers=1, **CPU))
         assert "RX(0.00)" in drawing and "Rot(" in drawing and "<Z>" in drawing
         assert drawing.count("\n") >= 1  # one line per wire
+
+    def test_draw_uses_the_given_inputs(self) -> None:
+        layer = QuantumEncodingLayer(n_qubits=2, n_layers=1, **CPU)
+        drawing = draw_circuit(layer, inputs=torch.tensor([0.5, 1.25]))
+        assert "RX(0.50)" in drawing and "RX(1.25)" in drawing
+        assert "RX(0.00)" not in drawing
 
     def test_draw_accepts_a_model_and_decimals(self) -> None:
         model = HybridBinaryClassifier(n_input_features=2, n_qubits=2, n_layers=1, **CPU)
