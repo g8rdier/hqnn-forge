@@ -291,6 +291,10 @@ def find_optimal_threshold(
         raise ValueError("y_true is empty; a threshold cannot be chosen from no samples.")
     if t.shape != p.shape:
         raise ValueError(f"y_true and y_prob differ in length: {t.numel()} vs {p.numel()}.")
+    # NaN passes both comparisons below and would be silently labelled
+    # negative at every threshold, which a diverged model makes easy to hit.
+    if torch.any(torch.isnan(p)):
+        raise ValueError(f"y_prob contains {int(torch.isnan(p).sum())} NaN value(s).")
     if torch.any(p < 0) or torch.any(p > 1):
         raise ValueError(f"y_prob must lie in [0, 1]; got min {p.min():.4g}, max {p.max():.4g}.")
 

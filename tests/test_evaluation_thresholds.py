@@ -156,6 +156,9 @@ class TestFindOptimalThreshold:
             find_optimal_threshold(Y, P[:5])
         with pytest.raises(ValueError, match=r"lie in \[0, 1\]"):
             find_optimal_threshold(Y, P * 2)
+        # NaN is neither < 0 nor > 1, so it needs its own check
+        with pytest.raises(ValueError, match="NaN"):
+            find_optimal_threshold(Y, P.clone().index_fill_(0, torch.tensor([2]), float("nan")))
 
     def test_numpy_inputs(self) -> None:
         result = find_optimal_threshold(Y.numpy(), P.numpy())
