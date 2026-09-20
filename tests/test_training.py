@@ -9,6 +9,8 @@ milliseconds; one test trains a small hybrid classifier end to end.
 
 from __future__ import annotations
 
+import math
+
 import pytest
 import torch
 import torch.nn as nn
@@ -210,6 +212,36 @@ class TestEarlyStopping:
         assert history.stopped_early and history.best_epoch == 1
 
 
+class TestDivergence:
+    def test_nan_logits_do_not_abort_a_metric_monitor(self, data: tuple[torch.Tensor, ...]) -> None:
+        """
+        A diverged model gives NaN probabilities, which find_optimal_threshold
+        rejects.  Under the default monitor that used to raise out of the loop
+        and lose both the history and the best-epoch snapshot.
+        """
+        X, y, Xv, yv = data
+        model = _logreg()
+
+        def diverge(record: EpochRecord) -> None:
+            if record.epoch == 2:
+                with torch.no_grad():
+                    model.weight.fill_(float("nan"))
+
+        history = train_model(
+            model, nn.BCEWithLogitsLoss(), torch.optim.Adam(model.parameters(), lr=0.05),
+            X, y, Xv, yv, max_epochs=20, patience=2, on_epoch_end=diverge,
+        )
+        assert history.stopped_early and history.n_epochs == 4
+        # The NaN epochs never improve, so the best epoch predates the divergence
+        assert history.best_epoch is not None and history.best_epoch <= 2
+        assert history.best_value is not None and not math.isnan(history.best_value)
+        assert all(math.isnan(r.val_score) for r in history.epochs[2:] if r.val_score is not None)
+        # and the snapshot survives, so the returned model is usable again
+        assert history.restored_best
+        with torch.no_grad():
+            assert torch.isfinite(model(Xv)).all()
+
+
 class TestValidation:
     @pytest.mark.parametrize(
         "kwargs, match",
@@ -237,6 +269,30 @@ class TestValidation:
         model = _logreg()
         with pytest.raises(ValueError, match="X_train and y_train differ"):
             train_model(model, nn.BCEWithLogitsLoss(), torch.optim.SGD(model.parameters(), lr=0.1), X, y[:-1])
+
+    def test_single_class_val_split_is_rejected_by_a_metric_monitor(
+        self, data: tuple[torch.Tensor, ...]
+    ) -> None:
+        """Otherwise every epoch scores alike, so epoch 1 "wins" and the run rolls back to it."""
+        X, y, Xv, _ = data
+        model = _logreg()
+        with pytest.raises(ValueError, match="single class"):
+            train_model(
+                model, nn.BCEWithLogitsLoss(), torch.optim.SGD(model.parameters(), lr=0.1),
+                X, y, Xv, torch.zeros(Xv.shape[0]),
+            )
+
+    def test_single_class_val_split_is_allowed_for_val_loss(
+        self, data: tuple[torch.Tensor, ...]
+    ) -> None:
+        """val_loss ranks epochs on a single-class split perfectly well."""
+        X, y, Xv, _ = data
+        model = _logreg()
+        history = train_model(
+            model, nn.BCEWithLogitsLoss(), torch.optim.Adam(model.parameters(), lr=0.1),
+            X, y, Xv, torch.zeros(Xv.shape[0]), max_epochs=3, patience=None, monitor="val_loss",
+        )
+        assert history.n_epochs == 3 and history.best_epoch is not None
 
     def test_bad_output_shape(self, data: tuple[torch.Tensor, ...]) -> None:
         X, y, _, _ = data

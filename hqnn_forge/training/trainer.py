@@ -137,7 +137,11 @@ def train_model(
         ``(batch,)`` or ``(batch, 1)``.
     loss_fn:
         ``loss_fn(logits, targets) -> scalar``, e.g. ``FocalLoss()`` or
-        ``nn.BCEWithLogitsLoss()``.  Targets are passed as float.
+        ``nn.BCEWithLogitsLoss()``.  Targets are passed as float.  Mean
+        reduction is assumed for the reported ``train_loss``, which averages
+        the batch losses weighted by batch size; with ``reduction="sum"``
+        training is unaffected but ``train_loss`` is comparable neither
+        across batch sizes nor with the full-batch ``val_loss``.
     optimizer:
         Optimiser already bound to the parameters to train.
     X_train, y_train:
@@ -193,6 +197,15 @@ def train_model(
     if X_val is not None and y_val is not None:
         val = (torch.as_tensor(X_val), torch.as_tensor(y_val).reshape(-1).float())
         _check_pair(*val, "val")
+        # A single-class split scores the same degenerate value at every
+        # threshold, so epoch 1 wins, patience expires and restore_best hands
+        # back the initial weights -- silently, on data the model does learn.
+        if monitor != "val_loss" and torch.unique(val[1]).numel() < 2:
+            raise ValueError(
+                f"y_val contains a single class, so the {monitor!r} monitor cannot rank "
+                f"epochs on it.  Pass a validation split holding both classes (e.g. a "
+                f"stratified one), or monitor='val_loss'."
+            )
     has_val = val is not None
 
     lower_is_better = monitor == "val_loss"
@@ -225,10 +238,17 @@ def train_model(
             if lower_is_better:
                 value, threshold = val_loss, None
             else:
-                search = find_optimal_threshold(
-                    y_v.long(), torch.sigmoid(val_logits), metric=monitor
-                )
-                value, threshold = search.score, search.threshold
+                val_prob = torch.sigmoid(val_logits)
+                if torch.any(torch.isnan(val_prob)):
+                    # find_optimal_threshold rejects NaN probabilities rather
+                    # than label them negative.  Diverging must not take the
+                    # history and the best-epoch snapshot down with it, so
+                    # score the epoch NaN, as the val_loss path already does:
+                    # it never improves, and patience ends the run.
+                    value, threshold = math.nan, None
+                else:
+                    search = find_optimal_threshold(y_v.long(), val_prob, metric=monitor)
+                    value, threshold = search.score, search.threshold
             record = EpochRecord(
                 epoch=epoch,
                 train_loss=record.train_loss,
