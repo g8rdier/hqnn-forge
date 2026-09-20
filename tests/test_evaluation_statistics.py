@@ -7,6 +7,7 @@ Unit tests for hqnn_forge.evaluation.statistics.
 from __future__ import annotations
 
 import itertools
+import math
 
 import numpy as np
 import pytest
@@ -29,6 +30,26 @@ def _brute_force_p(diffs: np.ndarray, alternative: str) -> float:
     upper = np.mean(stats >= observed - 1e-9)
     lower = np.mean(stats <= observed + 1e-9)
     return {"greater": upper, "less": lower, "two-sided": min(1.0, 2 * min(upper, lower))}[alternative]
+
+
+class TestAverageRanks:
+    """Mid-ranks checked against references that do not use _average_ranks."""
+
+    def test_hand_computed_mid_ranks(self) -> None:
+        values = np.array([0.5, 0.25, 0.5, 0.5, 0.125, 0.25])
+        # sorted: 0.125 | 0.25 0.25 | 0.5 0.5 0.5
+        # ranks:      1 | 2.5  2.5  |   5   5   5
+        assert _average_ranks(values).tolist() == [5.0, 2.5, 5.0, 5.0, 1.0, 2.5]
+
+    def test_no_ties_are_plain_ordinal_ranks(self) -> None:
+        values = np.array([0.4, 0.1, 0.3, 0.2])
+        assert _average_ranks(values).tolist() == [4.0, 1.0, 3.0, 2.0]
+
+    def test_matches_scipy_rankdata_on_heavily_tied_data(self) -> None:
+        stats = pytest.importorskip("scipy.stats")
+        rng = np.random.default_rng(3)
+        values = rng.integers(1, 5, size=20).astype(float)
+        np.testing.assert_allclose(_average_ranks(values), stats.rankdata(values))
 
 
 class TestRankBiserial:
@@ -68,9 +89,15 @@ class TestWilcoxon:
         assert res.statistic == n * (n + 1) / 2
         assert res.p_value == pytest.approx(min(1.0, 2 / 2**n))
         assert res.min_p_value == pytest.approx(min(1.0, 2 / 2**n))
-        one_sided = wilcoxon_signed_rank(a, b, alternative="greater")
-        assert one_sided.p_value == pytest.approx(1 / 2**n)
-        assert one_sided.min_p_value == pytest.approx(1 / 2**n)
+        greater = wilcoxon_signed_rank(a, b, alternative="greater")
+        assert greater.p_value == pytest.approx(1 / 2**n)
+        assert greater.min_p_value == pytest.approx(1 / 2**n)
+        # "less" is the mirror image: this data is as far from it as possible,
+        # but its floor is still 1 / 2^n, reached when every fold favours b.
+        less = wilcoxon_signed_rank(a, b, alternative="less")
+        assert less.p_value == pytest.approx(1.0)
+        assert less.min_p_value == pytest.approx(1 / 2**n)
+        assert wilcoxon_signed_rank(b, a, alternative="less").p_value == pytest.approx(1 / 2**n)
 
     def test_five_folds_cannot_reach_005(self) -> None:
         """The thesis case: n=5 can never reject at 0.05 two-sided."""
@@ -84,8 +111,13 @@ class TestWilcoxon:
 
     @pytest.mark.parametrize("alternative", ["two-sided", "greater", "less"])
     def test_matches_brute_force_with_ties(self, alternative: str) -> None:
-        a = np.array([0.3, 0.5, 0.2, 0.9, 0.4, 0.1, 0.7, 0.6])
-        b = np.array([0.1, 0.7, 0.4, 0.7, 0.4, 0.3, 0.5, 0.2])  # |d| has ties at 0.2
+        # Eighths, so the differences are exact in binary floating point and
+        # the intended tie group really forms: six |d| = 0.25, one 0.5, one zero.
+        a = np.array([0.375, 0.625, 0.250, 1.000, 0.500, 0.125, 0.875, 0.750])
+        b = np.array([0.125, 0.875, 0.500, 0.750, 0.500, 0.375, 0.625, 0.250])
+        d = a - b
+        nonzero = np.abs(d[d != 0])
+        assert np.count_nonzero(nonzero == 0.25) == 6 and np.unique(nonzero).size == 2
         res = wilcoxon_signed_rank(a, b, alternative=alternative)
         assert res.p_value == pytest.approx(_brute_force_p(a - b, alternative), abs=1e-12)
 
@@ -111,6 +143,29 @@ class TestWilcoxon:
         assert ours.method == "normal"
         assert ours.p_value == pytest.approx(theirs.pvalue, rel=1e-8)
         assert ours.min_p_value < 1e-10
+
+    def test_normal_approximation_corrects_for_ties(self) -> None:
+        """Above the exact limit the variance must be sum(r^2)/4, not n(n+1)(2n+1)/24."""
+        stats = pytest.importorskip("scipy.stats")
+        rng = np.random.default_rng(4)
+        n = EXACT_MAX_N + 11
+        diffs = rng.choice(np.array([-3.0, -2.0, -1.0, 1.0, 2.0, 3.0]), size=n)
+        a, b = np.zeros(n), -diffs
+        ours = wilcoxon_signed_rank(a, b)
+        theirs = stats.wilcoxon(a, b, method="approx", correction=False)
+        assert ours.method == "normal" and ours.n == n
+        assert ours.p_value == pytest.approx(theirs.pvalue, rel=1e-8)
+
+        # The tie correction is not cosmetic here: dropping it moves the p-value.
+        ranks = _average_ranks(np.abs(diffs))
+        w_plus = float(ranks[diffs > 0].sum())
+        uncorrected_z = (w_plus - n * (n + 1) / 4) / math.sqrt(n * (n + 1) * (2 * n + 1) / 24)
+        uncorrected_p = min(1.0, 2 * 0.5 * math.erfc(abs(uncorrected_z) / math.sqrt(2)))
+        assert uncorrected_p != pytest.approx(theirs.pvalue, rel=1e-3)
+
+        # min_p_value floors in this branch too, for both one-sided directions.
+        assert wilcoxon_signed_rank(a, b, alternative="less").min_p_value < 1e-10
+        assert wilcoxon_signed_rank(a, b, alternative="greater").min_p_value < 1e-10
 
     def test_p_value_is_symmetric_in_argument_order(self) -> None:
         a, b = [0.3, 0.5, 0.2, 0.8, 0.45], [0.1, 0.6, 0.4, 0.7, 0.4]
