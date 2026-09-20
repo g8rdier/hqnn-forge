@@ -9,8 +9,9 @@ dropped into ``cross_val_score``, ``GridSearchCV`` and ``Pipeline`` like any
 other classifier.  Training is delegated to
 :func:`hqnn_forge.training.train_model`.
 
-scikit-learn is an optional dependency; importing this module without it
-raises an ``ImportError`` saying how to install it.
+scikit-learn (>= 1.6) is an optional dependency, declared by the ``sklearn``
+extra; importing this module without it raises an ``ImportError`` saying how to
+install it.
 
 Example
 -------
@@ -30,6 +31,7 @@ Example
 
 from __future__ import annotations
 
+import numbers
 from typing import Any, Literal
 
 import numpy as np
@@ -42,8 +44,9 @@ try:
     from sklearn.utils.validation import check_is_fitted, validate_data
 except ImportError as exc:  # pragma: no cover - exercised only without scikit-learn
     raise ImportError(
-        "hqnn_forge.sklearn needs scikit-learn: pip install scikit-learn "
-        '(or pip install "hqnn-forge[examples]").'
+        'hqnn_forge.sklearn needs scikit-learn >= 1.6: pip install "scikit-learn>=1.6" '
+        '(or pip install "hqnn-forge[sklearn]").  validate_data and __sklearn_tags__ '
+        "were added in 1.6, so an older install fails this import too."
     ) from exc
 
 from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
@@ -75,15 +78,23 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
     lr:
         Adam learning rate.
     max_epochs, batch_size, patience, monitor:
-        Passed to ``train_model``.  Early stopping needs a validation split.
+        Passed to ``train_model``.  Early stopping needs a validation split:
+        with ``validation_fraction=0`` the run always lasts ``max_epochs``,
+        whatever ``patience`` says.  ``patience=None`` disables early stopping
+        even when there is a split.
     validation_fraction:
         Share of the training data held out (stratified) for early stopping
         and threshold selection.  ``0`` trains on everything.
     threshold:
         ``"optimal"`` uses the validation-optimal threshold found by
-        ``train_model`` (0.5 without a validation split); a float fixes it.
+        ``train_model``; a float in ``[0, 1]`` fixes it.  ``train_model``
+        searches a threshold for the metric monitors only, so ``"optimal"``
+        falls back to 0.5 both without a validation split and under
+        ``monitor="val_loss"``.
     random_state:
         Seeds weight initialisation, the validation split and batch order.
+        Weight initialisation runs off the global torch RNG, so a seeded
+        ``fit`` reseeds it process-wide (see #175).
 
     Attributes
     ----------
@@ -114,7 +125,7 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         max_epochs: int = 20,
         batch_size: int = 64,
         validation_fraction: float = 0.0,
-        patience: int | None = None,
+        patience: int | None = 10,
         monitor: str = "mcc",
         threshold: float | Literal["optimal"] = "optimal",
         random_state: int | None = None,
@@ -182,27 +193,38 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
             train_parts.append(idx[n_val:])
         return np.sort(np.concatenate(train_parts)), np.sort(np.concatenate(val_parts))
 
+    @staticmethod
+    def _check_threshold(threshold: float | Literal["optimal"]) -> None:
+        if threshold == "optimal":
+            return
+        # bool is a subclass of int, and threshold=True would silently mean 1.0.
+        if isinstance(threshold, bool) or not isinstance(threshold, numbers.Real):
+            raise ValueError(f"threshold must be 'optimal' or a real number; got {threshold!r}.")
+        if not 0.0 <= float(threshold) <= 1.0:
+            raise ValueError(
+                f"threshold must lie in [0, 1], the range of a probability; got {threshold!r}."
+            )
+
     # ------------------------------------------------------------------
     def fit(self, X: npt.ArrayLike, y: npt.ArrayLike) -> HybridClassifierEstimator:
         """Build the model for ``X``'s width and train it on ``(X, y)``."""
         X_arr, y_arr = validate_data(self, X, y, dtype=np.float32)
-        self.classes_ = unique_labels(y_arr)
-        if self.classes_.size != 2:
+        classes = unique_labels(y_arr)
+        if classes.size != 2:
             raise ValueError(
-                f"HybridClassifierEstimator is a binary classifier; got {self.classes_.size} "
-                f"classes: {self.classes_.tolist()}."
+                f"HybridClassifierEstimator is a binary classifier; got {classes.size} "
+                f"classes: {classes.tolist()}."
             )
         if not 0.0 <= self.validation_fraction < 1.0:
             raise ValueError(f"validation_fraction must lie in [0, 1); got {self.validation_fraction}.")
-        if not (self.threshold == "optimal" or isinstance(self.threshold, (int, float))):
-            raise ValueError(f"threshold must be 'optimal' or a number; got {self.threshold!r}.")
-        y01 = (y_arr == self.classes_[1]).astype(np.int64)
+        self._check_threshold(self.threshold)
+        y01 = (y_arr == classes[1]).astype(np.int64)
 
         seed = self.random_state
         rng = np.random.default_rng(seed)
         if seed is not None:
             torch.manual_seed(seed)
-        self.model_ = self._build(X_arr.shape[1])
+        model = self._build(X_arr.shape[1])
         loss_fn = self._loss()
 
         X_t = torch.from_numpy(X_arr)
@@ -216,10 +238,10 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
             val = (None, None)
 
         generator = torch.Generator().manual_seed(seed) if seed is not None else None
-        self.history_: TrainingHistory = train_model(
-            self.model_,
+        history = train_model(
+            model,
             loss_fn,
-            torch.optim.Adam(self.model_.parameters(), lr=self.lr),
+            torch.optim.Adam(model.parameters(), lr=self.lr),
             X_t[tr],
             torch.from_numpy(y01[tr]).float(),
             val[0],
@@ -231,11 +253,19 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
             generator=generator,
         )
         if self.threshold == "optimal":
-            best = self.history_.best_threshold
-            self.threshold_ = float(best) if best is not None else 0.5
+            best = history.best_threshold
+            threshold = float(best) if best is not None else 0.5
         else:
-            self.threshold_ = float(self.threshold)
-        self.model_.eval()
+            threshold = float(self.threshold)
+        model.eval()
+
+        # Fitted attributes are published only once training has succeeded, so a
+        # failed refit leaves the estimator on its previous fit rather than on an
+        # untrained model that ``check_is_fitted`` would wave through.
+        self.classes_ = classes
+        self.history_: TrainingHistory = history
+        self.threshold_ = threshold
+        self.model_ = model
         return self
 
     def predict_proba(self, X: npt.ArrayLike) -> npt.NDArray[np.float64]:

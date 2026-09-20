@@ -749,6 +749,9 @@ examples = [
 lightning = [
     { name = "pennylane-lightning" },
 ]
+sklearn = [
+    { name = "scikit-learn" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -761,10 +764,11 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
     { name = "ruff", marker = "extra == 'dev'" },
-    { name = "scikit-learn", marker = "extra == 'examples'" },
+    { name = "scikit-learn", marker = "extra == 'examples'", specifier = ">=1.6" },
+    { name = "scikit-learn", marker = "extra == 'sklearn'", specifier = ">=1.6" },
     { name = "torch", specifier = ">=2.2" },
 ]
-provides-extras = ["lightning", "dev", "examples"]
+provides-extras = ["lightning", "dev", "sklearn", "examples"]
 
 [[package]]
 name = "idna"

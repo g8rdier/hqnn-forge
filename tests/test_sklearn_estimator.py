@@ -14,6 +14,8 @@ the seed is part of the fixture rather than incidental.
 
 from __future__ import annotations
 
+import inspect
+
 import numpy as np
 import pytest
 
@@ -25,6 +27,7 @@ from sklearn.pipeline import make_pipeline  # noqa: E402
 from sklearn.preprocessing import StandardScaler  # noqa: E402
 
 from hqnn_forge.sklearn import HybridClassifierEstimator  # noqa: E402
+from hqnn_forge.training import train_model  # noqa: E402
 
 FAST = dict(n_qubits=2, n_layers=1, device_name="default.qubit", diff_method="backprop",
             max_epochs=15, batch_size=16, lr=0.05, loss="bce", random_state=0)
@@ -103,6 +106,19 @@ class TestFitPredict:
         np.testing.assert_array_equal(strict.predict_proba(X), default.predict_proba(X))
         assert strict.predict(X).sum() <= default.predict(X).sum()
 
+    def test_numpy_scalar_threshold_accepted(self, data: tuple) -> None:
+        # bool is rejected as a threshold, but a numpy float is a real number
+        est = HybridClassifierEstimator(**{**FAST, "threshold": np.float32(0.3)}).fit(*data)
+        assert est.threshold_ == pytest.approx(0.3, abs=1e-7)
+
+    def test_patience_default_matches_train_model(self) -> None:
+        # The wrapper's own default must not quietly disable the early stopping
+        # that validation_fraction pays training samples for.
+        assert (
+            inspect.signature(HybridClassifierEstimator).parameters["patience"].default
+            == inspect.signature(train_model).parameters["patience"].default
+        )
+
     def test_focal_loss_default(self, data: tuple) -> None:
         X, y = data
         est = HybridClassifierEstimator(**{**FAST, "loss": "focal"}).fit(X, y)
@@ -154,13 +170,27 @@ class TestErrors:
             (dict(loss="hinge"), "loss must be 'focal' or 'bce'"),
             (dict(validation_fraction=1.0), r"validation_fraction must lie in \[0, 1\)"),
             (dict(validation_fraction=0.001), "leaves no training or no validation samples"),
-            (dict(threshold="best"), "threshold must be 'optimal' or a number"),
+            (dict(threshold="best"), "threshold must be 'optimal' or a real number"),
+            (dict(threshold=True), "threshold must be 'optimal' or a real number"),
+            (dict(threshold=1.5), r"threshold must lie in \[0, 1\]"),
+            (dict(threshold=-0.1), r"threshold must lie in \[0, 1\]"),
         ],
     )
     def test_bad_parameters_fail_in_fit(self, data: tuple, params: dict, match: str) -> None:
         X, y = data
         with pytest.raises(ValueError, match=match):
             HybridClassifierEstimator(**{**FAST, **params}).fit(X, y)
+
+    def test_failed_refit_keeps_the_previous_fit(self, data: tuple) -> None:
+        # The refit fails inside the validation split, after the new model is
+        # built: the estimator must not be left holding that untrained model.
+        X, y = data
+        est = HybridClassifierEstimator(**FAST).fit(X, y)
+        trained, history, predictions = est.model_, est.history_, est.predict(X)
+        with pytest.raises(ValueError, match="leaves no training or no validation samples"):
+            est.set_params(validation_fraction=0.001).fit(X, y)
+        assert est.model_ is trained and est.history_ is history
+        np.testing.assert_array_equal(est.predict(X), predictions)
 
     def test_nan_input_rejected(self, data: tuple) -> None:
         X, y = data
