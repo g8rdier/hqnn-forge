@@ -50,8 +50,12 @@ dev = [
     "ruff",
     "mypy",
 ]
+sklearn = [
+    # hqnn_forge.sklearn needs validate_data and __sklearn_tags__, both new in 1.6
+    "scikit-learn>=1.6",
+]
 examples = [
-    "scikit-learn",   # only used for synthetic dataset generation in examples
+    "scikit-learn>=1.6",  # dataset generation in examples, and hqnn_forge.sklearn
     "matplotlib",
 ]
 
