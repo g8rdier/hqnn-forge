@@ -50,18 +50,32 @@ def _axes(ax: Axes | None, figsize: tuple[float, float]) -> tuple[Figure, Axes]:
 # Confusion matrix
 # ---------------------------------------------------------------------------
 
+def _as_binary(y: npt.ArrayLike, name: str) -> npt.NDArray[np.int64]:
+    """
+    Flatten to 1-D int64 after checking that every value is a 0/1 label.
+
+    The check runs before the cast, as in ``thresholds._as_binary``: casting
+    first would turn probabilities into a plausible-looking matrix of zeros
+    instead of raising.
+    """
+    a = np.asarray(y).reshape(-1)
+    if a.size and not np.isin(a, (0, 1)).all():
+        raise ValueError(
+            f"{name} must contain only binary 0/1 labels; got values {np.unique(a).tolist()}."
+        )
+    return a.astype(np.int64)
+
+
 def confusion_matrix(y_true: npt.ArrayLike, y_pred: npt.ArrayLike) -> npt.NDArray[np.int64]:
     """
     2×2 count matrix, rows = true class (0, 1), columns = predicted class.
 
     ``[[tn, fp], [fn, tp]]``, the scikit-learn layout.
     """
-    t = np.asarray(y_true).reshape(-1).astype(np.int64)
-    p = np.asarray(y_pred).reshape(-1).astype(np.int64)
+    t = _as_binary(y_true, "y_true")
+    p = _as_binary(y_pred, "y_pred")
     if t.shape != p.shape:
         raise ValueError(f"y_true and y_pred differ in length: {t.size} vs {p.size}.")
-    if not (np.isin(t, (0, 1)).all() and np.isin(p, (0, 1)).all()):
-        raise ValueError("confusion_matrix expects binary 0/1 labels.")
     cm = np.zeros((2, 2), dtype=np.int64)
     np.add.at(cm, (t, p), 1)
     return cm
@@ -155,6 +169,11 @@ def plot_fold_metric_boxplot(
     empty = [n for n, d in zip(names, data) if d.size == 0]
     if empty:
         raise ValueError(f"no scores for: {empty}.")
+    nonfinite = [n for n, d in zip(names, data) if not np.isfinite(d).all()]
+    if nonfinite:
+        # A NaN fold score makes the box statistics NaN, so the box silently
+        # disappears while its tick label stays behind.
+        raise ValueError(f"non-finite scores for: {nonfinite}.")
 
     fig, axes = _axes(ax, (max(4.0, 1.1 * len(names) + 1.5), 3.8))
     positions = np.arange(1, len(names) + 1)

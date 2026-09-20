@@ -71,10 +71,22 @@ class TestConfusionMatrix:
         assert plots.plot_confusion_matrix([0, 1], [0, 1], ax=b) is fig
         assert len(b.texts) == 4 and len(a.texts) == 0
 
-    @pytest.mark.parametrize("t, p, match", [([0, 1], [0], "differ in length"), ([0, 2], [0, 1], "binary 0/1")])
+    @pytest.mark.parametrize(
+        "t, p, match",
+        [
+            ([0, 1], [0], "differ in length"),
+            ([0, 2], [0, 1], "binary 0/1"),
+            # Probabilities must raise, not be truncated to zeros by the cast.
+            ([0, 0, 1, 1], [0.1, 0.9, 0.2, 0.95], "binary 0/1"),
+        ],
+    )
     def test_errors(self, t: list, p: list, match: str) -> None:
         with pytest.raises(ValueError, match=match):
             plots.plot_confusion_matrix(t, p)
+
+    def test_probabilities_are_rejected_not_truncated(self) -> None:
+        with pytest.raises(ValueError, match="y_pred"):
+            plots.confusion_matrix([0, 0, 1, 1], [0.1, 0.9, 0.2, 0.95])
 
 
 class TestFoldBoxplot:
@@ -85,8 +97,16 @@ class TestFoldBoxplot:
         ax = fig.axes[0]
         assert [t.get_text() for t in ax.get_xticklabels()] == ["SHNN", "SNN"]
         assert ax.get_ylabel() == "MCC"
-        medians = [line.get_ydata()[0] for line in ax.lines if line.get_linestyle() == "-" and len(line.get_xdata()) == 2 and line.get_xdata()[0] != line.get_xdata()[1]]
-        assert 0.58 in medians and 0.56 in medians
+        # Tie each median to the box it belongs to: a median line spans the
+        # full box width (0.5) centred on the box position, while the whisker
+        # caps span half that, so the span picks out one line per box.
+        medians = {
+            round(float(np.mean(line.get_xdata())), 6): float(line.get_ydata()[0])
+            for line in ax.lines
+            if len(line.get_xdata()) == 2 and abs(float(np.ptp(line.get_xdata())) - 0.5) < 1e-9
+        }
+        ticks = {t.get_text(): round(float(x), 6) for t, x in zip(ax.get_xticklabels(), ax.get_xticks())}
+        assert medians == {ticks["SHNN"]: pytest.approx(0.58), ticks["SNN"]: pytest.approx(0.56)}
 
     def test_points_overlaid(self) -> None:
         ax = plots.plot_fold_metric_boxplot(self.SCORES).axes[0]
@@ -103,6 +123,8 @@ class TestFoldBoxplot:
             plots.plot_fold_metric_boxplot({})
         with pytest.raises(ValueError, match=r"no scores for: \['B'\]"):
             plots.plot_fold_metric_boxplot({"A": [0.1], "B": []})
+        with pytest.raises(ValueError, match=r"non-finite scores for: \['B'\]"):
+            plots.plot_fold_metric_boxplot({"A": [0.1, 0.2], "B": [0.1, float("nan")]})
 
 
 class TestEfficiencyFrontier:
@@ -124,8 +146,16 @@ class TestEfficiencyFrontier:
         assert sorted(t.get_text() for t in ax.texts) == sorted(THESIS)
         (step,) = [line for line in ax.lines if line.get_label() == "Pareto frontier"]
         assert list(step.get_xdata()) == [122, 8897, 14869, 29357]
+        assert list(step.get_ydata()) == [THESIS[n][0] for n in ["SHNN", "ResNet", "FT-T", "SAINT"]]
+        # Each label is anchored on its own model's point, and each point is
+        # drawn at that model's (params, score).
+        assert {t.get_text(): tuple(t.xy) for t in ax.texts} == {
+            name: (float(params), score) for name, (score, params) in THESIS.items()
+        }
         points = np.concatenate([c.get_offsets() for c in ax.collections])
-        assert points.shape == (len(THESIS), 2)
+        assert sorted(map(tuple, points.tolist())) == sorted(
+            (float(params), score) for score, params in THESIS.values()
+        )
 
     def test_errors(self) -> None:
         with pytest.raises(ValueError, match="empty"):
