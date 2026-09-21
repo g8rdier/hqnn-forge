@@ -108,6 +108,15 @@ class TestExactReplacement:
             expected = model.head(fused)
         torch.testing.assert_close(out, expected)
 
+    def test_serial_ablation_is_a_constant_predictor(self, x: torch.Tensor) -> None:
+        # The quantum layer is the serial model's only input -> head path, so
+        # ablating it leaves head(full(n_qubits, fill)): the same probability for
+        # every sample.  The module docstring says so; this pins it.
+        model = _model(HybridBinaryClassifier)
+        with disable_quantum_layer(model):
+            probs = model.predict_proba(x)
+        assert torch.unique(probs).numel() == 1
+
     def test_iqp_layer_is_supported(self, x: torch.Tensor) -> None:
         model = _model(HybridBinaryClassifier, encoding_type="iqp")
         with torch.no_grad(), disable_quantum_layer(model) as layer:
@@ -134,6 +143,26 @@ class TestValidation:
         with pytest.raises(TypeError, match="expects a model with a quantum_layer.*got Linear"):
             with disable_quantum_layer(nn.Linear(2, 1)):
                 pass
+
+    def test_input_width_is_rejected_inside_the_block_too(self) -> None:
+        # use_classical_encoder=False is the only way a wrong width reaches the
+        # quantum layer; the ablated layer must refuse it exactly as the real
+        # one does, or an ablation run reports numbers for rejected input.
+        torch.manual_seed(0)
+        model = HybridBinaryClassifier(
+            n_input_features=N_QUBITS,
+            n_qubits=N_QUBITS,
+            n_layers=2,
+            use_classical_encoder=False,
+            **CPU,
+        )
+        wrong = torch.zeros(2, N_QUBITS + 1)
+        with pytest.raises(ValueError, match="does not match n_qubits"):
+            model(wrong)
+        with disable_quantum_layer(model):
+            with pytest.raises(ValueError, match="does not match n_qubits"):
+                model(wrong)
+        assert "forward" not in vars(model.quantum_layer)
 
     @pytest.mark.parametrize("fill", [-1.5, 1.01])
     def test_fill_out_of_range(self, fill: float) -> None:

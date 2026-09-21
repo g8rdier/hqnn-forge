@@ -20,17 +20,33 @@ Example
 ::
 
     from hqnn_forge.evaluation import find_optimal_threshold
+    from hqnn_forge.models import ParallelHybridClassifier
     from hqnn_forge.utils import disable_quantum_layer
 
+    model = ParallelHybridClassifier(n_input_features=30, n_qubits=8, n_layers=2)
+    # ... train model ...
     full = find_optimal_threshold(y_val, model.predict_proba(X_val)).score
     with disable_quantum_layer(model):
         ablated = find_optimal_threshold(y_val, model.predict_proba(X_val)).score
     print(f"MCC with circuit {full:.3f}, without {ablated:.3f}")
 
-For a fair ablation study, also train a model *from scratch* with the layer
-disabled: a head trained alongside the circuit has adapted to its outputs,
-so ablating after training measures dependence, not the best achievable
-classical performance.
+Which topology
+--------------
+Only a model with a classical path around the circuit gives a meaningful
+comparison.  In :class:`~hqnn_forge.models.ParallelHybridClassifier` the
+classical branch still reaches the head, so the ablated score is the score of
+that branch on its own.  In :class:`~hqnn_forge.models.HybridBinaryClassifier`
+the quantum layer is the only path from input to head, so ablating it leaves
+``head(full((n_qubits,), fill))``: one probability for every sample, a constant
+predictor scoring 0 MCC by construction.  That number restates the topology and
+measures nothing.  A classical baseline for the serial model has to be a
+separately trained classical model, not this context manager.
+
+For a fair ablation study on the parallel topology, also train a model *from
+scratch* with the layer disabled: a head trained alongside the circuit has
+adapted to its outputs, so ablating after training measures dependence, not the
+best achievable classical performance.  (Training a serial model from scratch
+inside the block trains its head's bias and nothing else.)
 """
 
 from __future__ import annotations
@@ -75,7 +91,8 @@ def disable_quantum_layer(model: nn.Module, fill: float = 0.0) -> Iterator[nn.Mo
     TypeError
         If ``model`` has no suitable ``quantum_layer``.
     ValueError
-        If ``fill`` is outside [-1, 1].
+        If ``fill`` is outside [-1, 1], or, inside the block, if the layer is
+        called with an input whose last dimension is not ``n_qubits``.
     RuntimeError
         If the layer is already disabled (nested use on the same model).
     """
@@ -95,6 +112,14 @@ def disable_quantum_layer(model: nn.Module, fill: float = 0.0) -> Iterator[nn.Mo
         )
 
     def constant_forward(x: torch.Tensor) -> torch.Tensor:
+        # The encoding layers reject an input whose width is not n_qubits; the
+        # replacement has to reject it too, or an ablated run silently returns
+        # numbers for input the full model refuses.
+        if x.shape[-1] != n_qubits:
+            raise ValueError(
+                f"Input feature dimension {x.shape[-1]} does not match "
+                f"n_qubits={n_qubits}."
+            )
         return torch.full(
             (*x.shape[:-1], n_qubits), fill, dtype=x.dtype, device=x.device
         )
