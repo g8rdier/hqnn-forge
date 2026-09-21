@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 
+import pennylane as qml
 import pytest
 import torch
 
@@ -36,6 +37,48 @@ def _layer(n_qubits: int, n_layers: int = 2) -> QuantumEncodingLayer:
 
 def _gen(seed: int = 0) -> torch.Generator:
     return torch.Generator().manual_seed(seed)
+
+
+def _lightning_available() -> bool:
+    try:
+        qml.device("lightning.qubit", wires=1)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _two_weight_layer() -> torch.nn.Module:
+    """A TorchLayer with two trainable arguments, which no library layer has."""
+    dev = qml.device("default.qubit", wires=2)
+
+    @qml.qnode(dev, interface="torch", diff_method="backprop")
+    def circuit(inputs, w1, w2):  # type: ignore[no-untyped-def]
+        qml.AngleEmbedding(inputs, wires=range(2))
+        qml.RX(w1[0], wires=0)
+        qml.RY(w2[0], wires=1)
+        return [qml.expval(qml.PauliZ(i)) for i in range(2)]
+
+    class TwoWeightLayer(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.n_qubits = 2
+            self.qlayer = qml.qnn.TorchLayer(circuit, {"w1": (1,), "w2": (1,)})
+
+    return TwoWeightLayer()
+
+
+def _result(init: str, n_qubits: int, total: float) -> GradientVarianceResult:
+    return GradientVarianceResult(
+        layer_type="QuantumEncodingLayer",
+        n_qubits=n_qubits,
+        n_layers=1,
+        init=init,
+        input_scale=0.0,
+        n_samples=2,
+        total_variance=total,
+        mean_variance=total,
+        per_parameter=torch.tensor([total]),
+    )
 
 
 class TestPhysics:
@@ -139,6 +182,11 @@ class TestMechanics:
             (dict(input_scale=-1.0), ValueError, "input_scale must be >= 0"),
             (dict(init="xavier"), ValueError, "unknown init 'xavier'"),
             (dict(cost_fn=lambda out: out), ValueError, "cost_fn must return a scalar"),
+            (
+                dict(cost_fn=lambda out: out[..., 0].sum().item()),
+                ValueError,
+                "cost_fn must return a 0-d Tensor",
+            ),
         ],
     )
     def test_argument_errors(self, kwargs: dict, error: type, match: str) -> None:
@@ -148,6 +196,32 @@ class TestMechanics:
     def test_unsupported_target(self) -> None:
         with pytest.raises(TypeError, match="got Linear"):
             gradient_variance(torch.nn.Linear(2, 1))
+
+    def test_several_weight_tensors_are_rejected(self) -> None:
+        """Measuring one of two weight tensors would understate total_variance."""
+        with pytest.raises(NotImplementedError, match="w1, w2"):
+            gradient_variance(_two_weight_layer(), n_samples=3)
+
+    def test_equality_is_a_bool_and_the_result_hashes(self) -> None:
+        """per_parameter is compare=False, so == does not return a Tensor."""
+        a, b = _result("uniform", 3, 0.25), _result("uniform", 3, 0.25)
+        assert isinstance(a == b, bool) and a == b
+        assert a != _result("uniform", 4, 0.25)
+        assert a in [b]
+        assert {a: "seen"}[b] == "seen"
+
+
+class TestDefaultDevice:
+    @pytest.mark.skipif(not _lightning_available(), reason="pennylane-lightning not installed")
+    @pytest.mark.parametrize("layer_cls", [QuantumEncodingLayer, IQPEncodingLayer])
+    def test_estimates_on_the_library_default_device(self, layer_cls: type) -> None:
+        """Every other test pins default.qubit/backprop; the default is lightning/adjoint."""
+        layer = layer_cls(n_qubits=3, n_layers=2)
+        before = layer.qlayer.weights.detach().clone()
+        result = gradient_variance(layer, n_samples=5, generator=_gen())
+        assert result.total_variance > 0.0
+        assert result.per_parameter.shape == before.shape
+        torch.testing.assert_close(layer.qlayer.weights.detach(), before, rtol=0, atol=0)
 
 
 class TestSweep:
@@ -167,3 +241,12 @@ class TestSweep:
         assert len(table[2].split()) == 5 and len(table[4].split()) == 6
         expected_ratio = results[2].total_variance / results[0].total_variance
         assert float(table[4].split()[-1]) == pytest.approx(expected_ratio, abs=1e-3)
+
+    def test_a_zero_previous_row_does_not_blank_the_next_ratio(self) -> None:
+        """A stationary point measures exactly 0.0; the row after it still has a ratio."""
+        rows = format_sweep(
+            [_result("uniform", 2, 0.0), _result("uniform", 3, 4e-3), _result("uniform", 4, 2e-3)]
+        ).splitlines()
+        assert len(rows[2].split()) == 5  # no previous row at all
+        assert rows[3].split()[-1] == "n/a"  # previous row was zero
+        assert float(rows[4].split()[-1]) == pytest.approx(0.5)

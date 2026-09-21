@@ -43,9 +43,10 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
+import pennylane as qml
 import torch
 import torch.nn as nn
 
@@ -76,7 +77,10 @@ class GradientVarianceResult:
     mean_variance:
         Mean over weights of the per-weight gradient variance.
     per_parameter:
-        Per-weight variance, same shape as the layer's weight tensor.
+        Per-weight variance, same shape as the layer's weight tensor.  This
+        field is excluded from ``==`` and ``hash``: comparing it would return
+        a Tensor rather than a bool, so two results compare on their scalar
+        fields only.
     """
 
     layer_type: str
@@ -87,7 +91,7 @@ class GradientVarianceResult:
     n_samples: int
     total_variance: float
     mean_variance: float
-    per_parameter: torch.Tensor
+    per_parameter: torch.Tensor = field(compare=False)
 
     def to_dict(self) -> dict[str, Any]:
         """Scalar fields only, for logging."""
@@ -104,19 +108,37 @@ class GradientVarianceResult:
 
 
 def _resolve_weights(target: nn.Module) -> tuple[nn.Module, torch.Tensor, int, int]:
-    """``(layer, weights, n_qubits, n_layers)`` for the encoding layer inside *target*."""
+    """
+    Return ``(layer, weights, n_qubits, n_layers)`` for the layer inside *target*.
+
+    The trainable tensor is read off the TorchLayer's ``qnode_weights`` mapping
+    rather than a fixed attribute name, the same way
+    :func:`~hqnn_forge.diagnostics.circuit.circuit_summary` resolves a layer.
+    Every layer the library builds declares exactly one trainable argument; a
+    layer with several is rejected rather than silently measured in part,
+    because ``total_variance`` is documented as the variance of the whole
+    gradient vector.
+    """
     layer = getattr(target, "quantum_layer", target)
-    weights = getattr(getattr(layer, "qlayer", None), "weights", None)
+    qlayer = getattr(layer, "qlayer", None)
     n_qubits = getattr(layer, "n_qubits", None)
     if (
         not isinstance(layer, nn.Module)
-        or not isinstance(weights, torch.Tensor)
+        or not isinstance(qlayer, qml.qnn.TorchLayer)
         or not isinstance(n_qubits, int)
     ):
         raise TypeError(
-            f"gradient_variance expects an encoding layer or a hybrid classifier "
-            f"with a quantum_layer attribute; got {type(target).__name__}."
+            f"gradient_variance expects an encoding layer (QuantumEncodingLayer, "
+            f"IQPEncodingLayer) or a hybrid classifier with a quantum_layer attribute; "
+            f"got {type(target).__name__}."
         )
+    if len(qlayer.qnode_weights) != 1:
+        raise NotImplementedError(
+            f"gradient_variance measures a single trainable weight tensor; "
+            f"{type(layer).__name__} has {len(qlayer.qnode_weights)} "
+            f"({', '.join(sorted(qlayer.qnode_weights))})."
+        )
+    (weights,) = qlayer.qnode_weights.values()
     n_layers = getattr(layer, "n_layers", None)
     return layer, weights, n_qubits, n_layers if isinstance(n_layers, int) else int(weights.shape[0])
 
@@ -142,18 +164,31 @@ def _make_init(init: InitName | InitFn, n_qubits: int, n_layers: int, generator:
 
 
 class _seeded:
-    """Run the library initialisers (which use the global RNG) from ``generator``."""
+    """
+    Run the library initialisers (which use the global RNG) from ``generator``.
+
+    ``torch.manual_seed`` reseeds every initialised accelerator RNG, not just
+    the CPU one, so the CUDA state is saved and restored alongside it.  Other
+    accelerator backends (MPS, XPU) expose no state accessor to save; their
+    RNG is reseeded and not restored, which is why the initialisers are only
+    driven through this helper and never the estimator's own draws.
+    """
 
     def __init__(self, generator: torch.Generator) -> None:
         self.generator = generator
 
     def __enter__(self) -> None:
         self.saved = torch.get_rng_state()
+        self.saved_cuda = (
+            torch.cuda.get_rng_state_all() if torch.cuda.is_initialized() else None
+        )
         seed = int(torch.randint(0, 2**62, (1,), generator=self.generator))
         torch.manual_seed(seed)
 
     def __exit__(self, *exc: object) -> None:
         torch.set_rng_state(self.saved)
+        if self.saved_cuda is not None:
+            torch.cuda.set_rng_state_all(self.saved_cuda)
 
 
 def _local_z0(outputs: torch.Tensor) -> torch.Tensor:
@@ -217,6 +252,11 @@ def gradient_variance(
             x = (torch.rand(1, n_qubits, generator=gen) * 2 - 1) * input_scale
             weights.grad = None
             value = cost(layer(x))
+            if not isinstance(value, torch.Tensor):
+                raise ValueError(
+                    f"cost_fn must return a 0-d Tensor to differentiate; "
+                    f"got {type(value).__name__}."
+                )
             if value.ndim != 0:
                 raise ValueError(f"cost_fn must return a scalar; got shape {tuple(value.shape)}.")
             (grad,) = torch.autograd.grad(value, weights)
@@ -285,7 +325,16 @@ def format_sweep(results: Sequence[GradientVarianceResult]) -> str:
     for r in results:
         key = (r.init, r.n_layers)
         prev = previous.get(key)
-        ratio = f"{r.total_variance / prev:7.3f}" if prev else f"{'':>7}"
+        # `is not None`, not truthiness: a previous row of exactly zero
+        # variance (a stationary point) is still a previous row.  Dividing by
+        # it is undefined, so that one case prints a marker; only a genuinely
+        # absent previous row leaves the column blank.
+        if prev is None:
+            ratio = f"{'':>7}"
+        elif prev == 0.0:
+            ratio = f"{'n/a':>7}"
+        else:
+            ratio = f"{r.total_variance / prev:7.3f}"
         previous[key] = r.total_variance
         lines.append(
             f"{r.init:<12} {r.n_qubits:>6} {r.n_layers:>6} "
