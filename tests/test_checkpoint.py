@@ -176,7 +176,7 @@ class TestFailures:
 
     def test_architecture_override_needs_the_opt_in(self, saved: tuple) -> None:
         _, path = saved
-        with pytest.raises(ValueError, match=r"\['n_layers'\] describe the saved architecture"):
+        with pytest.raises(ValueError, match=r"\['n_layers'\] describe the circuit the saved weights"):
             load_checkpoint(path, n_layers=3)
 
     def test_opted_in_architecture_override_still_checks_shapes(self, saved: tuple) -> None:
@@ -214,11 +214,26 @@ class TestFailures:
         with pytest.raises(ValueError, match=r"\['init_strategy'\]"):
             load_checkpoint(path, init_strategy="block_local")
 
-    def test_runtime_overrides_need_no_opt_in(self, saved: tuple) -> None:
+    def test_weight_safe_overrides_need_no_opt_in(self, saved: tuple) -> None:
         _, path = saved
         loaded = load_checkpoint(path, **CPU)
         assert loaded.get_config()["diff_method"] == "backprop"
-        assert set(ckpt.RUNTIME_ONLY_ARGS) == {"device_name", "diff_method"}
+        assert set(ckpt.WEIGHT_SAFE_ARGS) == {"device_name", "diff_method", "dropout_p"}
+
+    def test_dropout_override_needs_no_opt_in_and_keeps_the_weights(self, saved: tuple) -> None:
+        # nn.Dropout has no parameters, so this cannot invalidate a state dict
+        # -- the point of WEIGHT_SAFE_ARGS.  Assert that, not just that it loads.
+        model, path = saved
+        loaded = load_checkpoint(path, dropout_p=0.5)
+        assert loaded.get_config()["dropout_p"] == 0.5
+        assert loaded.dropout.p == 0.5
+        for (name, a), (_, b) in zip(model.state_dict().items(), loaded.state_dict().items()):
+            torch.testing.assert_close(a, b, rtol=0, atol=0, msg=name)
+        # And it stays inert in the eval-mode model that comes back.
+        x = torch.randn(4, 6)
+        model.eval()
+        with torch.no_grad():
+            torch.testing.assert_close(loaded(x), model(x), rtol=0, atol=0)
 
     def test_missing_state_dict(self, saved: tuple, tmp_path: Path) -> None:
         _, path = saved
@@ -253,3 +268,60 @@ class TestFailures:
 
         with pytest.raises(NotImplementedError, match="Bare does not record its constructor arguments"):
             Bare().get_config()
+
+
+class TestForcedOverrideProvenance:
+    """
+    A forced architecture override must not be launderable into a clean file.
+
+    Without the mark, the sequence below produces a checkpoint whose config and
+    state dict agree with each other and with nothing else: reloading it needs
+    no override, so the guard that caught the mistake once can never fire
+    again.
+    """
+
+    def test_forced_override_marks_the_model_with_the_forced_arguments(self, saved: tuple) -> None:
+        _, path = saved
+        forced = load_checkpoint(path, encoding_type="iqp", allow_architecture_override=True)
+        assert getattr(forced, ckpt._FORCED_OVERRIDES_ATTR) == ("encoding_type",)
+
+    def test_saving_a_forced_model_is_refused(self, saved: tuple, tmp_path: Path) -> None:
+        model, path = saved
+        forced = load_checkpoint(path, encoding_type="iqp", allow_architecture_override=True)
+
+        # The weights really are the angle model's, and the model really does
+        # predict something else -- this is what must not become a checkpoint.
+        torch.testing.assert_close(
+            model.state_dict()["quantum_layer.qlayer.weights"],
+            forced.state_dict()["quantum_layer.qlayer.weights"],
+            rtol=0,
+            atol=0,
+        )
+        x = torch.randn(4, 6)
+        model.eval()
+        with torch.no_grad():
+            assert not torch.allclose(forced(x), model(x), rtol=1e-3, atol=1e-3)
+
+        with pytest.raises(ValueError, match=r"allow_architecture_override=True, forcing \['encoding_type'\]"):
+            save_checkpoint(forced, tmp_path / "laundered.pt")
+        assert not (tmp_path / "laundered.pt").exists()
+
+    def test_a_plainly_loaded_model_can_be_resaved(self, saved: tuple, tmp_path: Path) -> None:
+        model, path = saved
+        again = tmp_path / "again.pt"
+        save_checkpoint(load_checkpoint(path), again)
+        reloaded = load_checkpoint(again)
+        x = torch.randn(4, 6)
+        model.eval()
+        with torch.no_grad():
+            torch.testing.assert_close(reloaded(x), model(x), rtol=0, atol=0)
+
+    @pytest.mark.parametrize("override", [{"diff_method": "parameter-shift"}, {"dropout_p": 0.3}])
+    def test_weight_safe_overrides_stay_resavable(
+        self, saved: tuple, tmp_path: Path, override: dict
+    ) -> None:
+        _, path = saved
+        loaded = load_checkpoint(path, **override)
+        assert not getattr(loaded, ckpt._FORCED_OVERRIDES_ATTR, ())
+        save_checkpoint(loaded, tmp_path / "ok.pt")
+        assert load_checkpoint(tmp_path / "ok.pt").get_config() == loaded.get_config()

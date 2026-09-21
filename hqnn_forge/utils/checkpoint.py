@@ -45,11 +45,19 @@ if TYPE_CHECKING:
 #: Bumped whenever the dict layout above changes incompatibly.
 FORMAT_VERSION: int = 1
 
-#: Constructor arguments that select *how* the saved architecture runs rather
-#: than *what* it is.  Overriding these on load cannot invalidate the stored
-#: weights, so ``load_checkpoint`` accepts them without an opt-in; everything
-#: else needs ``allow_architecture_override=True``.
-RUNTIME_ONLY_ARGS: frozenset[str] = frozenset({"device_name", "diff_method"})
+#: Constructor arguments whose override cannot invalidate the stored weights:
+#: the two simulator knobs, plus ``dropout_p``, since ``nn.Dropout`` has no
+#: parameters of its own and is inert in the eval-mode model that comes back.
+#: ``load_checkpoint`` takes these without an opt-in; every other argument
+#: describes the circuit the weights were trained in, so overriding it needs
+#: ``allow_architecture_override=True``.
+WEIGHT_SAFE_ARGS: frozenset[str] = frozenset({"device_name", "diff_method", "dropout_p"})
+
+#: Set by ``load_checkpoint`` on a model it rebuilt under a forced
+#: architecture override, and refused by ``save_checkpoint``.  Without it, one
+#: forced load followed by a save yields a checkpoint that needs no override to
+#: read back and so can never be caught again.
+_FORCED_OVERRIDES_ATTR = "_forced_overrides"
 
 PathLike = str | os.PathLike[str]
 
@@ -77,12 +85,28 @@ def save_checkpoint(model: BinaryClassifierBase, path: PathLike) -> None:
     ------
     TypeError
         If ``model`` is not one of the library's classifiers.
+    ValueError
+        If ``model`` came from a ``load_checkpoint`` with forced architecture
+        overrides.  Its ``get_config()`` reports the overridden architecture
+        while its weights were trained in the original one, so the checkpoint
+        would be internally consistent and wrong -- and would load back without
+        any override, past the guard that caught it the first time.
     """
     class_name = type(model).__name__
     if _registry().get(class_name) is not type(model):
         raise TypeError(
             f"save_checkpoint supports the classifiers in hqnn_forge.models "
             f"({', '.join(sorted(_registry()))}); got {type(model).__module__}.{class_name}."
+        )
+    forced = getattr(model, _FORCED_OVERRIDES_ATTR, ())
+    if forced:
+        raise ValueError(
+            f"this {class_name} was rebuilt by load_checkpoint with "
+            f"allow_architecture_override=True, forcing {list(forced)}, so its "
+            f"weights were trained in a different circuit than the config now "
+            f"describes.  Saving it would write a checkpoint that reloads with no "
+            f"override at all and is indistinguishable from a genuine one.  "
+            f"Rebuild the architecture you want and retrain instead."
         )
     payload: dict[str, Any] = {
         "format_version": FORMAT_VERSION,
@@ -121,18 +145,21 @@ def load_checkpoint(
         by default because weight layouts are not guaranteed stable across
         versions before 1.0.
     allow_architecture_override:
-        Permit ``**overrides`` outside :data:`RUNTIME_ONLY_ARGS`.  Off by
+        Permit ``**overrides`` outside :data:`WEIGHT_SAFE_ARGS`.  Off by
         default: an architecture override makes the rebuilt model something
         other than the one that was saved, and the mismatch is not always
         loud.  ``encoding_type`` is the dangerous case -- ``QuantumEncodingLayer``
         and ``IQPEncodingLayer`` both register their weights at
         ``(n_layers, n_qubits, 3)``, so an ``"angle"`` checkpoint loaded as
-        ``"iqp"`` fits, raises nothing, and predicts differently.
+        ``"iqp"`` fits, raises nothing, and predicts differently.  A model
+        rebuilt this way is marked and :func:`save_checkpoint` refuses it, so
+        the mismatch cannot be laundered into a fresh checkpoint.
     **overrides:
         Constructor arguments that replace the stored ones.  Without
-        ``allow_architecture_override``, only :data:`RUNTIME_ONLY_ARGS`
-        (``device_name``, ``diff_method``) may be given -- typically to run a
-        saved model on a different simulator.
+        ``allow_architecture_override``, only :data:`WEIGHT_SAFE_ARGS`
+        (``device_name``, ``diff_method``, ``dropout_p``) may be given --
+        typically to run a saved model on a different simulator, or to
+        fine-tune it at a different dropout rate.
 
     Returns
     -------
@@ -144,8 +171,9 @@ def load_checkpoint(
     ValueError
         If the file is not a checkpoint or is incomplete, on an unknown format
         version, a library version mismatch (unless allowed), an unknown class,
-        an architecture override without ``allow_architecture_override``, or a
-        config with missing or unexpected constructor fields.
+        an override outside :data:`WEIGHT_SAFE_ARGS` without
+        ``allow_architecture_override``, or a config with missing or unexpected
+        constructor fields.
     RuntimeError
         If the stored weights do not fit the rebuilt architecture.
     """
@@ -200,14 +228,14 @@ def load_checkpoint(
             f"unknown constructor arguments for {class_name}: {unknown_overrides}."
         )
 
-    architecture_overrides = sorted(set(overrides) - RUNTIME_ONLY_ARGS)
+    architecture_overrides = sorted(set(overrides) - WEIGHT_SAFE_ARGS)
     if architecture_overrides and not allow_architecture_override:
         raise ValueError(
-            f"{architecture_overrides} describe the saved architecture, not how it "
-            f"runs, so overriding them rebuilds a different model than the weights "
-            f"were trained in -- and the mismatch is not always caught: an 'angle' "
-            f"checkpoint loads without error as encoding_type='iqp' and predicts "
-            f"differently.  Only {sorted(RUNTIME_ONLY_ARGS)} may be overridden; pass "
+            f"{architecture_overrides} describe the circuit the saved weights were "
+            f"trained in, so overriding them rebuilds a different model -- and the "
+            f"mismatch is not always caught: an 'angle' checkpoint loads without "
+            f"error as encoding_type='iqp' and predicts differently.  Only "
+            f"{sorted(WEIGHT_SAFE_ARGS)} may be overridden; pass "
             f"allow_architecture_override=True if that is really what you want."
         )
 
@@ -232,6 +260,13 @@ def load_checkpoint(
     # the model alone always puts it on the CPU.
     model.to(map_location)
     model.load_state_dict(payload["state_dict"])
+    if architecture_overrides:
+        # Only reachable with allow_architecture_override=True.  The model now
+        # reports an architecture its weights were not trained in, and nothing
+        # in a state dict can show that, so carry the fact on the instance and
+        # let save_checkpoint refuse it rather than let it become a checkpoint
+        # that loads back clean.
+        setattr(model, _FORCED_OVERRIDES_ATTR, tuple(architecture_overrides))
     model.eval()
     return model
 
