@@ -95,6 +95,22 @@ class TestRoundTrip:
         with torch.no_grad():
             torch.testing.assert_close(loaded(x), model(x), rtol=1e-6, atol=1e-6)
 
+    def test_map_location_places_the_returned_model(self, saved: tuple) -> None:
+        # cls(**config) always builds on the CPU, so without an explicit move
+        # map_location only relocated the tensors that load_state_dict then
+        # copied back into CPU parameters -- it had no effect on the result.
+        _, path = saved
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        loaded = load_checkpoint(path, map_location=device)
+        assert all(p.device.type == device.type for p in loaded.parameters())
+        assert all(b.device.type == device.type for b in loaded.buffers())
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
+    def test_map_location_cuda_does_not_return_a_cpu_model(self, saved: tuple) -> None:
+        _, path = saved
+        loaded = load_checkpoint(path, map_location="cuda", device_name="default.qubit")
+        assert all(p.is_cuda for p in loaded.parameters())
+
     def test_file_loads_with_weights_only(self, saved: tuple) -> None:
         _, path = saved
         payload = torch.load(path, weights_only=True)
@@ -158,15 +174,75 @@ class TestFailures:
         with pytest.raises(ValueError, match="unknown class 'os.system'"):
             load_checkpoint(_save_payload(payload, tmp_path / "evil.pt"))
 
-    def test_architecture_override_fails_to_load_weights(self, saved: tuple) -> None:
+    def test_architecture_override_needs_the_opt_in(self, saved: tuple) -> None:
+        _, path = saved
+        with pytest.raises(ValueError, match=r"\['n_layers'\] describe the saved architecture"):
+            load_checkpoint(path, n_layers=3)
+
+    def test_opted_in_architecture_override_still_checks_shapes(self, saved: tuple) -> None:
         _, path = saved
         with pytest.raises(RuntimeError, match="size mismatch"):
-            load_checkpoint(path, n_layers=3)
+            load_checkpoint(path, n_layers=3, allow_architecture_override=True)
+
+    def test_encoding_type_override_is_refused_not_silently_loaded(self, saved: tuple) -> None:
+        """
+        The override that shape checks cannot catch.
+
+        QuantumEncodingLayer and IQPEncodingLayer both register
+        quantum_layer.qlayer.weights at (n_layers, n_qubits, 3), so an angle
+        checkpoint loads into an IQP model without a size mismatch and simply
+        predicts something else.  Only the opt-in stands between a user and
+        that model, so assert both halves: refused by default, and genuinely
+        wrong once allowed.
+        """
+        model, path = saved
+        with pytest.raises(ValueError, match=r"\['encoding_type'\].*allow_architecture_override=True"):
+            load_checkpoint(path, encoding_type="iqp")
+
+        forced = load_checkpoint(path, encoding_type="iqp", allow_architecture_override=True)
+        assert forced.get_config()["encoding_type"] == "iqp"
+        x = torch.randn(5, 6)
+        model.eval()
+        with torch.no_grad():
+            assert not torch.allclose(forced(x), model(x), rtol=1e-3, atol=1e-3)
+
+    def test_init_strategy_override_is_refused(self, saved: tuple) -> None:
+        # Not a shape change either: it only picks how fresh weights are drawn,
+        # which the loaded state dict then overwrites -- so overriding it just
+        # bakes a wrong init_strategy into the rebuilt get_config().
+        _, path = saved
+        with pytest.raises(ValueError, match=r"\['init_strategy'\]"):
+            load_checkpoint(path, init_strategy="block_local")
+
+    def test_runtime_overrides_need_no_opt_in(self, saved: tuple) -> None:
+        _, path = saved
+        loaded = load_checkpoint(path, **CPU)
+        assert loaded.get_config()["diff_method"] == "backprop"
+        assert set(ckpt.RUNTIME_ONLY_ARGS) == {"device_name", "diff_method"}
+
+    def test_missing_state_dict(self, saved: tuple, tmp_path: Path) -> None:
+        _, path = saved
+        payload = torch.load(path, weights_only=True)
+        del payload["state_dict"]
+        with pytest.raises(ValueError, match="has no 'state_dict'"):
+            load_checkpoint(_save_payload(payload, tmp_path / "noweights.pt"))
 
     def test_not_a_checkpoint(self, tmp_path: Path) -> None:
         path = _save_payload({"weights": torch.zeros(2)}, tmp_path / "plain.pt")
         with pytest.raises(ValueError, match="is not an hqnn_forge checkpoint"):
             load_checkpoint(path)
+
+    def test_foreign_file_is_a_value_error_not_a_torch_error(self, tmp_path: Path) -> None:
+        # torch.load raises KeyError from its zip reader on a plain file, which
+        # would escape load_checkpoint before the structural check runs.
+        path = tmp_path / "notes.txt"
+        path.write_text("this is not a checkpoint\n")
+        with pytest.raises(ValueError, match="could not be read as a torch archive"):
+            load_checkpoint(path)
+
+    def test_missing_file_still_raises_oserror(self, tmp_path: Path) -> None:
+        with pytest.raises(FileNotFoundError):
+            load_checkpoint(tmp_path / "nope.pt")
 
     def test_model_without_recorded_config(self) -> None:
         from hqnn_forge.models import BinaryClassifierBase
