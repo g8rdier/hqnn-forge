@@ -15,6 +15,8 @@ Subclasses implement ``__init__`` and ``forward`` only.
 
 from __future__ import annotations
 
+from typing import Any
+
 import torch
 import torch.nn as nn
 
@@ -39,7 +41,13 @@ class BinaryClassifierBase(nn.Module):
         ``predict_proba(x) >= threshold`` as ``torch.long``.
     count_parameters(trainable_only=True)
         Total number of (trainable) parameters, quantum and classical.
+    get_config()
+        The constructor arguments, so ``type(model)(**model.get_config())``
+        rebuilds an equivalent architecture.  Subclasses record them in
+        ``self._config`` at the top of ``__init__``.
     """
+
+    _config: dict[str, Any] | None = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # pragma: no cover - abstract
         raise NotImplementedError(
@@ -102,3 +110,19 @@ class BinaryClassifierBase(nn.Module):
             else (p for p in self.parameters() if p.requires_grad)
         )
         return sum(p.numel() for p in params)
+
+    # ------------------------------------------------------------------
+    def get_config(self) -> dict[str, Any]:
+        """
+        Constructor arguments of this model, as a fresh dict.
+
+        ``type(model)(**model.get_config())`` builds a model with the same
+        architecture (weights are re-initialised; load a ``state_dict`` for
+        those).  Used by ``hqnn_forge.utils.checkpoint``.
+        """
+        if self._config is None:
+            raise NotImplementedError(
+                f"{type(self).__name__} does not record its constructor arguments; "
+                f"set self._config in __init__."
+            )
+        return dict(self._config)
