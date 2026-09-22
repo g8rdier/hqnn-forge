@@ -49,3 +49,6 @@ CLAUDE.md
 *.tar.gz
 *.whl
 
+
+# Datasets (not redistributable; see hqnn_forge.data)
+data/raw/
