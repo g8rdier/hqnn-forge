@@ -45,6 +45,10 @@ class DatasetNotFoundError(FileNotFoundError):
     """The dataset file is missing and downloading was not requested."""
 
 
+class DatasetDownloadError(RuntimeError):
+    """Downloading was requested but could not be carried out or did not produce the file."""
+
+
 class CreditCardFraud(NamedTuple):
     """
     Attributes
@@ -67,16 +71,31 @@ def _download_command(directory: Path) -> list[str]:
 
 
 def _resolve_path(path: str | os.PathLike[str] | None) -> Path:
+    """
+    Resolve ``path`` to the CSV file.
+
+    A path that names an existing directory, or that does not end in ``.csv``, is
+    treated as the directory holding ``creditcard.csv``.  Testing the suffix rather
+    than only :meth:`~pathlib.Path.is_dir` matters for ``download=True``, where the
+    directory usually does not exist yet.
+    """
     if path is not None:
         p = Path(path)
-        return p / FILE_NAME if p.is_dir() else p
+        return p / FILE_NAME if p.is_dir() or p.suffix.lower() != ".csv" else p
     base = os.environ.get(DATA_DIR_ENV)
     return (Path(base) if base else DEFAULT_DIR) / FILE_NAME
 
 
 def _download(target: Path) -> None:
+    # The archive unpacks under FILE_NAME, so any other file name can never be
+    # produced.  Refuse up front rather than after a ~150 MB download.
+    if target.name != FILE_NAME:
+        raise DatasetDownloadError(
+            f"download=True fetches {FILE_NAME}, but the resolved path is {target}.  "
+            f"Pass a directory, or a path ending in {FILE_NAME}."
+        )
     if shutil.which("kaggle") is None:
-        raise DatasetNotFoundError(
+        raise DatasetDownloadError(
             f"{target} does not exist and the Kaggle CLI is not installed.  "
             f"Install it (pip install kaggle), configure ~/.kaggle/kaggle.json, "
             f"then retry, or download manually:\n    {' '.join(_download_command(target.parent))}"
@@ -86,17 +105,22 @@ def _download(target: Path) -> None:
         _download_command(target.parent), capture_output=True, text=True, check=False
     )
     if result.returncode != 0:
-        raise RuntimeError(
+        raise DatasetDownloadError(
             f"Kaggle download failed (exit {result.returncode}):\n{result.stderr.strip()}"
         )
     if not target.exists():
-        raise RuntimeError(f"Kaggle download finished but {target} was not created.")
+        raise DatasetDownloadError(f"Kaggle download finished but {target} was not created.")
 
 
-def _read_header(path: Path) -> list[str]:
+def _read_header(path: Path) -> tuple[list[str], bool]:
+    """Return the column names and whether at least one data row follows them."""
     with path.open("r", encoding="utf-8") as fh:
         first = fh.readline()
-    return [name.strip().strip('"') for name in first.rstrip("\r\n").split(",")]
+        rest = fh.readline()
+        while rest != "" and rest.strip() == "":
+            rest = fh.readline()
+    names = [name.strip().strip('"') for name in first.rstrip("\r\n").split(",")]
+    return names, rest != ""
 
 
 def load_credit_card_fraud(
@@ -112,7 +136,8 @@ def load_credit_card_fraud(
     Parameters
     ----------
     path:
-        The CSV file, or a directory containing ``creditcard.csv``.  Default:
+        The CSV file, or a directory containing ``creditcard.csv``; a path that
+        does not end in ``.csv`` is taken as the directory.  Default:
         ``$HQNN_FORGE_DATA/creditcard.csv`` if that variable is set, else
         ``data/raw/creditcard.csv`` relative to the working directory (the
         benchmark repository's layout).
@@ -134,10 +159,15 @@ def load_credit_card_fraud(
     DatasetNotFoundError
         The file is missing and ``download`` is False.  The message contains
         the Kaggle command that fetches it.
+    DatasetDownloadError
+        ``download`` is True but the file could not be fetched: the Kaggle CLI
+        is missing, the command failed, or it produced no file.  Distinct from
+        :class:`DatasetNotFoundError` so that retrying with ``download=True``
+        after catching that one cannot loop.
     ValueError
-        The file does not have the expected columns, has non-numeric values,
-        labels other than 0/1, or (with ``strict``) the wrong row or fraud
-        count.
+        The file does not have the expected columns, has no data rows, has
+        non-numeric values, labels other than 0/1, or (with ``strict``) the
+        wrong row or fraud count.
     """
     csv = _resolve_path(path)
     if not csv.exists():
@@ -145,11 +175,12 @@ def load_credit_card_fraud(
             raise DatasetNotFoundError(
                 f"{csv} not found.  Download the Kaggle Credit Card Fraud dataset with:\n"
                 f"    {' '.join(_download_command(csv.parent))}\n"
-                f"or pass download=True, or point path (or ${DATA_DIR_ENV}) at the file."
+                f"or pass download=True, or point path at the file or its directory "
+                f"(${DATA_DIR_ENV} names the directory)."
             )
         _download(csv)
 
-    header = _read_header(csv)
+    header, has_rows = _read_header(csv)
     if tuple(header) != COLUMNS:
         if len(header) != len(COLUMNS):
             detail = f"expected {len(COLUMNS)} columns, found {len(header)}"
@@ -157,6 +188,8 @@ def load_credit_card_fraud(
             diffs = [f"{i}: {got!r} != {want!r}" for i, (got, want) in enumerate(zip(header, COLUMNS)) if got != want]
             detail = "column names differ at " + ", ".join(diffs[:5]) + (" …" if len(diffs) > 5 else "")
         raise ValueError(f"{csv} does not look like the Kaggle creditcard.csv: {detail}.")
+    if not has_rows:
+        raise ValueError(f"{csv} has the expected header but no data rows.")
 
     try:
         data = np.loadtxt(csv, delimiter=",", skiprows=1, quotechar='"', dtype=np.float64, ndmin=2)
