@@ -48,7 +48,11 @@ def _resolve_qlayer(target: nn.Module) -> tuple[qml.qnn.TorchLayer, int]:
     layer = getattr(target, "quantum_layer", target)
     qlayer = getattr(layer, "qlayer", None)
     n_qubits = getattr(layer, "n_qubits", None)
-    if not isinstance(qlayer, qml.qnn.TorchLayer) or not isinstance(n_qubits, int):
+    if (
+        not isinstance(layer, nn.Module)
+        or not isinstance(qlayer, qml.qnn.TorchLayer)
+        or not isinstance(n_qubits, int)
+    ):
         raise TypeError(
             f"apply_depolarizing_noise expects an encoding layer or a hybrid classifier "
             f"with a quantum_layer attribute; got {type(target).__name__}."
@@ -106,15 +110,23 @@ def apply_depolarizing_noise(
     if position not in ("all", "end"):
         raise ValueError(f"position must be 'all' or 'end'; got {position!r}.")
     qlayer, n_qubits = _resolve_qlayer(model)
-    if getattr(qlayer, "_hqnn_noise_original", None) is not None:
-        raise RuntimeError("apply_depolarizing_noise cannot be nested on the same layer.")
     if p == 0.0:
+        # A true no-op, so it is checked before the nesting guard: it replaces
+        # no QNode, has nothing to restore, and must not raise inside a block
+        # that a sweep over a range starting at 0 has already opened.
         yield model
         return
+    if getattr(qlayer, "_hqnn_noise_original", None) is not None:
+        raise RuntimeError("apply_depolarizing_noise cannot be nested on the same layer.")
 
     original = qlayer.qnode
+    # Build the replacement before touching the layer. default.mixed refuses
+    # more than 23 wires, and a failure here has to leave the layer as it was:
+    # arming the guard first would leave it armed with no block to disarm it,
+    # and every later call on that layer would raise "cannot be nested".
+    noisy = _noisy_qnode(original, n_qubits, p, position)
     qlayer._hqnn_noise_original = original
-    qlayer.qnode = _noisy_qnode(original, n_qubits, p, position)
+    qlayer.qnode = noisy
     try:
         yield model
     finally:
@@ -149,7 +161,7 @@ def noise_sweep(
     X:
         Inputs to evaluate.
     ps:
-        Depolarizing probabilities, each in [0, 0.75].
+        Depolarizing probabilities, each in [0, 0.75]; consumed once.
     position:
         Passed to :func:`apply_depolarizing_noise`.
     y, score_fn:
@@ -160,14 +172,30 @@ def noise_sweep(
     -------
     list[NoiseSweepPoint]
         In the order of ``ps``.
+
+    Raises
+    ------
+    ValueError
+        If only one of ``y`` and ``score_fn`` is given, or if any level is out
+        of range -- checked before the first evaluation, not as the sweep
+        reaches it.
+    TypeError
+        If ``model`` has no ``predict_proba``.
     """
     if (y is None) != (score_fn is None):
         raise ValueError("pass both y and score_fn, or neither.")
     predict = getattr(model, "predict_proba", None)
     if not callable(predict):
         raise TypeError(f"noise_sweep needs a model with predict_proba; got {type(model).__name__}.")
+    # Materialised and range-checked up front: the levels may arrive as a
+    # generator, and a bad one at the end would otherwise be found only after
+    # every earlier (O(4^n)) evaluation had already been paid for.
+    levels = [float(p) for p in ps]
+    invalid = [p for p in levels if not 0.0 <= p <= MAX_P]
+    if invalid:
+        raise ValueError(f"every p must lie in [0, {MAX_P}]; got {invalid}.")
     points = []
-    for p in ps:
+    for p in levels:
         with apply_depolarizing_noise(model, p, position=position):
             probs = predict(X)
         score = float(score_fn(y, probs)) if score_fn is not None and y is not None else None
