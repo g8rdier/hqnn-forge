@@ -154,6 +154,8 @@ class HybridBinaryClassifier(BinaryClassifierBase):
             diff_method=diff_method,
             init_strategy=init_strategy,
             encoding_type=encoding_type,
+            noise_level=noise_level,
+            noise_position=noise_position,
         )
 
         self.n_input_features = n_input_features
