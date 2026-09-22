@@ -77,7 +77,14 @@ class TestStratifiedKFold:
         with pytest.raises(ValueError, match=r"class 1 has 2"):
             stratified_kfold([0, 0, 0, 0, 1, 1], 3)
 
-    @pytest.mark.parametrize("y, n_splits, match", [([0, 1], 1, "n_splits must be >= 2"), ([[0, 1]], 2, "must be 1-D")])
+    @pytest.mark.parametrize(
+        "y, n_splits, match",
+        [
+            ([0, 1], 1, "n_splits must be >= 2"),
+            ([[0, 1]], 2, "must be 1-D"),
+            ([], 2, "y is empty"),
+        ],
+    )
     def test_bad_arguments(self, y: list, n_splits: int, match: str) -> None:
         with pytest.raises(ValueError, match=match):
             stratified_kfold(y, n_splits)
@@ -126,6 +133,13 @@ class TestSmote:
         res = smote(X, y, k_neighbors=2)
         assert np.array_equal(res.X, X) and res.sources.shape == (0, 2)
 
+    def test_balanced_no_op_does_not_need_k_neighbors_samples(self) -> None:
+        """Nothing is interpolated, so the neighbourhood size cannot apply."""
+        X = np.arange(20, dtype=float).reshape(10, 2)
+        y = np.array([0, 1] * 5)  # 5 minority rows, default k_neighbors=5
+        res = smote(X, y)
+        assert np.array_equal(res.X, X) and res.sources.shape == (0, 2)
+
     def test_minority_is_whichever_label_is_rarer(self) -> None:
         rng = np.random.default_rng(1)
         X = rng.standard_normal((30, 2))
@@ -141,10 +155,10 @@ class TestSmote:
     @pytest.mark.parametrize(
         "kwargs, match",
         [
-            (dict(k_neighbors=30), "needs at least 31"),
-            (dict(k_neighbors=0), "k_neighbors must be >= 1"),
-            (dict(sampling_ratio=0.0), "sampling_ratio must lie"),
-            (dict(sampling_ratio=1.5), "sampling_ratio must lie"),
+            ({"k_neighbors": 30}, "needs at least 31"),
+            ({"k_neighbors": 0}, "k_neighbors must be >= 1"),
+            ({"sampling_ratio": 0.0}, "sampling_ratio must lie"),
+            ({"sampling_ratio": 1.5}, "sampling_ratio must lie"),
         ],
     )
     def test_argument_errors(self, imbalanced: tuple, kwargs: dict, match: str) -> None:
@@ -177,7 +191,9 @@ class TestFoldSafety:
             assert (fold.y_train == 1).sum() == (fold.y_train == 0).sum()
             assert np.array_equal(fold.X_train[: fold.train_idx.size], X[fold.train_idx])
 
-    def test_no_synthetic_sample_comes_from_outside_its_training_fold(self, imbalanced: tuple) -> None:
+    def test_no_synthetic_sample_comes_from_outside_its_training_fold(
+        self, imbalanced: tuple
+    ) -> None:
         X, y = imbalanced
         for fold in iter_folds(X, y, 5, random_state=0, k_neighbors=3):
             assert fold.sources.size > 0
@@ -202,16 +218,102 @@ class TestFoldSafety:
             assert np.array_equal(fold.X_train, X[fold.train_idx])
             assert fold.sources.shape == (0, 2)
 
-    def test_folds_are_reproducible_and_use_distinct_smote_streams(self, imbalanced: tuple) -> None:
+    def test_folds_are_reproducible(self, imbalanced: tuple) -> None:
         X, y = imbalanced
         a = list(iter_folds(X, y, 3, random_state=7, k_neighbors=3))
         b = list(iter_folds(X, y, 3, random_state=7, k_neighbors=3))
         for fa, fb in zip(a, b):
             assert np.array_equal(fa.X_train, fb.X_train)
-        gaps = [f.X_train[f.train_idx.size:][:3] for f in a]
-        assert not np.allclose(gaps[0], gaps[1])
+            assert np.array_equal(fa.sources, fb.sources)
+
+    def test_a_different_seed_changes_the_folds(self, imbalanced: tuple) -> None:
+        """random_state drives both the shuffle and the SMOTE streams."""
+        X, y = imbalanced
+        a = list(iter_folds(X, y, 3, random_state=7, k_neighbors=3))
+        b = list(iter_folds(X, y, 3, random_state=8, k_neighbors=3))
+        assert not np.array_equal(a[0].train_idx, b[0].train_idx)
+
+    def test_the_smote_stream_is_what_varies_within_a_fold(self, imbalanced: tuple) -> None:
+        """
+        Folds differ in their training data, so comparing two folds cannot
+        show that their SMOTE streams differ.  Hold the fold fixed instead and
+        vary only the generator.
+        """
+        X, y = imbalanced
+        tr, va = stratified_kfold(y, 3, random_state=0)[0]
+        one = oversample_fold(X, y, tr, va, k_neighbors=3, random_state=np.random.default_rng(1))
+        two = oversample_fold(X, y, tr, va, k_neighbors=3, random_state=np.random.default_rng(2))
+        assert np.array_equal(one.X_train[:tr.size], two.X_train[:tr.size])
+        assert not np.allclose(one.X_train[tr.size:], two.X_train[tr.size:])
+
+    def test_each_fold_draws_from_its_own_smote_stream(self, imbalanced: tuple) -> None:
+        """
+        Comparing raw synthetic rows across folds proves nothing: the training
+        data differs anyway.  Folds 0 and 1 of this fixture draw the same
+        number of synthetic rows from minority sets of the same size, so the
+        *sequence of positions* they pick is comparable, and is identical
+        whenever the two folds share one stream.
+        """
+        X, y = imbalanced
+        folds = list(iter_folds(X, y, 3, random_state=7, k_neighbors=3))
+        picks = []
+        for f in folds[:2]:
+            minority = f.train_idx[y[f.train_idx] == 1]
+            picks.append(np.searchsorted(minority, f.sources[:, 0]))
+        assert minority.size and picks[0].size == picks[1].size  # comparable streams
+        assert not np.array_equal(picks[0], picks[1])
+
+    def test_accepts_a_generator_as_random_state(self, imbalanced: tuple) -> None:
+        """stratified_kfold and smote both take a Generator; so must iter_folds."""
+        X, y = imbalanced
+        a = list(iter_folds(X, y, 3, random_state=np.random.default_rng(5), k_neighbors=3))
+        b = list(iter_folds(X, y, 3, random_state=np.random.default_rng(5), k_neighbors=3))
+        assert len(a) == 3
+        for fa, fb in zip(a, b):
+            assert np.array_equal(fa.X_train, fb.X_train)
+
+    def test_a_fold_too_small_for_smote_names_the_fold(self) -> None:
+        """
+        stratified_kfold only promises each class reaches every fold; SMOTE
+        needs k_neighbors + 1 minority rows in each *training* split.
+        """
+        X = np.arange(120, dtype=float).reshape(60, 2)
+        y = np.zeros(60, dtype=int)
+        y[:6] = 1
+        with pytest.raises(ValueError, match=r"fold 0 of 5: SMOTE failed"):
+            list(iter_folds(X, y, 5, random_state=0, k_neighbors=5))
 
     def test_overlapping_indices_are_rejected(self, imbalanced: tuple) -> None:
         X, y = imbalanced
         with pytest.raises(ValueError, match="overlap"):
             oversample_fold(X, y, np.arange(0, 150), np.arange(100, 203))
+
+    def test_negative_indices_are_rejected(self, imbalanced: tuple) -> None:
+        """
+        -1 names the last row but does not intersect 202, so a negative
+        train_idx would pass the overlap check and then train on the
+        validation rows, with Fold.sources reporting the negatives as safe.
+        """
+        X, y = imbalanced
+        val = np.arange(198, 203)
+        train = np.concatenate([np.arange(0, 150), -np.arange(1, 6)])
+        with pytest.raises(ValueError, match=r"train_idx must index rows of X"):
+            oversample_fold(X, y, train, val, k_neighbors=3)
+
+    def test_out_of_range_indices_are_rejected(self, imbalanced: tuple) -> None:
+        X, y = imbalanced
+        with pytest.raises(ValueError, match=r"val_idx must index rows of X"):
+            oversample_fold(X, y, np.arange(0, 150), np.array([203]))
+
+    def test_boolean_masks_select_rows_not_zeros_and_ones(self, imbalanced: tuple) -> None:
+        """A mask cast to intp would silently become indices 0 and 1."""
+        X, y = imbalanced
+        tr, va = stratified_kfold(y, 4, random_state=0)[0]
+        train_mask = np.zeros(y.size, dtype=bool)
+        train_mask[tr] = True
+        val_mask = np.zeros(y.size, dtype=bool)
+        val_mask[va] = True
+        masked = oversample_fold(X, y, train_mask, val_mask, k_neighbors=3, random_state=0)
+        indexed = oversample_fold(X, y, tr, va, k_neighbors=3, random_state=0)
+        assert np.array_equal(masked.train_idx, indexed.train_idx)
+        assert np.array_equal(masked.X_train, indexed.X_train)
