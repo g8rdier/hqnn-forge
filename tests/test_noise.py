@@ -19,9 +19,38 @@ from hqnn_forge.noise import NoiseSweepPoint, apply_depolarizing_noise, noise_sw
 N_QUBITS = 3
 
 
-def _layer(cls: type = QuantumEncodingLayer, diff_method: str = "backprop") -> torch.nn.Module:
+def _lightning_available() -> bool:
+    try:
+        import pennylane as qml
+
+        qml.device("lightning.qubit", wires=1)
+        return True
+    except Exception:  # noqa: BLE001 - any failure means "not installed"
+        return False
+
+
+# The noisy QNode is rebuilt on default.mixed with backprop, which drops the
+# broadcast_expand wrapper the other differentiation methods need. These are the
+# configurations where that rebuild actually changes something, including the
+# library defaults (lightning.qubit/adjoint).
+NON_BACKPROP_CONFIGS = [
+    pytest.param("default.qubit", "parameter-shift", id="default.qubit/parameter-shift"),
+    pytest.param(
+        "lightning.qubit",
+        "adjoint",
+        id="lightning.qubit/adjoint",
+        marks=pytest.mark.skipif(not _lightning_available(), reason="pennylane-lightning not installed"),
+    ),
+]
+
+
+def _layer(
+    cls: type = QuantumEncodingLayer,
+    diff_method: str = "backprop",
+    device_name: str = "default.qubit",
+) -> torch.nn.Module:
     torch.manual_seed(0)
-    return cls(n_qubits=N_QUBITS, n_layers=2, device_name="default.qubit", diff_method=diff_method)
+    return cls(n_qubits=N_QUBITS, n_layers=2, device_name=device_name, diff_method=diff_method)
 
 
 def _model(cls: type = HybridBinaryClassifier) -> torch.nn.Module:
@@ -53,6 +82,23 @@ class TestNoiseEffect:
             with apply_depolarizing_noise(layer, p, position="end"):
                 noisy = layer(x)
         torch.testing.assert_close(noisy, (1 - 4 * p / 3) * clean, rtol=1e-5, atol=1e-6)
+
+    @pytest.mark.parametrize(("device_name", "diff_method"), NON_BACKPROP_CONFIGS)
+    def test_end_noise_damps_exactly_for_non_backprop_layers(
+        self, device_name: str, diff_method: str, x: torch.Tensor
+    ) -> None:
+        # The noisy QNode ignores the layer's own device and differentiation
+        # method, so the analytic damping has to hold for a layer that was not
+        # built for backprop, and the layer has to be unchanged afterwards.
+        layer = _layer(diff_method=diff_method, device_name=device_name)
+        p = 0.3
+        with torch.no_grad():
+            clean = layer(x)
+            with apply_depolarizing_noise(layer, p, position="end"):
+                noisy = layer(x)
+            restored = layer(x)
+        torch.testing.assert_close(noisy, (1 - 4 * p / 3) * clean, rtol=1e-5, atol=1e-6)
+        torch.testing.assert_close(restored, clean, rtol=0, atol=0)
 
     def test_gate_noise_monotonically_dampens(self, x: torch.Tensor) -> None:
         layer = _layer()
@@ -133,6 +179,39 @@ class TestValidation:
                     pass
         assert layer.qlayer.qnode is qnode
 
+    def test_zero_noise_never_trips_the_nesting_guard(self, x: torch.Tensor) -> None:
+        # p = 0 replaces nothing, so it is a no-op wherever it appears rather
+        # than a nested block: a sweep starting at 0 must not raise.
+        layer = _layer()
+        with apply_depolarizing_noise(layer, 0.1):
+            noisy = layer.qlayer.qnode
+            with apply_depolarizing_noise(layer, 0.0):
+                assert layer.qlayer.qnode is noisy
+
+    def test_a_failed_replacement_leaves_the_layer_usable(
+        self, monkeypatch: pytest.MonkeyPatch, x: torch.Tensor
+    ) -> None:
+        # Building the noisy QNode can fail (default.mixed refuses more than 23
+        # wires). The layer must come out of that as it went in, not stuck
+        # reporting a nested block for the rest of the process.
+        layer = _layer()
+        qnode = layer.qlayer.qnode
+
+        def boom(*args: object, **kwargs: object) -> None:
+            raise ValueError("device refused the wires")
+
+        monkeypatch.setattr("hqnn_forge.noise._noisy_qnode", boom)
+        with pytest.raises(ValueError, match="device refused the wires"):
+            with apply_depolarizing_noise(layer, 0.1):
+                pass
+        monkeypatch.undo()
+
+        assert layer.qlayer.qnode is qnode
+        with torch.no_grad(), apply_depolarizing_noise(layer, 0.1):
+            assert layer.qlayer.qnode is not qnode
+            layer(x)
+        assert layer.qlayer.qnode is qnode
+
 
 class TestSweep:
     def test_sweep_points_and_scores(self) -> None:
@@ -148,9 +227,21 @@ class TestSweep:
         scores = [pt.score for pt in points]
         assert scores[0] > scores[2]
 
-    def test_sweep_without_scoring(self) -> None:
-        points = noise_sweep(_model(), torch.randn(2, 5), [0.2])
+    def test_sweep_without_scoring_accepts_an_iterator(self) -> None:
+        points = noise_sweep(_model(), torch.randn(2, 5), (p for p in [0.2]))
+        assert [pt.p for pt in points] == [0.2]
         assert points[0].score is None
+
+    def test_sweep_rejects_a_bad_level_before_evaluating(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Each level costs an O(4^n) mixed-state run, so a bad one at the end
+        # has to be caught before the first of them, not after: building any
+        # noisy circuit at all fails this test.
+        def boom(*args: object, **kwargs: object) -> None:
+            raise AssertionError("a level was evaluated before the sweep was validated")
+
+        monkeypatch.setattr("hqnn_forge.noise._noisy_qnode", boom)
+        with pytest.raises(ValueError, match=r"every p must lie in \[0, 0.75\]"):
+            noise_sweep(_model(), torch.randn(2, 5), [0.1, 1.5])
 
     def test_sweep_argument_errors(self) -> None:
         with pytest.raises(ValueError, match="both y and score_fn"):
