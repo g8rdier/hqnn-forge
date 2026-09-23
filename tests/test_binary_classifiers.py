@@ -72,7 +72,9 @@ class TestBaseClass:
         assert issubclass(model_cls, BinaryClassifierBase)
         assert issubclass(model_cls, nn.Module)
 
-    def test_shared_methods_are_not_overridden(self, model_cls: type[BinaryClassifierBase]) -> None:
+    def test_shared_methods_are_not_overridden(
+        self, model_cls: type[BinaryClassifierBase]
+    ) -> None:
         """A model that re-implements the shared API defeats the point of the base."""
         for name in ("predict_proba", "predict", "count_parameters"):
             assert getattr(model_cls, name) is getattr(BinaryClassifierBase, name), name
@@ -86,7 +88,9 @@ class TestBaseClass:
 
 
 class TestForwardShape:
-    def test_output_shape(self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor) -> None:
+    def test_output_shape(
+        self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor
+    ) -> None:
         assert classifier(random_raw_batch).shape == (BATCH, 1)
 
     def test_single_sample(self, classifier: BinaryClassifierBase) -> None:
@@ -94,18 +98,26 @@ class TestForwardShape:
 
 
 class TestPredictProba:
-    def test_output_in_zero_one(self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor) -> None:
+    def test_output_in_zero_one(
+        self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor
+    ) -> None:
         probs = classifier.predict_proba(random_raw_batch)
         assert probs.min().item() >= 0.0 - 1e-6
         assert probs.max().item() <= 1.0 + 1e-6
 
-    def test_output_shape(self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor) -> None:
+    def test_output_shape(
+        self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor
+    ) -> None:
         assert classifier.predict_proba(random_raw_batch).shape == (BATCH,)
 
-    def test_no_grad(self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor) -> None:
+    def test_no_grad(
+        self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor
+    ) -> None:
         assert not classifier.predict_proba(random_raw_batch).requires_grad
 
-    def test_is_sigmoid_of_forward(self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor) -> None:
+    def test_is_sigmoid_of_forward(
+        self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor
+    ) -> None:
         # predict_proba runs its forward under eval_mode, so the expectation has to
         # as well; a bare classifier.eval() would also leak eval mode into every later
         # test through the module-scoped fixture.
@@ -115,21 +127,35 @@ class TestPredictProba:
 
 
 class TestPredict:
-    def test_returns_binary(self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor) -> None:
+    def test_returns_binary(
+        self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor
+    ) -> None:
         preds = classifier.predict(random_raw_batch)
         assert set(torch.unique(preds).tolist()) <= {0, 1}
 
-    def test_output_shape_and_dtype(self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor) -> None:
+    def test_output_shape_and_dtype(
+        self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor
+    ) -> None:
         preds = classifier.predict(random_raw_batch)
         assert preds.shape == (BATCH,)
         assert preds.dtype == torch.long
 
-    def test_threshold_is_applied(self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor) -> None:
+    def test_threshold_is_applied(
+        self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor
+    ) -> None:
         probs = classifier.predict_proba(random_raw_batch)
-        torch.testing.assert_close(classifier.predict(random_raw_batch, threshold=0.0), torch.ones(BATCH, dtype=torch.long))
-        torch.testing.assert_close(classifier.predict(random_raw_batch, threshold=1.01), torch.zeros(BATCH, dtype=torch.long))
+        torch.testing.assert_close(
+            classifier.predict(random_raw_batch, threshold=0.0),
+            torch.ones(BATCH, dtype=torch.long),
+        )
+        torch.testing.assert_close(
+            classifier.predict(random_raw_batch, threshold=1.01),
+            torch.zeros(BATCH, dtype=torch.long),
+        )
         mid = probs.median().item()
-        torch.testing.assert_close(classifier.predict(random_raw_batch, threshold=mid), (probs >= mid).long())
+        torch.testing.assert_close(
+            classifier.predict(random_raw_batch, threshold=mid), (probs >= mid).long()
+        )
 
 
 def _dropout_classifier(model_cls: type[BinaryClassifierBase]) -> BinaryClassifierBase:
@@ -174,7 +200,9 @@ class TestParameterCount:
         assert classifier.count_parameters(trainable_only=False) == classifier.count_parameters()
 
     def test_trainable_only_excludes_frozen(self, model_cls: type[BinaryClassifierBase]) -> None:
-        model = model_cls(n_input_features=N_RAW_FEATURES, n_qubits=N_QUBITS, n_layers=N_LAYERS, **DEVICE_KWARGS)
+        model = model_cls(
+            n_input_features=N_RAW_FEATURES, n_qubits=N_QUBITS, n_layers=N_LAYERS, **DEVICE_KWARGS
+        )
         total = model.count_parameters(trainable_only=False)
         model.head.weight.requires_grad_(False)
         assert model.count_parameters() == total - model.head.weight.numel()
@@ -197,15 +225,31 @@ def _circuit_input(model: nn.Module, x: torch.Tensor) -> torch.Tensor:
 class TestEncoderBypass:
     def test_mismatched_dims_raises(self, model_cls: type[BinaryClassifierBase]) -> None:
         with pytest.raises(ValueError, match="n_input_features"):
-            model_cls(n_input_features=10, n_qubits=4, use_classical_encoder=False, **DEVICE_KWARGS)
+            model_cls(
+                n_input_features=10, n_qubits=4, use_classical_encoder=False, **DEVICE_KWARGS
+            )
 
     def test_matching_dims_works(self, model_cls: type[BinaryClassifierBase]) -> None:
-        model = model_cls(n_input_features=4, n_qubits=4, n_layers=1, use_classical_encoder=False, **DEVICE_KWARGS)
+        model = model_cls(
+            n_input_features=4,
+            n_qubits=4,
+            n_layers=1,
+            use_classical_encoder=False,
+            **DEVICE_KWARGS,
+        )
         assert model(torch.randn(2, 4)).shape == (2, 1)
 
-    def test_bypassed_input_reaches_circuit_unscaled(self, model_cls: type[BinaryClassifierBase]) -> None:
+    def test_bypassed_input_reaches_circuit_unscaled(
+        self, model_cls: type[BinaryClassifierBase]
+    ) -> None:
         """Bypassed input is already in (-π, π); a second π factor aliases angles mod 2π."""
-        model = model_cls(n_input_features=4, n_qubits=4, n_layers=1, use_classical_encoder=False, **DEVICE_KWARGS)
+        model = model_cls(
+            n_input_features=4,
+            n_qubits=4,
+            n_layers=1,
+            use_classical_encoder=False,
+            **DEVICE_KWARGS,
+        )
         x = torch.linspace(-3.0, 3.0, 8).reshape(2, 4)
         torch.testing.assert_close(_circuit_input(model, x), x)
 
@@ -218,10 +262,16 @@ class TestEncoderBypass:
 
 class TestEncodingTypes:
     @pytest.mark.parametrize("encoding_type", ["angle", "iqp"])
-    def test_supported_encodings(self, model_cls: type[BinaryClassifierBase], encoding_type: str) -> None:
+    def test_supported_encodings(
+        self, model_cls: type[BinaryClassifierBase], encoding_type: str
+    ) -> None:
         model = model_cls(
-            n_input_features=4, n_qubits=4, n_layers=1,
-            use_classical_encoder=False, encoding_type=encoding_type, **DEVICE_KWARGS,
+            n_input_features=4,
+            n_qubits=4,
+            n_layers=1,
+            use_classical_encoder=False,
+            encoding_type=encoding_type,
+            **DEVICE_KWARGS,
         )
         assert model(torch.randn(2, 4)).shape == (2, 1)
 

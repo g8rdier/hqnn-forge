@@ -16,7 +16,6 @@ import torch
 
 from hqnn_forge.models import ParallelHybridClassifier
 
-
 BATCH = 8
 N_QUBITS = 4
 N_LAYERS = 2
@@ -59,12 +58,14 @@ class TestParameterCount:
         a mis-sized head or a wrongly wired branch — this does.
         """
         branch = (
-            N_RAW_FEATURES * CLASSICAL_HIDDEN_DIM + CLASSICAL_HIDDEN_DIM       # Linear 1
-            + CLASSICAL_HIDDEN_DIM * CLASSICAL_HIDDEN_DIM + CLASSICAL_HIDDEN_DIM  # Linear 2
+            N_RAW_FEATURES * CLASSICAL_HIDDEN_DIM
+            + CLASSICAL_HIDDEN_DIM  # Linear 1
+            + CLASSICAL_HIDDEN_DIM * CLASSICAL_HIDDEN_DIM
+            + CLASSICAL_HIDDEN_DIM  # Linear 2
         )
         encoder = N_RAW_FEATURES * N_QUBITS + N_QUBITS
         quantum = N_LAYERS * N_QUBITS * 3
-        head    = (CLASSICAL_HIDDEN_DIM + N_QUBITS) * 1 + 1
+        head = (CLASSICAL_HIDDEN_DIM + N_QUBITS) * 1 + 1
 
         expected = branch + encoder + quantum + head
         assert expected == 207, "test constants drifted from the documented config"

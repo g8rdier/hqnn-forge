@@ -69,11 +69,11 @@ WEIGHT_SAFE_ARGS: frozenset[str] = frozenset({"device_name", "diff_method", "dro
 #: and every addition to this table is then a deliberate line in a diff.  A
 #: config missing anything else is a broken checkpoint and still raises.
 _LEGACY_DEFAULTS: dict[str, Any] = {
-    "embedding_rotation": "X",   # added with the published-SHNN options; before
-    "entangler": "ring",         # them the circuit was RX + CNOT ring + Rot,
-    "readout": "all",            # read out on every qubit, with a tanh encoder
+    "embedding_rotation": "X",  # added with the published-SHNN options; before
+    "entangler": "ring",  # them the circuit was RX + CNOT ring + Rot,
+    "readout": "all",  # read out on every qubit, with a tanh encoder
     "encoder_activation": "tanh",
-    "init_std": 0.1,             # inert unless init_strategy="normal"
+    "init_std": 0.1,  # inert unless init_strategy="normal"
 }
 
 #: Set by ``load_checkpoint`` on a model it rebuilt under a forced
@@ -90,7 +90,9 @@ def _registry() -> dict[str, type[BinaryClassifierBase]]:
     # module-level import here would be circular.
     from hqnn_forge import models
 
-    return {name: getattr(models, name) for name in models.__all__ if name != "BinaryClassifierBase"}
+    return {
+        name: getattr(models, name) for name in models.__all__ if name != "BinaryClassifierBase"
+    }
 
 
 def save_checkpoint(model: BinaryClassifierBase, path: PathLike) -> None:
@@ -234,9 +236,7 @@ def load_checkpoint(
         )
 
     if "state_dict" not in payload:
-        raise ValueError(
-            f"{os.fspath(path)!r} has no 'state_dict'; the checkpoint is incomplete."
-        )
+        raise ValueError(f"{os.fspath(path)!r} has no 'state_dict'; the checkpoint is incomplete.")
 
     saved_version = payload.get("hqnn_forge_version")
     if saved_version != hqnn_forge.__version__ and not allow_version_mismatch:
@@ -256,9 +256,7 @@ def load_checkpoint(
     expected = _init_parameter_names(cls)
     unknown_overrides = sorted(set(overrides) - expected)
     if unknown_overrides:
-        raise ValueError(
-            f"unknown constructor arguments for {class_name}: {unknown_overrides}."
-        )
+        raise ValueError(f"unknown constructor arguments for {class_name}: {unknown_overrides}.")
 
     architecture_overrides = sorted(set(overrides) - WEIGHT_SAFE_ARGS)
     if architecture_overrides and not allow_architecture_override:
@@ -283,9 +281,7 @@ def load_checkpoint(
     # existed -- but loudly, so a reload of an old checkpoint is never a silent
     # change of architecture.  Anything missing that is not in the table is a
     # broken config and still raises below.
-    back_filled = {
-        name: _LEGACY_DEFAULTS[name] for name in missing if name in _LEGACY_DEFAULTS
-    }
+    back_filled = {name: _LEGACY_DEFAULTS[name] for name in missing if name in _LEGACY_DEFAULTS}
     if back_filled:
         config.update(back_filled)
         missing = [name for name in missing if name not in back_filled]
@@ -341,4 +337,3 @@ def _init_parameter_names(cls: type) -> set[str]:
         for name, p in inspect.signature(cls).parameters.items()
         if p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)
     }
-

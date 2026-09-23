@@ -42,8 +42,16 @@ class TestTraining:
         X, y, Xv, yv = data
         model = _logreg()
         history = train_model(
-            model, nn.BCEWithLogitsLoss(), torch.optim.Adam(model.parameters(), lr=0.1),
-            X, y, Xv, yv, max_epochs=30, batch_size=32, patience=None,
+            model,
+            nn.BCEWithLogitsLoss(),
+            torch.optim.Adam(model.parameters(), lr=0.1),
+            X,
+            y,
+            Xv,
+            yv,
+            max_epochs=30,
+            batch_size=32,
+            patience=None,
         )
         assert history.n_epochs == 30
         assert history.train_loss[-1] < 0.5 * history.train_loss[0]
@@ -53,8 +61,13 @@ class TestTraining:
         X, y, _, _ = data
         model = _logreg()
         history = train_model(
-            model, nn.BCEWithLogitsLoss(), torch.optim.SGD(model.parameters(), lr=0.0),
-            X, y, max_epochs=4, patience=1,
+            model,
+            nn.BCEWithLogitsLoss(),
+            torch.optim.SGD(model.parameters(), lr=0.0),
+            X,
+            y,
+            max_epochs=4,
+            patience=1,
         )
         assert history.n_epochs == 4 and not history.stopped_early
         assert history.best_epoch is None and history.epochs[0].val_score is None
@@ -65,8 +78,15 @@ class TestTraining:
         for _ in range(2):
             model = _logreg()
             train_model(
-                model, nn.BCEWithLogitsLoss(), torch.optim.SGD(model.parameters(), lr=0.1),
-                X, y, Xv, yv, max_epochs=3, batch_size=16,
+                model,
+                nn.BCEWithLogitsLoss(),
+                torch.optim.SGD(model.parameters(), lr=0.1),
+                X,
+                y,
+                Xv,
+                yv,
+                max_epochs=3,
+                batch_size=16,
                 generator=torch.Generator().manual_seed(7),
             )
             runs.append(model.weight.detach().clone())
@@ -85,8 +105,14 @@ class TestTraining:
 
         model = Flat()
         history = train_model(
-            model, nn.BCEWithLogitsLoss(), torch.optim.Adam(model.parameters(), lr=0.1),
-            X, y, Xv, yv, max_epochs=2,
+            model,
+            nn.BCEWithLogitsLoss(),
+            torch.optim.Adam(model.parameters(), lr=0.1),
+            X,
+            y,
+            Xv,
+            yv,
+            max_epochs=2,
         )
         assert history.n_epochs == 2
 
@@ -95,8 +121,16 @@ class TestTraining:
         model = _logreg()
         seen: list[EpochRecord] = []
         history = train_model(
-            model, nn.BCEWithLogitsLoss(), torch.optim.Adam(model.parameters(), lr=0.1),
-            X, y, Xv, yv, max_epochs=3, patience=None, on_epoch_end=seen.append,
+            model,
+            nn.BCEWithLogitsLoss(),
+            torch.optim.Adam(model.parameters(), lr=0.1),
+            X,
+            y,
+            Xv,
+            yv,
+            max_epochs=3,
+            patience=None,
+            on_epoch_end=seen.append,
         )
         assert seen == history.epochs
         assert [r.epoch for r in seen] == [1, 2, 3]
@@ -110,8 +144,15 @@ class TestEarlyStopping:
         model = _logreg()
         before = model.weight.detach().clone()
         history = train_model(
-            model, nn.BCEWithLogitsLoss(), torch.optim.SGD(model.parameters(), lr=0.0),
-            X, y, Xv, yv, max_epochs=50, patience=3,
+            model,
+            nn.BCEWithLogitsLoss(),
+            torch.optim.SGD(model.parameters(), lr=0.0),
+            X,
+            y,
+            Xv,
+            yv,
+            max_epochs=50,
+            patience=3,
         )
         assert history.stopped_early
         assert history.n_epochs == 1 + 3
@@ -120,7 +161,9 @@ class TestEarlyStopping:
         assert history.restored_best
         torch.testing.assert_close(model.weight.detach(), before, rtol=0, atol=0)
 
-    def test_monitored_value_is_the_score_not_the_threshold(self, data: tuple[torch.Tensor, ...]) -> None:
+    def test_monitored_value_is_the_score_not_the_threshold(
+        self, data: tuple[torch.Tensor, ...]
+    ) -> None:
         """Pin the unpacking of find_optimal_threshold's (threshold, score) result."""
         from hqnn_forge.evaluation import find_optimal_threshold
 
@@ -128,8 +171,16 @@ class TestEarlyStopping:
         model = _logreg()
         records: list[EpochRecord] = []
         train_model(
-            model, nn.BCEWithLogitsLoss(), torch.optim.Adam(model.parameters(), lr=0.1),
-            X, y, Xv, yv, max_epochs=5, patience=None, restore_best=False,
+            model,
+            nn.BCEWithLogitsLoss(),
+            torch.optim.Adam(model.parameters(), lr=0.1),
+            X,
+            y,
+            Xv,
+            yv,
+            max_epochs=5,
+            patience=None,
+            restore_best=False,
             on_epoch_end=records.append,
         )
         with torch.no_grad():
@@ -143,18 +194,35 @@ class TestEarlyStopping:
         X, y, Xv, yv = data
         model = _logreg()
         history = train_model(
-            model, nn.BCEWithLogitsLoss(), torch.optim.SGD(model.parameters(), lr=0.0),
-            X, y, Xv, yv, max_epochs=20, patience=2, monitor=monitor,
+            model,
+            nn.BCEWithLogitsLoss(),
+            torch.optim.SGD(model.parameters(), lr=0.0),
+            X,
+            y,
+            Xv,
+            yv,
+            max_epochs=20,
+            patience=2,
+            monitor=monitor,
         )
         assert history.stopped_early and history.n_epochs == 3
         assert history.monitor == monitor
 
-    def test_patience_reaching_max_epochs_is_not_early(self, data: tuple[torch.Tensor, ...]) -> None:
+    def test_patience_reaching_max_epochs_is_not_early(
+        self, data: tuple[torch.Tensor, ...]
+    ) -> None:
         X, y, Xv, yv = data
         model = _logreg()
         history = train_model(
-            model, nn.BCEWithLogitsLoss(), torch.optim.SGD(model.parameters(), lr=0.0),
-            X, y, Xv, yv, max_epochs=3, patience=2,
+            model,
+            nn.BCEWithLogitsLoss(),
+            torch.optim.SGD(model.parameters(), lr=0.0),
+            X,
+            y,
+            Xv,
+            yv,
+            max_epochs=3,
+            patience=2,
         )
         assert history.n_epochs == 3 and not history.stopped_early
 
@@ -175,8 +243,17 @@ class TestEarlyStopping:
             snapshots[record.epoch] = model.weight.detach().clone()
 
         history = train_model(
-            model, nn.BCEWithLogitsLoss(), torch.optim.Adam(model.parameters(), lr=0.05),
-            X, y, Xv, yv, max_epochs=40, patience=3, monitor="val_loss", on_epoch_end=sabotage,
+            model,
+            nn.BCEWithLogitsLoss(),
+            torch.optim.Adam(model.parameters(), lr=0.05),
+            X,
+            y,
+            Xv,
+            yv,
+            max_epochs=40,
+            patience=3,
+            monitor="val_loss",
+            on_epoch_end=sabotage,
         )
         assert history.stopped_early and history.restored_best
         assert history.best_epoch is not None and history.best_epoch < history.n_epochs
@@ -196,9 +273,18 @@ class TestEarlyStopping:
                     model.weight.mul_(-1.0)
 
         history = train_model(
-            model, nn.BCEWithLogitsLoss(), torch.optim.Adam(model.parameters(), lr=0.05),
-            X, y, Xv, yv, max_epochs=40, patience=2, monitor="val_loss",
-            restore_best=False, on_epoch_end=sabotage,
+            model,
+            nn.BCEWithLogitsLoss(),
+            torch.optim.Adam(model.parameters(), lr=0.05),
+            X,
+            y,
+            Xv,
+            yv,
+            max_epochs=40,
+            patience=2,
+            monitor="val_loss",
+            restore_best=False,
+            on_epoch_end=sabotage,
         )
         assert history.stopped_early and not history.restored_best
 
@@ -206,14 +292,25 @@ class TestEarlyStopping:
         X, y, Xv, yv = data
         model = _logreg()
         history = train_model(
-            model, nn.BCEWithLogitsLoss(), torch.optim.SGD(model.parameters(), lr=1e-4),
-            X, y, Xv, yv, max_epochs=50, patience=2, monitor="val_loss", min_delta=1.0,
+            model,
+            nn.BCEWithLogitsLoss(),
+            torch.optim.SGD(model.parameters(), lr=1e-4),
+            X,
+            y,
+            Xv,
+            yv,
+            max_epochs=50,
+            patience=2,
+            monitor="val_loss",
+            min_delta=1.0,
         )
         assert history.stopped_early and history.best_epoch == 1
 
 
 class TestDivergence:
-    def test_nan_logits_do_not_abort_a_metric_monitor(self, data: tuple[torch.Tensor, ...]) -> None:
+    def test_nan_logits_do_not_abort_a_metric_monitor(
+        self, data: tuple[torch.Tensor, ...]
+    ) -> None:
         """
         A diverged model gives NaN probabilities, which find_optimal_threshold
         rejects.  Under the default monitor that used to raise out of the loop
@@ -228,8 +325,16 @@ class TestDivergence:
                     model.weight.fill_(float("nan"))
 
         history = train_model(
-            model, nn.BCEWithLogitsLoss(), torch.optim.Adam(model.parameters(), lr=0.05),
-            X, y, Xv, yv, max_epochs=20, patience=2, on_epoch_end=diverge,
+            model,
+            nn.BCEWithLogitsLoss(),
+            torch.optim.Adam(model.parameters(), lr=0.05),
+            X,
+            y,
+            Xv,
+            yv,
+            max_epochs=20,
+            patience=2,
+            on_epoch_end=diverge,
         )
         assert history.stopped_early and history.n_epochs == 4
         # The NaN epochs never improve, so the best epoch predates the divergence
@@ -256,19 +361,41 @@ class TestValidation:
         X, y, Xv, yv = data
         model = _logreg()
         with pytest.raises(ValueError, match=match):
-            train_model(model, nn.BCEWithLogitsLoss(), torch.optim.SGD(model.parameters(), lr=0.1), X, y, Xv, yv, **kwargs)
+            train_model(
+                model,
+                nn.BCEWithLogitsLoss(),
+                torch.optim.SGD(model.parameters(), lr=0.1),
+                X,
+                y,
+                Xv,
+                yv,
+                **kwargs,
+            )
 
     def test_val_pair_must_be_complete(self, data: tuple[torch.Tensor, ...]) -> None:
         X, y, Xv, _ = data
         model = _logreg()
         with pytest.raises(ValueError, match="both X_val and y_val"):
-            train_model(model, nn.BCEWithLogitsLoss(), torch.optim.SGD(model.parameters(), lr=0.1), X, y, Xv)
+            train_model(
+                model,
+                nn.BCEWithLogitsLoss(),
+                torch.optim.SGD(model.parameters(), lr=0.1),
+                X,
+                y,
+                Xv,
+            )
 
     def test_length_mismatch(self, data: tuple[torch.Tensor, ...]) -> None:
         X, y, Xv, yv = data
         model = _logreg()
         with pytest.raises(ValueError, match="X_train and y_train differ"):
-            train_model(model, nn.BCEWithLogitsLoss(), torch.optim.SGD(model.parameters(), lr=0.1), X, y[:-1])
+            train_model(
+                model,
+                nn.BCEWithLogitsLoss(),
+                torch.optim.SGD(model.parameters(), lr=0.1),
+                X,
+                y[:-1],
+            )
 
     def test_single_class_val_split_is_rejected_by_a_metric_monitor(
         self, data: tuple[torch.Tensor, ...]
@@ -278,8 +405,13 @@ class TestValidation:
         model = _logreg()
         with pytest.raises(ValueError, match="single class"):
             train_model(
-                model, nn.BCEWithLogitsLoss(), torch.optim.SGD(model.parameters(), lr=0.1),
-                X, y, Xv, torch.zeros(Xv.shape[0]),
+                model,
+                nn.BCEWithLogitsLoss(),
+                torch.optim.SGD(model.parameters(), lr=0.1),
+                X,
+                y,
+                Xv,
+                torch.zeros(Xv.shape[0]),
             )
 
     def test_single_class_val_split_is_allowed_for_val_loss(
@@ -289,8 +421,16 @@ class TestValidation:
         X, y, Xv, _ = data
         model = _logreg()
         history = train_model(
-            model, nn.BCEWithLogitsLoss(), torch.optim.Adam(model.parameters(), lr=0.1),
-            X, y, Xv, torch.zeros(Xv.shape[0]), max_epochs=3, patience=None, monitor="val_loss",
+            model,
+            nn.BCEWithLogitsLoss(),
+            torch.optim.Adam(model.parameters(), lr=0.1),
+            X,
+            y,
+            Xv,
+            torch.zeros(Xv.shape[0]),
+            max_epochs=3,
+            patience=None,
+            monitor="val_loss",
         )
         assert history.n_epochs == 3 and history.best_epoch is not None
 
@@ -298,18 +438,30 @@ class TestValidation:
         X, y, _, _ = data
         model = nn.Linear(N_FEATURES, 2)
         with pytest.raises(ValueError, match=r"shape \(batch,\) or \(batch, 1\)"):
-            train_model(model, nn.BCEWithLogitsLoss(), torch.optim.SGD(model.parameters(), lr=0.1), X, y)
+            train_model(
+                model, nn.BCEWithLogitsLoss(), torch.optim.SGD(model.parameters(), lr=0.1), X, y
+            )
 
 
 class TestModes:
-    def test_validation_runs_without_dropout_and_restores_train_mode(self, data: tuple[torch.Tensor, ...]) -> None:
+    def test_validation_runs_without_dropout_and_restores_train_mode(
+        self, data: tuple[torch.Tensor, ...]
+    ) -> None:
         X, y, Xv, yv = data
         torch.manual_seed(0)
         model = nn.Sequential(nn.Linear(N_FEATURES, 8), nn.Dropout(0.9), nn.Linear(8, 1))
         records: list[EpochRecord] = []
         train_model(
-            model, nn.BCEWithLogitsLoss(), torch.optim.SGD(model.parameters(), lr=0.0),
-            X, y, Xv, yv, max_epochs=3, patience=None, on_epoch_end=records.append,
+            model,
+            nn.BCEWithLogitsLoss(),
+            torch.optim.SGD(model.parameters(), lr=0.0),
+            X,
+            y,
+            Xv,
+            yv,
+            max_epochs=3,
+            patience=None,
+            on_epoch_end=records.append,
         )
         # With lr=0 and dropout off in validation, every epoch sees the same val loss
         assert len({r.val_loss for r in records}) == 1
@@ -317,19 +469,32 @@ class TestModes:
 
 
 class TestHybridClassifier:
-    def test_trains_a_hybrid_classifier_with_focal_loss(self, data: tuple[torch.Tensor, ...]) -> None:
+    def test_trains_a_hybrid_classifier_with_focal_loss(
+        self, data: tuple[torch.Tensor, ...]
+    ) -> None:
         from hqnn_forge.models import HybridBinaryClassifier
         from hqnn_forge.utils import FocalLoss
 
         X, y, Xv, yv = data
         torch.manual_seed(0)
         model = HybridBinaryClassifier(
-            n_input_features=N_FEATURES, n_qubits=2, n_layers=1,
-            device_name="default.qubit", diff_method="backprop",
+            n_input_features=N_FEATURES,
+            n_qubits=2,
+            n_layers=1,
+            device_name="default.qubit",
+            diff_method="backprop",
         )
         history = train_model(
-            model, FocalLoss(), torch.optim.Adam(model.parameters(), lr=0.05),
-            X[:64], y[:64], Xv[:32], yv[:32], max_epochs=4, batch_size=32, patience=None,
+            model,
+            FocalLoss(),
+            torch.optim.Adam(model.parameters(), lr=0.05),
+            X[:64],
+            y[:64],
+            Xv[:32],
+            yv[:32],
+            max_epochs=4,
+            batch_size=32,
+            patience=None,
         )
         assert isinstance(history, TrainingHistory)
         assert history.train_loss[-1] < history.train_loss[0]

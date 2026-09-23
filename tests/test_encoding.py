@@ -21,19 +21,17 @@ import math
 
 import pytest
 import torch
-import torch.nn as nn
 
 from hqnn_forge.encoding import QuantumEncodingLayer
-from hqnn_forge.initializers import restricted_normal_init_, block_local_init_
-
+from hqnn_forge.initializers import block_local_init_, restricted_normal_init_
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-N_QUBITS  = 4   # keep small for test speed (real usage: 8)
-N_LAYERS  = 2
-BATCH     = 8
+N_QUBITS = 4  # keep small for test speed (real usage: 8)
+N_LAYERS = 2
+BATCH = 8
 
 
 @pytest.fixture(scope="module")
@@ -42,8 +40,8 @@ def layer() -> QuantumEncodingLayer:
     return QuantumEncodingLayer(
         n_qubits=N_QUBITS,
         n_layers=N_LAYERS,
-        device_name="default.qubit",   # lightning.qubit not required in CI
-        diff_method="parameter-shift", # universal; works on default.qubit
+        device_name="default.qubit",  # lightning.qubit not required in CI
+        diff_method="parameter-shift",  # universal; works on default.qubit
     )
 
 
@@ -57,10 +55,9 @@ def random_batch() -> torch.Tensor:
 # Test 1: Output shape
 # ---------------------------------------------------------------------------
 
+
 class TestForwardPassShape:
-    def test_output_shape(
-        self, layer: QuantumEncodingLayer, random_batch: torch.Tensor
-    ) -> None:
+    def test_output_shape(self, layer: QuantumEncodingLayer, random_batch: torch.Tensor) -> None:
         """Forward pass should return shape (batch_size, n_qubits)."""
         out = layer(random_batch)
         assert out.shape == (BATCH, N_QUBITS), (
@@ -69,7 +66,7 @@ class TestForwardPassShape:
 
     def test_single_sample(self, layer: QuantumEncodingLayer) -> None:
         """Single-sample batch (batch_size=1) should work correctly."""
-        x   = torch.rand(1, N_QUBITS)
+        x = torch.rand(1, N_QUBITS)
         out = layer(x)
         assert out.shape == (1, N_QUBITS)
 
@@ -78,6 +75,7 @@ class TestForwardPassShape:
 # Test 2: Output range
 # ---------------------------------------------------------------------------
 
+
 class TestOutputRange:
     def test_expectation_values_in_range(
         self, layer: QuantumEncodingLayer, random_batch: torch.Tensor
@@ -85,17 +83,14 @@ class TestOutputRange:
         """PauliZ expectation values must lie in [-1, 1]."""
         with torch.no_grad():
             out = layer(random_batch)
-        assert out.min().item() >= -1.0 - 1e-5, (
-            f"Output below -1: {out.min().item()}"
-        )
-        assert out.max().item() <= 1.0 + 1e-5, (
-            f"Output above  1: {out.max().item()}"
-        )
+        assert out.min().item() >= -1.0 - 1e-5, f"Output below -1: {out.min().item()}"
+        assert out.max().item() <= 1.0 + 1e-5, f"Output above  1: {out.max().item()}"
 
 
 # ---------------------------------------------------------------------------
 # Test 3: Gradient flow
 # ---------------------------------------------------------------------------
+
 
 class TestGradientFlow:
     def test_gradients_reach_quantum_weights(
@@ -108,8 +103,8 @@ class TestGradientFlow:
         # Reset any pre-existing gradients
         layer.zero_grad()
 
-        out  = layer(random_batch)             # (BATCH, N_QUBITS)
-        loss = out.sum()                       # scalar
+        out = layer(random_batch)  # (BATCH, N_QUBITS)
+        loss = out.sum()  # scalar
         loss.backward()
 
         weights_param = layer.qlayer.weights
@@ -133,6 +128,7 @@ class TestGradientFlow:
 # Test 4: Input validation
 # ---------------------------------------------------------------------------
 
+
 class TestInputValidation:
     def test_wrong_feature_dim_raises(self, layer: QuantumEncodingLayer) -> None:
         """Input with wrong last-dim should raise ValueError."""
@@ -143,6 +139,7 @@ class TestInputValidation:
     def test_n_qubits_lt_2_raises(self) -> None:
         """n_qubits < 2 is invalid (no meaningful entangling ring)."""
         from hqnn_forge.encoding.angle_embedding import build_encoding_qnode
+
         with pytest.raises(ValueError, match="n_qubits must be"):
             build_encoding_qnode(n_qubits=1)
 
@@ -169,15 +166,15 @@ class TestInputValidation:
 INIT_N_QUBITS = 16
 INIT_N_LAYERS = 16
 INIT_SEED = 0
-STD_TOLERANCE = 0.20      # relative
-SLOPE_TOLERANCE = 0.25    # in log-log space
-INTERCEPT_TOLERANCE = 0.5 # in log space
+STD_TOLERANCE = 0.20  # relative
+SLOPE_TOLERANCE = 0.25  # in log-log space
+INTERCEPT_TOLERANCE = 0.5  # in log space
 # The first/last std ratio compares two single layers, so it needs far more
 # than 48 draws per layer: at 16 qubits rel=0.3 fails for ~4.5% of seeds.  At
 # 256 qubits (768 draws) the worst relative deviation over 5000 seeds is 0.136.
 # The ratio sqrt(L) does not depend on n_qubits.
 RATIO_N_QUBITS = 256
-RATIO_TOLERANCE = 0.3     # relative
+RATIO_TOLERANCE = 0.3  # relative
 
 
 def _log_std_fit(tensor: torch.Tensor) -> tuple[float, float]:

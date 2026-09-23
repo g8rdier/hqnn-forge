@@ -67,7 +67,16 @@ class CreditCardFraud(NamedTuple):
 
 
 def _download_command(directory: Path) -> list[str]:
-    return ["kaggle", "datasets", "download", "-d", KAGGLE_DATASET, "-p", str(directory), "--unzip"]
+    return [
+        "kaggle",
+        "datasets",
+        "download",
+        "-d",
+        KAGGLE_DATASET,
+        "-p",
+        str(directory),
+        "--unzip",
+    ]
 
 
 def _resolve_path(path: str | os.PathLike[str] | None) -> Path:
@@ -185,8 +194,14 @@ def load_credit_card_fraud(
         if len(header) != len(COLUMNS):
             detail = f"expected {len(COLUMNS)} columns, found {len(header)}"
         else:
-            diffs = [f"{i}: {got!r} != {want!r}" for i, (got, want) in enumerate(zip(header, COLUMNS)) if got != want]
-            detail = "column names differ at " + ", ".join(diffs[:5]) + (" …" if len(diffs) > 5 else "")
+            diffs = [
+                f"{i}: {got!r} != {want!r}"
+                for i, (got, want) in enumerate(zip(header, COLUMNS))
+                if got != want
+            ]
+            detail = (
+                "column names differ at " + ", ".join(diffs[:5]) + (" …" if len(diffs) > 5 else "")
+            )
         raise ValueError(f"{csv} does not look like the Kaggle creditcard.csv: {detail}.")
     if not has_rows:
         raise ValueError(f"{csv} has the expected header but no data rows.")

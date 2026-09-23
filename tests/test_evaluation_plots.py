@@ -13,10 +13,10 @@ import pytest
 
 matplotlib = pytest.importorskip("matplotlib")
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-from matplotlib.figure import Figure  # noqa: E402
+import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 
-from hqnn_forge.evaluation import plots  # noqa: E402
+from hqnn_forge.evaluation import plots
 
 THESIS = {  # (MCC, params) from the benchmark README
     "SHNN": (0.5758, 122),
@@ -47,7 +47,9 @@ class TestConfusionMatrix:
         sk = pytest.importorskip("sklearn.metrics")
         rng = np.random.default_rng(0)
         t, p = rng.integers(0, 2, 40), rng.integers(0, 2, 40)
-        assert np.array_equal(plots.confusion_matrix(t, p), sk.confusion_matrix(t, p, labels=[0, 1]))
+        assert np.array_equal(
+            plots.confusion_matrix(t, p), sk.confusion_matrix(t, p, labels=[0, 1])
+        )
 
     def test_figure_shows_every_count(self) -> None:
         fig = plots.plot_confusion_matrix(self.Y_TRUE, self.Y_PRED, labels=("legit", "fraud"))
@@ -105,7 +107,9 @@ class TestFoldBoxplot:
             for line in ax.lines
             if len(line.get_xdata()) == 2 and abs(float(np.ptp(line.get_xdata())) - 0.5) < 1e-9
         }
-        ticks = {t.get_text(): round(float(x), 6) for t, x in zip(ax.get_xticklabels(), ax.get_xticks())}
+        ticks = {
+            t.get_text(): round(float(x), 6) for t, x in zip(ax.get_xticklabels(), ax.get_xticks())
+        }
         assert medians == {ticks["SHNN"]: pytest.approx(0.58), ticks["SNN"]: pytest.approx(0.56)}
 
     def test_points_overlaid(self) -> None:
@@ -146,7 +150,9 @@ class TestEfficiencyFrontier:
         assert sorted(t.get_text() for t in ax.texts) == sorted(THESIS)
         (step,) = [line for line in ax.lines if line.get_label() == "Pareto frontier"]
         assert list(step.get_xdata()) == [122, 8897, 14869, 29357]
-        assert list(step.get_ydata()) == [THESIS[n][0] for n in ["SHNN", "ResNet", "FT-T", "SAINT"]]
+        assert list(step.get_ydata()) == [
+            THESIS[n][0] for n in ["SHNN", "ResNet", "FT-T", "SAINT"]
+        ]
         # Each label is anchored on its own model's point, and each point is
         # drawn at that model's (params, score).
         assert {t.get_text(): tuple(t.xy) for t in ax.texts} == {

@@ -70,9 +70,7 @@ def _differences(scores_a: npt.ArrayLike, scores_b: npt.ArrayLike) -> npt.NDArra
     a = np.asarray(scores_a, dtype=np.float64).reshape(-1)
     b = np.asarray(scores_b, dtype=np.float64).reshape(-1)
     if a.shape != b.shape:
-        raise ValueError(
-            f"paired scores must have the same length; got {a.size} and {b.size}."
-        )
+        raise ValueError(f"paired scores must have the same length; got {a.size} and {b.size}.")
     if a.size == 0:
         raise ValueError("no scores given.")
     if not (np.all(np.isfinite(a)) and np.all(np.isfinite(b))):
@@ -95,7 +93,9 @@ def _average_ranks(values: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     return ranks
 
 
-def _signed_ranks(diffs: npt.NDArray[np.float64]) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
+def _signed_ranks(
+    diffs: npt.NDArray[np.float64],
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
     nonzero = diffs[diffs != 0.0]
     return _average_ranks(np.abs(nonzero)), nonzero > 0
 
@@ -182,13 +182,13 @@ def wilcoxon_signed_rank(
     (15.0, 0.0625, 0.0625)
     """
     if alternative not in ("two-sided", "greater", "less"):
-        raise ValueError(f"alternative must be 'two-sided', 'greater' or 'less'; got {alternative!r}.")
+        raise ValueError(
+            f"alternative must be 'two-sided', 'greater' or 'less'; got {alternative!r}."
+        )
     ranks, positive = _signed_ranks(_differences(scores_a, scores_b))
     n = int(ranks.size)
     if n == 0:
-        raise ValueError(
-            "every paired difference is zero, so the signed-rank test is undefined."
-        )
+        raise ValueError("every paired difference is zero, so the signed-rank test is undefined.")
     w_plus = float(np.sum(ranks[positive]))
 
     if n <= EXACT_MAX_N:

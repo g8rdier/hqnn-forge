@@ -49,10 +49,10 @@ logger = logging.getLogger(__name__)
 # Type aliases
 # ---------------------------------------------------------------------------
 RotationAxis = Literal["X", "Y", "Z"]
-DiffMethod   = Literal["adjoint", "parameter-shift", "backprop", "finite-diff"]
-DeviceName   = Literal["lightning.qubit", "default.qubit"]
-Entangler    = Literal["ring", "strongly_entangling"]
-Readout      = Literal["all", "first"]
+DiffMethod = Literal["adjoint", "parameter-shift", "backprop", "finite-diff"]
+DeviceName = Literal["lightning.qubit", "default.qubit"]
+Entangler = Literal["ring", "strongly_entangling"]
+Readout = Literal["all", "first"]
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +119,7 @@ def measure_z(n_qubits: int, readout: Readout = "all") -> list[qml.measurements.
 # Device factory — graceful fallback from lightning.qubit to default.qubit
 # ---------------------------------------------------------------------------
 
+
 def _resolve_device(device_name: DeviceName, n_qubits: int) -> qml.Device:
     """
     Attempt to create *device_name*; fall back to ``default.qubit`` when
@@ -155,6 +156,7 @@ def _resolve_device(device_name: DeviceName, n_qubits: int) -> qml.Device:
 # ---------------------------------------------------------------------------
 # Raw QNode function
 # ---------------------------------------------------------------------------
+
 
 def _make_angle_embedding_circuit(
     n_qubits: int,
@@ -252,6 +254,7 @@ def _make_angle_embedding_circuit(
 # Batching
 # ---------------------------------------------------------------------------
 
+
 def _expand_batch_dimension(qnode: qml.QNode, diff_method: str) -> qml.QNode:
     """
     Make *qnode* accept a batched ``inputs`` tensor of shape ``(batch, n_qubits)``
@@ -286,6 +289,7 @@ def _expand_batch_dimension(qnode: qml.QNode, diff_method: str) -> qml.QNode:
 # ---------------------------------------------------------------------------
 # Public QNode factory
 # ---------------------------------------------------------------------------
+
 
 def build_encoding_qnode(
     n_qubits: int = 8,
@@ -351,9 +355,7 @@ def build_encoding_qnode(
     >>> result = qnode(x, w)  # list of 8 expectation values
     """
     if n_qubits < 2:
-        raise ValueError(
-            f"n_qubits must be ≥ 2 for the CNOT entangling ring; got {n_qubits}."
-        )
+        raise ValueError(f"n_qubits must be ≥ 2 for the CNOT entangling ring; got {n_qubits}.")
 
     device = _resolve_device(device_name, n_qubits)
     circuit_fn = _make_angle_embedding_circuit(n_qubits, n_layers, rotation, entangler, readout)
@@ -383,6 +385,7 @@ def build_encoding_qnode(
 # ---------------------------------------------------------------------------
 # PyTorch nn.Module wrapper
 # ---------------------------------------------------------------------------
+
 
 class QuantumEncodingLayer(nn.Module):
     """

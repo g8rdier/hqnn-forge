@@ -40,7 +40,7 @@ import pytest
 import torch
 from torch import nn
 
-from hqnn_forge.diagnostics import CircuitSummary, LOGICAL_GATE_SET, circuit_summary
+from hqnn_forge.diagnostics import LOGICAL_GATE_SET, CircuitSummary, circuit_summary
 from hqnn_forge.models import HybridBinaryClassifier
 
 pytestmark = pytest.mark.reproducibility
@@ -117,8 +117,11 @@ def _our_tape(model: HybridBinaryClassifier) -> qml.tape.QuantumScript:
 
 def _ours() -> HybridBinaryClassifier:
     return HybridBinaryClassifier(
-        n_input_features=N_QUBITS, n_qubits=N_QUBITS, n_layers=N_LAYERS,
-        device_name="default.qubit", diff_method="backprop",
+        n_input_features=N_QUBITS,
+        n_qubits=N_QUBITS,
+        n_layers=N_LAYERS,
+        device_name="default.qubit",
+        diff_method="backprop",
     )
 
 

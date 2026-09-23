@@ -71,6 +71,28 @@ hqnn_forge = ["py.typed"]
 line-length = 99
 target-version = "py311"
 
+[tool.ruff.lint]
+ignore = [
+    # `import torch.nn as nn` / `import torch.optim as optim` is the PyTorch
+    # idiom used throughout; `from torch import nn` reads as a different thing
+    "PLR0402",
+    # `dict(key=value)` for config dicts reads like the keyword arguments
+    # it records or forwards
+    "C408",
+    # int(round(x)) is kept on purpose: round() of a numpy scalar is not
+    # guaranteed to return a Python int
+    "RUF046",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    # class-level constants in tests are read-only fixtures, not shared state
+    "RUF012",
+    # nesting pytest.raises around a context manager shows which statement is
+    # expected to raise
+    "SIM117",
+]
+
 [tool.mypy]
 # 3.12, not the 3.11 floor: the numpy stubs use the PEP 695 `type` statement,
 # which mypy only accepts at a target of 3.12 or later (see #102)

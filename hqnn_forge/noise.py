@@ -186,7 +186,9 @@ def noise_sweep(
         raise ValueError("pass both y and score_fn, or neither.")
     predict = getattr(model, "predict_proba", None)
     if not callable(predict):
-        raise TypeError(f"noise_sweep needs a model with predict_proba; got {type(model).__name__}.")
+        raise TypeError(
+            f"noise_sweep needs a model with predict_proba; got {type(model).__name__}."
+        )
     # Materialised and range-checked up front: the levels may arrive as a
     # generator, and a bad one at the end would otherwise be found only after
     # every earlier (O(4^n)) evaluation had already been paid for.

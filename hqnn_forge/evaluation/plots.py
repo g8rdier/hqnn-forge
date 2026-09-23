@@ -50,6 +50,7 @@ def _axes(ax: Axes | None, figsize: tuple[float, float]) -> tuple[Figure, Axes]:
 # Confusion matrix
 # ---------------------------------------------------------------------------
 
+
 def _as_binary(y: npt.ArrayLike, name: str) -> npt.NDArray[np.int64]:
     """
     Flatten to 1-D int64 after checking that every value is a 0/1 label.
@@ -123,7 +124,11 @@ def plot_confusion_matrix(
         for j in range(2):
             text = f"{values[i, j]:.2f}" if normalize else f"{cm[i, j]:d}"
             axes.text(
-                j, i, text, ha="center", va="center",
+                j,
+                i,
+                text,
+                ha="center",
+                va="center",
                 color="white" if values[i, j] > threshold else "black",
             )
     axes.set_xticks([0, 1], labels=list(labels))
@@ -137,6 +142,7 @@ def plot_confusion_matrix(
 # ---------------------------------------------------------------------------
 # Per-fold distributions
 # ---------------------------------------------------------------------------
+
 
 def plot_fold_metric_boxplot(
     model_scores: Mapping[str, Sequence[float]],
@@ -192,6 +198,7 @@ def plot_fold_metric_boxplot(
 # ---------------------------------------------------------------------------
 # Efficiency frontier
 # ---------------------------------------------------------------------------
+
 
 def pareto_frontier(models: Mapping[str, tuple[float, int]]) -> list[str]:
     """
@@ -250,8 +257,11 @@ def plot_efficiency_frontier(
     for name, (score, params) in models.items():
         on_front = name in frontier
         axes.scatter(
-            params, score, s=40 if on_front else 28,
-            color="tab:blue" if on_front else "tab:gray", zorder=3,
+            params,
+            score,
+            s=40 if on_front else 28,
+            color="tab:blue" if on_front else "tab:gray",
+            zorder=3,
         )
         axes.annotate(name, (params, score), xytext=(4, 4), textcoords="offset points", fontsize=8)
     xs = [models[n][1] for n in frontier]

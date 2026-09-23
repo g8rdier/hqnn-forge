@@ -62,8 +62,7 @@ def strongly_entangling_layer(
     """
     if weights.shape != (n_qubits, 3):
         raise ValueError(
-            f"weights must have shape (n_qubits={n_qubits}, 3); "
-            f"got {tuple(weights.shape)}."
+            f"weights must have shape (n_qubits={n_qubits}, 3); got {tuple(weights.shape)}."
         )
 
     # Entangling ring: CNOT(i → i+1 mod n)

@@ -20,17 +20,26 @@ import numpy as np
 import pytest
 
 pytest.importorskip("sklearn")
-from sklearn.base import clone  # noqa: E402
-from sklearn.exceptions import NotFittedError  # noqa: E402
-from sklearn.model_selection import GridSearchCV, cross_val_score  # noqa: E402
-from sklearn.pipeline import make_pipeline  # noqa: E402
-from sklearn.preprocessing import StandardScaler  # noqa: E402
+from sklearn.base import clone
+from sklearn.exceptions import NotFittedError
+from sklearn.model_selection import GridSearchCV, cross_val_score
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
-from hqnn_forge.sklearn import HybridClassifierEstimator  # noqa: E402
-from hqnn_forge.training import train_model  # noqa: E402
+from hqnn_forge.sklearn import HybridClassifierEstimator
+from hqnn_forge.training import train_model
 
-FAST = dict(n_qubits=2, n_layers=1, device_name="default.qubit", diff_method="backprop",
-            max_epochs=15, batch_size=16, lr=0.05, loss="bce", random_state=0)
+FAST = dict(
+    n_qubits=2,
+    n_layers=1,
+    device_name="default.qubit",
+    diff_method="backprop",
+    max_epochs=15,
+    batch_size=16,
+    lr=0.05,
+    loss="bce",
+    random_state=0,
+)
 
 
 @pytest.fixture
@@ -89,11 +98,14 @@ class TestFitPredict:
 
     def test_validation_split_sets_optimal_threshold(self, data: tuple) -> None:
         X, y = data
-        est = HybridClassifierEstimator(**{**FAST, "validation_fraction": 0.25, "patience": 5}).fit(X, y)
+        est = HybridClassifierEstimator(
+            **{**FAST, "validation_fraction": 0.25, "patience": 5}
+        ).fit(X, y)
         assert est.history_.best_threshold is not None
         assert est.threshold_ == pytest.approx(est.history_.best_threshold)
         np.testing.assert_array_equal(
-            est.predict(X), est.classes_[(est.predict_proba(X)[:, 1] >= est.threshold_).astype(int)]
+            est.predict(X),
+            est.classes_[(est.predict_proba(X)[:, 1] >= est.threshold_).astype(int)],
         )
 
     def test_fixed_threshold_and_default_without_validation(self, data: tuple) -> None:
@@ -128,19 +140,25 @@ class TestFitPredict:
 class TestSklearnTooling:
     def test_cross_val_score(self, data: tuple) -> None:
         X, y = data
-        scores = cross_val_score(HybridClassifierEstimator(**FAST), X, y, cv=3, scoring="matthews_corrcoef")
+        scores = cross_val_score(
+            HybridClassifierEstimator(**FAST), X, y, cv=3, scoring="matthews_corrcoef"
+        )
         assert scores.shape == (3,) and scores.mean() > 0.3
 
     def test_pipeline(self, data: tuple) -> None:
         X, y = data
-        pipe = make_pipeline(StandardScaler(), HybridClassifierEstimator(**FAST)).fit(X * 50 + 7, y)
+        pipe = make_pipeline(StandardScaler(), HybridClassifierEstimator(**FAST)).fit(
+            X * 50 + 7, y
+        )
         assert pipe.score(X * 50 + 7, y) > 0.7
 
     def test_grid_search(self, data: tuple) -> None:
         X, y = data
         search = GridSearchCV(
             HybridClassifierEstimator(**{**FAST, "max_epochs": 3}),
-            {"n_layers": [1, 2]}, cv=2, scoring="accuracy",
+            {"n_layers": [1, 2]},
+            cv=2,
+            scoring="accuracy",
         ).fit(X, y)
         assert search.best_params_["n_layers"] in (1, 2)
         assert search.best_estimator_.model_.n_layers == search.best_params_["n_layers"]

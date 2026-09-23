@@ -59,8 +59,7 @@ def hardware_efficient_layer(
     """
     if weights.shape[0] != n_qubits:
         raise ValueError(
-            f"weights must have shape (n_qubits={n_qubits},); "
-            f"got {tuple(weights.shape)}."
+            f"weights must have shape (n_qubits={n_qubits},); got {tuple(weights.shape)}."
         )
 
     # Nearest-neighbour CZ ladder
