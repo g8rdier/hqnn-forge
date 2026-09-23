@@ -76,7 +76,8 @@ class FocalLoss(nn.Module):
     >>> logits = torch.tensor([0.8, -0.3, 1.2, -1.5])
     >>> targets = torch.tensor([1.0, 0.0, 1.0, 0.0])
     >>> loss = loss_fn(logits, targets)
-    >>> loss.item()  # scalar
+    >>> round(loss.item(), 4)  # scalar
+    0.0232
     """
 
     def __init__(
@@ -181,8 +182,10 @@ def compute_class_weights(
     --------
     >>> import torch
     >>> from hqnn_forge.utils import compute_class_weights
-    >>> y = torch.tensor([0, 0, 0, 0, 0, 0, 0, 0, 0, 1])  # 10:1 imbalance
-    >>> compute_class_weights(y)
+    >>> y = torch.tensor([0, 0, 0, 0, 0, 0, 0, 0, 0, 1])  # 9:1 imbalance
+    >>> compute_class_weights(y)  # [10 / (2*9 + 1), 10 / (2*1 + 1)]
+    tensor([0.5263, 3.3333])
+    >>> compute_class_weights(y, smooth=0.0)  # [10 / (2*9), 10 / (2*1)]
     tensor([0.5556, 5.0000])
     """
     labels = labels.view(-1).float()
@@ -230,6 +233,7 @@ def weighted_bce_loss(
     >>> pred = torch.tensor([0.1, -0.2, 0.05, 0.9])
     >>> cw   = compute_class_weights(y)
     >>> weighted_bce_loss(pred, y, cw)
+    tensor(0.4081)
     """
     logits = logits.view(-1)
     targets = targets.view(-1).float()
