@@ -58,10 +58,8 @@ class TestParameterCount:
         a mis-sized head or a wrongly wired branch — this does.
         """
         branch = (
-            N_RAW_FEATURES * CLASSICAL_HIDDEN_DIM
-            + CLASSICAL_HIDDEN_DIM  # Linear 1
-            + CLASSICAL_HIDDEN_DIM * CLASSICAL_HIDDEN_DIM
-            + CLASSICAL_HIDDEN_DIM  # Linear 2
+            (N_RAW_FEATURES * CLASSICAL_HIDDEN_DIM + CLASSICAL_HIDDEN_DIM)  # Linear 1
+            + (CLASSICAL_HIDDEN_DIM * CLASSICAL_HIDDEN_DIM + CLASSICAL_HIDDEN_DIM)  # Linear 2
         )
         encoder = N_RAW_FEATURES * N_QUBITS + N_QUBITS
         quantum = N_LAYERS * N_QUBITS * 3

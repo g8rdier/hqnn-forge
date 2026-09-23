@@ -116,7 +116,9 @@ class TestFoldBoxplot:
         ax = plots.plot_fold_metric_boxplot(self.SCORES).axes[0]
         offsets = np.concatenate([c.get_offsets() for c in ax.collections])
         assert offsets.shape == (10, 2)
-        assert sorted(offsets[:, 1].tolist()) == sorted(sum(self.SCORES.values(), []))
+        assert sorted(offsets[:, 1].tolist()) == sorted(
+            s for scores in self.SCORES.values() for s in scores
+        )
 
     def test_points_can_be_hidden(self) -> None:
         ax = plots.plot_fold_metric_boxplot(self.SCORES, show_points=False).axes[0]

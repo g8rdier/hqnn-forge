@@ -386,7 +386,7 @@ class TestValidation:
             )
 
     def test_length_mismatch(self, data: tuple[torch.Tensor, ...]) -> None:
-        X, y, Xv, yv = data
+        X, y, _, _ = data
         model = _logreg()
         with pytest.raises(ValueError, match="X_train and y_train differ"):
             train_model(

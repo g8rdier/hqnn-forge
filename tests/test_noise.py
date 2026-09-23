@@ -6,6 +6,7 @@ hqnn_forge.noise: post-hoc depolarizing noise and noise sweeps.
 
 from __future__ import annotations
 
+import itertools
 import math
 
 import pytest
@@ -117,7 +118,7 @@ class TestNoiseEffect:
             for p in (0.0, 0.02, 0.05, 0.1, 0.2):
                 with apply_depolarizing_noise(layer, p):
                     magnitudes.append(layer(x).abs().mean().item())
-        assert all(a > b for a, b in zip(magnitudes, magnitudes[1:])), magnitudes
+        assert all(a > b for a, b in itertools.pairwise(magnitudes)), magnitudes
 
     def test_full_depolarization_zeroes_every_expectation(self, x: torch.Tensor) -> None:
         layer = _layer()

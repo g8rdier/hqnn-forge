@@ -201,7 +201,10 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
             return
         # bool is a subclass of int, and threshold=True would silently mean 1.0.
         if isinstance(threshold, bool) or not isinstance(threshold, numbers.Real):
-            raise ValueError(f"threshold must be 'optimal' or a real number; got {threshold!r}.")
+            # ValueError, as for any other threshold outside 'optimal' or [0, 1]
+            raise ValueError(  # noqa: TRY004
+                f"threshold must be 'optimal' or a real number; got {threshold!r}."
+            )
         if not 0.0 <= float(threshold) <= 1.0:
             raise ValueError(
                 f"threshold must lie in [0, 1], the range of a probability; got {threshold!r}."

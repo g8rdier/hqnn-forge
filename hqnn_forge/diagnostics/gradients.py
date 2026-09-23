@@ -264,7 +264,8 @@ def gradient_variance(
             weights.grad = None
             value = cost(layer(x))
             if not isinstance(value, torch.Tensor):
-                raise ValueError(
+                # existing behaviour; switching to TypeError is not a style change
+                raise ValueError(  # noqa: TRY004
                     f"cost_fn must return a 0-d Tensor to differentiate; "
                     f"got {type(value).__name__}."
                 )

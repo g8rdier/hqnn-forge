@@ -205,7 +205,8 @@ class PCANormalizer:
         # a fixed-width NumPy integer would wrap in the arithmetic of the error
         # messages (np.uint8(255) + 1 == 0)
         if isinstance(self.n_components, bool):
-            raise ValueError(
+            # a value check, not a type check: bool is an int subclass
+            raise ValueError(  # noqa: TRY004
                 f"n_components={self.n_components!r} is a bool, not an integer.  "
                 f"Provide the number of components to retain."
             )
