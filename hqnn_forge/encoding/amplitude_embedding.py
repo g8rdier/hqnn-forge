@@ -66,12 +66,13 @@ import pennylane as qml
 import torch
 import torch.nn as nn
 
-from hqnn_forge.circuits.strongly_entangling import strongly_entangling_layer
 from hqnn_forge.encoding.angle_embedding import (
     DeviceName,
     DiffMethod,
     _expand_batch_dimension,
     _resolve_device,
+    apply_variational_layers,
+    measure_z,
 )
 
 logger = logging.getLogger(__name__)
@@ -143,8 +144,9 @@ def _make_amplitude_embedding_circuit(
     1. ``AmplitudeEmbedding(inputs)``: prepares ``Σ_k inputs_k |k⟩``.  The
        template does not re-normalise: ``inputs`` must already have unit norm,
        which the template checks.
-    2. Per layer: :func:`~hqnn_forge.circuits.strongly_entangling.strongly_entangling_layer`
-       (CNOT ring ``CNOT(i → i+1 mod n)``, then ``Rot`` on each qubit).
+    2. :func:`~hqnn_forge.encoding.angle_embedding.apply_variational_layers`
+       with the ``"ring"`` block: per layer a CNOT ring ``CNOT(i → i+1 mod n)``,
+       then ``Rot`` on each qubit.
     3. ``[⟨Z_i⟩ for i in range(n_qubits)]``.
     """
 
@@ -158,12 +160,9 @@ def _make_amplitude_embedding_circuit(
         # ── 1. Amplitude embedding ───────────────────────────────────────
         qml.AmplitudeEmbedding(features=inputs, wires=range(n_qubits))
 
-        # ── 2. Strongly entangling layers (same as angle_embedding) ──────
-        for layer in range(n_layers):
-            strongly_entangling_layer(weights[layer], n_qubits)
-
-        # ── 3. Measurement ───────────────────────────────────────────────
-        return [qml.expval(qml.PauliZ(i)) for i in range(n_qubits)]
+        # ── 2 & 3. Variational layers, then ⟨Z⟩ on every wire ──────────────
+        apply_variational_layers(weights, n_qubits, n_layers)
+        return measure_z(n_qubits)
 
     return circuit
 
