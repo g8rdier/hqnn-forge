@@ -9,7 +9,10 @@ Two of the encoders have closed-form kernels, which serve as oracles:
 * Amplitude embedding: ``k(x, y) = (x·y)² / (‖x‖² ‖y‖²)``.
 
 The IQP and re-uploading kernels are checked against the overlap circuit
-``|⟨0| U†(x) U(y) |0⟩|²`` built directly in PennyLane.
+``|⟨0| U†(x) U(y) |0⟩|²`` built directly in PennyLane.  That reference comes
+from the same replayed tape, so ``TestMatchesForward`` separately checks that
+the replayed states reproduce ``layer(x)``: ⟨Z_i⟩ computed from
+``encoded_states`` must equal what the layer's own forward returns.
 """
 
 from __future__ import annotations
@@ -20,13 +23,14 @@ import pennylane as qml
 import pytest
 import torch
 
+from hqnn_forge import kernels
 from hqnn_forge.encoding import (
     AmplitudeEncodingLayer,
     DataReuploadingLayer,
     QuantumEncodingLayer,
 )
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
-from hqnn_forge.kernels import encoded_states, quantum_kernel_matrix
+from hqnn_forge.kernels import encoded_states, kernel_from_states, quantum_kernel_matrix
 
 N_QUBITS = 3
 M = 7  # samples
@@ -93,8 +97,9 @@ class TestKernelMatrixProperties:
         )
         eigenvalues = torch.linalg.eigvalsh(K)
         assert eigenvalues.min().item() >= -1e-10
+        # No clamping in the implementation, so these bound the actual values.
         assert K.min().item() >= 0.0
-        assert K.max().item() <= 1.0
+        assert K.max().item() <= 1.0 + 1e-12
 
     @pytest.mark.parametrize("build", ALL_LAYERS)
     def test_rectangular_matrix_matches_square_blocks(self, build) -> None:
@@ -123,6 +128,66 @@ class TestKernelMatrixProperties:
             torch.testing.assert_close(
                 norms, torch.ones(M, dtype=torch.float64), atol=1e-12, rtol=0
             )
+
+
+# ---------------------------------------------------------------------------
+# The replayed circuit is the layer's circuit
+# ---------------------------------------------------------------------------
+
+
+def _z_expectations(states: torch.Tensor, n_qubits: int) -> torch.Tensor:
+    """⟨Z_i⟩ per row of a state batch; wire 0 is the most significant bit."""
+    probs = states.abs().pow(2)
+    index = torch.arange(2**n_qubits)
+    signs = torch.stack(
+        [
+            1.0 - 2.0 * ((index >> (n_qubits - 1 - i)) & 1).to(torch.float64)
+            for i in range(n_qubits)
+        ]
+    )
+    return probs @ signs.T
+
+
+def _reuploading_with_random_scaling(**kwargs) -> DataReuploadingLayer:
+    torch.manual_seed(1)
+    layer = DataReuploadingLayer(
+        n_qubits=N_QUBITS, n_layers=2, trainable_input_scaling=True, **kwargs
+    )
+    with torch.no_grad():
+        layer.qlayer.input_scaling.uniform_(0.5, 2.0)
+    return layer
+
+
+FORWARD_LAYERS = [
+    *ALL_LAYERS,
+    pytest.param(
+        lambda: _reuploading_with_random_scaling(
+            device_name="default.qubit", diff_method="backprop"
+        ),
+        id="reuploading-scaled",
+    ),
+    # The library defaults: lightning.qubit with adjoint, whose QNodes are
+    # wrapped in a batch-expanding transform the replay must see through.
+    pytest.param(lambda: QuantumEncodingLayer(n_qubits=N_QUBITS), id="angle-lightning"),
+    pytest.param(lambda: IQPEncodingLayer(n_qubits=N_QUBITS), id="iqp-lightning"),
+    pytest.param(
+        lambda: AmplitudeEncodingLayer(n_qubits=N_QUBITS, n_features=5), id="amplitude-lightning"
+    ),
+    pytest.param(lambda: _reuploading_with_random_scaling(), id="reuploading-lightning"),
+]
+
+
+class TestMatchesForward:
+    @pytest.mark.parametrize("build", FORWARD_LAYERS)
+    def test_states_reproduce_forward(self, build) -> None:
+        layer = build()
+        with torch.no_grad():
+            layer.qlayer.weights.uniform_(0, 2 * math.pi)
+        X = _inputs_for(layer)
+        with torch.no_grad():
+            expected = layer(X.to(torch.float32)).to(torch.float64)
+        actual = _z_expectations(encoded_states(X, layer), N_QUBITS)
+        torch.testing.assert_close(actual, expected, atol=1e-5, rtol=0)
 
 
 # ---------------------------------------------------------------------------
@@ -231,8 +296,8 @@ class TestOverlapCircuitReference:
 
 class TestUsage:
     def test_precomputed_svm_separates_a_toy_problem(self) -> None:
-        sklearn = pytest.importorskip("sklearn")
-        from sklearn.svm import SVC  # noqa: F401 - imported for the skip above
+        pytest.importorskip("sklearn")
+        from sklearn.svm import SVC
 
         torch.manual_seed(0)
         layer = _angle_layer(1)
@@ -246,10 +311,32 @@ class TestUsage:
         y = torch.cat([torch.zeros(20), torch.ones(20)]).numpy()
         X_train, X_test = X[::2], X[1::2]
         y_train, y_test = y[::2], y[1::2]
-        svm = sklearn.svm.SVC(kernel="precomputed")
+        svm = SVC(kernel="precomputed")
         svm.fit(quantum_kernel_matrix(X_train, layer).numpy(), y_train)
         pred = svm.predict(quantum_kernel_matrix(X_test, layer, Y=X_train).numpy())
         assert (pred == y_test).mean() == 1.0
+
+    def test_reused_states_match_the_rectangular_matrix(self) -> None:
+        layer = _angle_layer()
+        X_train, X_test = _angles(5, seed=0), _angles(3, seed=1)
+        S_train = encoded_states(X_train, layer)
+        torch.testing.assert_close(
+            kernel_from_states(S_train), quantum_kernel_matrix(X_train, layer), atol=0, rtol=0
+        )
+        torch.testing.assert_close(
+            kernel_from_states(encoded_states(X_test, layer), S_train),
+            quantum_kernel_matrix(X_test, layer, Y=X_train),
+            atol=0,
+            rtol=0,
+        )
+
+    def test_unnormalised_state_is_not_hidden(self) -> None:
+        """The diagonal is not clamped, so a bad state shows up as K[i, i] != 1."""
+        states = encoded_states(_angles(3), _angle_layer())
+        states[1] *= 1.1
+        K = kernel_from_states(states)
+        assert K[1, 1].item() == pytest.approx(1.1**4, abs=1e-12)
+        assert K[0, 0].item() == pytest.approx(1.0, abs=1e-12)
 
     def test_does_not_touch_gradients_or_weights(self) -> None:
         layer = _angle_layer()
@@ -270,5 +357,28 @@ class TestUsage:
             quantum_kernel_matrix(torch.zeros(N_QUBITS), layer)
         with pytest.raises(ValueError, match="no samples"):
             quantum_kernel_matrix(torch.zeros(0, N_QUBITS), layer)
-        with pytest.raises(ValueError, match="same number of features"):
-            quantum_kernel_matrix(_angles(2), layer, Y=torch.zeros(2, N_QUBITS + 1))
+        with pytest.raises(ValueError, match="state dimension"):
+            kernel_from_states(torch.zeros(2, 4, dtype=torch.complex128), torch.zeros(2, 8))
+
+    @pytest.mark.parametrize("build", ALL_LAYERS)
+    def test_rejects_inputs_of_the_wrong_width_for_the_layer(self, build) -> None:
+        """The layer's own width check applies, as it does in forward."""
+        layer = build()
+        width = _inputs_for(layer).shape[1]
+        too_narrow = torch.rand(4, width - 1, dtype=torch.float64)
+        with pytest.raises(ValueError, match="does not match"):
+            layer(too_narrow)
+        with pytest.raises(ValueError, match="does not match"):
+            quantum_kernel_matrix(too_narrow, layer)
+        with pytest.raises(ValueError, match="does not match"):
+            encoded_states(too_narrow, layer)
+        with pytest.raises(ValueError, match="does not match"):
+            quantum_kernel_matrix(_inputs_for(layer), layer, Y=too_narrow)
+
+    def test_validates_y_before_simulating_x(self, monkeypatch) -> None:
+        calls = []
+        real = kernels._simulate
+        monkeypatch.setattr(kernels, "_simulate", lambda *a: calls.append(1) or real(*a))
+        with pytest.raises(ValueError, match="does not match"):
+            quantum_kernel_matrix(_angles(2), _angle_layer(), Y=torch.zeros(2, N_QUBITS + 1))
+        assert calls == []

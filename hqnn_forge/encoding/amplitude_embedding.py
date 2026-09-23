@@ -354,9 +354,10 @@ class AmplitudeEncodingLayer(nn.Module):
         """
         Zero-pad ``x`` to ``2**n_qubits`` and L2-normalise each sample.
 
-        This is the classical step ``forward`` applies before the QNode; it is
-        public so that tools which replay the circuit (``hqnn_forge.kernels``)
-        can feed the QNode the same amplitudes ``forward`` would.
+        This is the classical step ``forward`` applies before the QNode.  Every
+        encoding layer has one, so tools which replay the circuit
+        (:mod:`hqnn_forge.kernels`) validate and transform inputs exactly as
+        ``forward`` does.
         """
         if x.shape[-1] != self.n_features:
             raise ValueError(

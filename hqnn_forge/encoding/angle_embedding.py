@@ -534,6 +534,23 @@ class QuantumEncodingLayer(nn.Module):
     # Forward pass
     # ------------------------------------------------------------------
 
+    def prepare_inputs(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Check that ``x`` has ``n_qubits`` features; the angles are used as given.
+
+        This is the classical step ``forward`` applies before the QNode.  Every
+        encoding layer has one, so tools which replay the circuit
+        (:mod:`hqnn_forge.kernels`) validate and transform inputs exactly as
+        ``forward`` does.
+        """
+        if x.shape[-1] != self.n_qubits:
+            raise ValueError(
+                f"Input feature dimension {x.shape[-1]} does not match "
+                f"n_qubits={self.n_qubits}.  Apply PCA to reduce to {self.n_qubits} "
+                f"features before passing to QuantumEncodingLayer."
+            )
+        return x
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Embed a batch of feature vectors into Pauli-Z expectation values.
@@ -556,12 +573,7 @@ class QuantumEncodingLayer(nn.Module):
         ValueError
             If the last dimension of ``x`` does not equal ``self.n_qubits``.
         """
-        if x.shape[-1] != self.n_qubits:
-            raise ValueError(
-                f"Input feature dimension {x.shape[-1]} does not match "
-                f"n_qubits={self.n_qubits}.  Apply PCA to reduce to {self.n_qubits} "
-                f"features before passing to QuantumEncodingLayer."
-            )
+        x = self.prepare_inputs(x)
 
         # TorchLayer hands the whole batch to the QNode in one call and reshapes
         # the result to (batch, n_qubits).  Whether the batch is executed as one

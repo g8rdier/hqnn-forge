@@ -411,6 +411,25 @@ class DataReuploadingLayer(nn.Module):
                 self.qlayer.input_scaling.fill_(1.0)
 
     # ------------------------------------------------------------------
+    def prepare_inputs(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Check that ``x`` has ``n_qubits`` features; the angles are used as given.
+
+        The optional ``input_scaling`` is a circuit parameter, applied inside
+        the QNode, not here.
+
+        This is the classical step ``forward`` applies before the QNode.  Every
+        encoding layer has one, so tools which replay the circuit
+        (:mod:`hqnn_forge.kernels`) validate and transform inputs exactly as
+        ``forward`` does.
+        """
+        if x.shape[-1] != self.n_qubits:
+            raise ValueError(
+                f"Input feature dimension {x.shape[-1]} does not match n_qubits={self.n_qubits}."
+            )
+        return x
+
+    # ------------------------------------------------------------------
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Embed a batch of feature vectors, re-uploading before every layer.
@@ -431,12 +450,8 @@ class DataReuploadingLayer(nn.Module):
         ValueError
             If the last dimension of ``x`` is not ``n_qubits``.
         """
-        if x.shape[-1] != self.n_qubits:
-            raise ValueError(
-                f"Input feature dimension {x.shape[-1]} does not match n_qubits={self.n_qubits}."
-            )
         # Whole batch in one call; see QuantumEncodingLayer.forward.
-        return self.qlayer(x)
+        return self.qlayer(self.prepare_inputs(x))
 
     # ------------------------------------------------------------------
     def extra_repr(self) -> str:

@@ -31,10 +31,11 @@ et al. 2022), and the matrix is that of the layer as currently parametrised.
 
 Scaling: O(M²) against the VQC
 ------------------------------
-A kernel matrix over ``M`` training points has ``M(M+1)/2`` distinct entries.
-On hardware that is ``O(M²)`` circuit evaluations, each an overlap estimate
-with shot noise, before the SVM even starts, and every prediction costs
-``M`` more overlaps against the training set.  A VQC needs ``O(M)`` circuit
+A kernel matrix over ``M`` training points has ``M(M+1)/2`` distinct entries,
+of which the ``M`` diagonal ones are 1 by construction.  On hardware the
+other ``M(M-1)/2``, that is ``O(M²)``, are circuit evaluations, each an
+overlap estimate with shot noise, before the SVM even starts, and every
+prediction costs ``M`` more overlaps against the training set.  A VQC needs ``O(M)`` circuit
 evaluations per epoch and one per prediction.  On a state-vector simulator
 the picture is friendlier: ``M`` state vectors of size ``2^n`` and one
 ``M × M`` Gram product, which is what this module does.  Either way the
@@ -54,44 +55,78 @@ References
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pennylane as qml
 import torch
-import torch.nn as nn
+from torch import nn
 
-__all__ = ["encoded_states", "quantum_kernel_matrix"]
+__all__ = ["encoded_states", "kernel_from_states", "quantum_kernel_matrix"]
 
 
-def _resolve_layer(layer: nn.Module) -> tuple[qml.qnn.TorchLayer, int]:
-    """``(qlayer, n_qubits)`` of an encoding layer, or raise ``TypeError``."""
+PrepareInputs = Callable[[torch.Tensor], torch.Tensor]
+
+
+def _resolve_layer(layer: nn.Module) -> tuple[qml.qnn.TorchLayer, int, PrepareInputs]:
+    """``(qlayer, n_qubits, prepare_inputs)`` of an encoding layer, or raise ``TypeError``."""
     qlayer = getattr(layer, "qlayer", None)
     n_qubits = getattr(layer, "n_qubits", None)
-    if not isinstance(qlayer, qml.qnn.TorchLayer) or not isinstance(n_qubits, int):
+    prepare = getattr(layer, "prepare_inputs", None)
+    if (
+        not isinstance(qlayer, qml.qnn.TorchLayer)
+        or not isinstance(n_qubits, int)
+        or not callable(prepare)
+    ):
         raise TypeError(
-            f"quantum_kernel_matrix expects an encoding layer with a qlayer TorchLayer "
-            f"and an integer n_qubits (QuantumEncodingLayer, IQPEncodingLayer, "
-            f"AmplitudeEncodingLayer, DataReuploadingLayer); got {type(layer).__name__}."
+            f"quantum_kernel_matrix expects an encoding layer with a qlayer TorchLayer, "
+            f"an integer n_qubits and a prepare_inputs method (QuantumEncodingLayer, "
+            f"IQPEncodingLayer, AmplitudeEncodingLayer, DataReuploadingLayer); "
+            f"got {type(layer).__name__}."
         )
-    return qlayer, n_qubits
+    return qlayer, n_qubits, prepare
 
 
-def _check_inputs(X: torch.Tensor, name: str) -> torch.Tensor:
+def _prepare(X: torch.Tensor, prepare: PrepareInputs, name: str) -> torch.Tensor:
+    """Check ``X`` is a non-empty 2-D tensor and apply the layer's ``prepare_inputs``."""
     if not isinstance(X, torch.Tensor):
         raise TypeError(f"{name} must be a torch.Tensor; got {type(X).__name__}.")
     if X.ndim != 2:
         raise ValueError(f"{name} must have shape (n_samples, n_features); got {tuple(X.shape)}.")
     if X.shape[0] == 0:
         raise ValueError(f"{name} has no samples.")
-    return X.detach().to(torch.float64)
+    # The same validation and transform forward applies (width check, the
+    # amplitude encoder's padding and normalisation).
+    return prepare(X.detach().to(torch.float64))
+
+
+def _simulate(prepared: torch.Tensor, qlayer: qml.qnn.TorchLayer, n_qubits: int) -> torch.Tensor:
+    """State vectors for inputs that have already been through ``_prepare``."""
+    # One tape for the whole batch from the layer's own QNode (level=0: the
+    # circuit as written, before any batching or gradient transform), with the
+    # measurements swapped for the state and run on a state-vector device,
+    # which executes the broadcast tape as one vectorised pass.  The layer's
+    # weights are used as they are, detached.
+    weights = {name: p.detach().to(torch.float64) for name, p in qlayer.qnode_weights.items()}
+    tape = qml.workflow.construct_tape(qlayer.qnode, level=0)(prepared, **weights)
+    tape = tape.copy(measurements=[qml.state()])
+    device = qml.device("default.qubit", wires=n_qubits)
+    (result,) = qml.execute([tape], device, diff_method=None)
+    states = torch.as_tensor(result).to(torch.complex128)
+    return states.reshape(prepared.shape[0], 2**n_qubits)
 
 
 def encoded_states(X: torch.Tensor, layer: nn.Module) -> torch.Tensor:
     """
     State vectors ``|Φ(x_i)⟩`` the layer prepares for each row of ``X``.
 
-    The layer's circuit is replayed on ``default.qubit`` with its measurements
-    replaced by ``qml.state()``.  Any input preparation the layer performs in
-    ``forward`` before its QNode (the amplitude encoder's padding and
-    normalisation, exposed as ``prepare_inputs``) is applied first.
+    ``X`` first goes through the layer's ``prepare_inputs``, the validation and
+    classical transform ``forward`` applies before its QNode (a width check,
+    and for the amplitude encoder padding and normalisation).  The layer's
+    circuit is then replayed on ``default.qubit`` for the whole batch at once,
+    with its measurements replaced by ``qml.state()``.
+
+    Compute the states once and pass them to :func:`kernel_from_states` to
+    reuse them, for example the training states at every prediction.
 
     Parameters
     ----------
@@ -105,24 +140,62 @@ def encoded_states(X: torch.Tensor, layer: nn.Module) -> torch.Tensor:
     torch.Tensor
         Complex tensor of shape ``(n_samples, 2**n_qubits)``, one normalised
         state per row, ``complex128``.
-    """
-    qlayer, n_qubits = _resolve_layer(layer)
-    X = _check_inputs(X, "X")
-    prepare = getattr(layer, "prepare_inputs", None)
-    if callable(prepare):
-        X = prepare(X)
 
-    # Build one tape per sample from the layer's own QNode (level=0: the
-    # circuit as written, before any batching or gradient transform), swap
-    # the measurements for the state, and run them all on a state-vector
-    # device.  The layer's weights are used as they are, detached.
-    weights = {name: p.detach().to(torch.float64) for name, p in qlayer.qnode_weights.items()}
-    build = qml.workflow.construct_tape(qlayer.qnode, level=0)
-    tapes = [build(X[i], **weights).copy(measurements=[qml.state()]) for i in range(X.shape[0])]
-    device = qml.device("default.qubit", wires=n_qubits)
-    results = qml.execute(tapes, device, diff_method=None)
-    states = torch.stack([torch.as_tensor(r) for r in results]).to(torch.complex128)
-    return states.reshape(X.shape[0], 2**n_qubits)
+    Raises
+    ------
+    TypeError
+        If ``layer`` is not an encoding layer or ``X`` is not a tensor.
+    ValueError
+        If ``X`` is not a non-empty 2-D tensor, or ``prepare_inputs`` rejects
+        it (wrong number of features, an all-zero amplitude vector).
+    """
+    qlayer, n_qubits, prepare = _resolve_layer(layer)
+    return _simulate(_prepare(X, prepare, "X"), qlayer, n_qubits)
+
+
+def kernel_from_states(
+    states_x: torch.Tensor,
+    states_y: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """
+    Fidelity kernel ``K[i, j] = |⟨ψ_i|φ_j⟩|²`` from precomputed state vectors.
+
+    Parameters
+    ----------
+    states_x:
+        States of shape ``(n_x, dim)``, as returned by :func:`encoded_states`.
+    states_y:
+        Optional second set of states, shape ``(n_y, dim)``.  ``None``
+        (default) gives the square Gram matrix of ``states_x`` with itself,
+        made exactly symmetric.
+
+    Returns
+    -------
+    torch.Tensor
+        ``float64`` tensor of shape ``(n_x, n_y)`` (or ``(n_x, n_x)``).
+
+    Examples
+    --------
+    >>> S_train = encoded_states(X_train, layer)
+    >>> svm = SVC(kernel="precomputed").fit(kernel_from_states(S_train).numpy(), y_train)
+    >>> K_test = kernel_from_states(encoded_states(X_test, layer), S_train)
+    >>> y_pred = svm.predict(K_test.numpy())
+    """
+    symmetric = states_y is None
+    if states_y is None:
+        states_y = states_x
+    if states_x.ndim != 2 or states_y.ndim != 2 or states_x.shape[1] != states_y.shape[1]:
+        raise ValueError(
+            f"states_x and states_y must be 2-D with the same state dimension; got "
+            f"{tuple(states_x.shape)} and {tuple(states_y.shape)}."
+        )
+    kernel = (states_x @ states_y.conj().T).abs().pow(2).to(torch.float64)
+    if symmetric:
+        # Exact symmetry, not just up to rounding.  Nothing is clamped: the
+        # diagonal is left as computed, so a state that is not normalised
+        # shows up as K[i, i] != 1.
+        kernel = 0.5 * (kernel + kernel.T)
+    return kernel
 
 
 def quantum_kernel_matrix(
@@ -144,15 +217,23 @@ def quantum_kernel_matrix(
         Optional second set of inputs, shape ``(n_samples_y, n_features)``.
         ``None`` (default) computes the square Gram matrix of ``X`` with
         itself.  Pass the training inputs here to build the rectangular
-        matrix an SVM needs at prediction time.
+        matrix an SVM needs at prediction time; to avoid simulating the
+        training set again on every call, keep its :func:`encoded_states`
+        and use :func:`kernel_from_states` instead.
 
     Returns
     -------
     torch.Tensor
         ``float64`` tensor of shape ``(n_samples_x, n_samples_y)`` (or
-        ``(n_samples_x, n_samples_x)``), entries in ``[0, 1]``.  The square
-        matrix is symmetric, positive semi-definite, and has ones on the
-        diagonal.
+        ``(n_samples_x, n_samples_x)``), entries in ``[0, 1]`` up to rounding
+        of order 1e-15.  The square matrix is symmetric, positive
+        semi-definite, and has ones on the diagonal.
+
+    Raises
+    ------
+    TypeError, ValueError
+        As :func:`encoded_states`, for ``X`` and ``Y``.  Both are validated
+        before anything is simulated.
 
     Examples
     --------
@@ -167,27 +248,17 @@ def quantum_kernel_matrix(
 
     Notes
     -----
-    The square case costs ``n_samples`` circuit replays and one
-    ``(n, 2^q) × (2^q, n)`` product, so it is O(n · 2^q) in memory and
-    O(n² · 2^q) in time.  ``|G|²`` with ``G = S S†`` is the Schur product of a
-    positive semi-definite matrix with its conjugate, hence positive
-    semi-definite itself; small negative eigenvalues of order 1e-15 are
-    rounding.
+    Each input set is one batched circuit replay, and the kernel one
+    ``(n, 2^q) × (2^q, n)`` product, so the square case is O(n · 2^q) in
+    memory and O(n² · 2^q) in time.  ``|G|²`` with ``G = S S†`` is the Schur
+    product of a positive semi-definite matrix with its conjugate, hence
+    positive semi-definite itself; small negative eigenvalues of order 1e-15
+    are rounding.
     """
-    states_x = encoded_states(X, layer)
-    if Y is None:
-        gram = states_x @ states_x.conj().T
-    else:
-        Y = _check_inputs(Y, "Y")
-        if Y.shape[1] != X.shape[1]:
-            raise ValueError(
-                f"X and Y must have the same number of features; got {X.shape[1]} and {Y.shape[1]}."
-            )
-        states_y = encoded_states(Y, layer)
-        gram = states_x @ states_y.conj().T
-    kernel = gram.abs() ** 2
-    if Y is None:
-        # Exact symmetry, not just up to rounding; the diagonal is left as
-        # computed so a state that is not normalised shows up as K[i, i] != 1.
-        kernel = 0.5 * (kernel + kernel.T)
-    return kernel.clamp_(0.0, 1.0)
+    qlayer, n_qubits, prepare = _resolve_layer(layer)
+    # Validate both input sets before simulating either.
+    prepared_x = _prepare(X, prepare, "X")
+    prepared_y = None if Y is None else _prepare(Y, prepare, "Y")
+    states_x = _simulate(prepared_x, qlayer, n_qubits)
+    states_y = None if prepared_y is None else _simulate(prepared_y, qlayer, n_qubits)
+    return kernel_from_states(states_x, states_y)
