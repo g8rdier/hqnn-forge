@@ -18,11 +18,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - HybridBinaryClassifier end-to-end model
 - Smoke tests for quantum encoding layer
 - Quick-start example for training
+- `entangler` (`"ring"` / `"strongly_entangling"`) and `readout` (`"all"` / `"first"`) on the
+  encoding layers; `embedding_rotation`, `entangler`, `readout`, `encoder_activation` and
+  `init_strategy="normal"` with `init_std` on the classifiers, and `published_shnn()` on both
+  `HybridBinaryClassifier` (the thesis's 122-parameter SHNN configuration) and
+  `ParallelHybridClassifier` (that quantum branch beside the classical MLP branch)
 
 ### Changed
+- `load_checkpoint` fills constructor arguments a checkpoint predates from
+  `checkpoint._LEGACY_DEFAULTS` — the behaviour from before each argument existed — with a
+  `RuntimeWarning` naming them, instead of refusing the file. A checkpoint written before the
+  options added above still rebuilds the model it holds; a config missing anything else is
+  still refused
 - Raised the `pennylane` and `pennylane-lightning` floors from `>=0.38` to `>=0.45`, the lowest
   version CI runs; 0.38 is incompatible with `autoray>=0.7`, and 0.42 was only tested on
   Python 3.10
+
+### Fixed
+- `disable_quantum_layer` fills the quantum layer's readout width (`n_outputs`) rather than
+  `n_qubits`, so an ablated model built with `readout="first"` matches its `Linear(1 → 1)` head
+  instead of raising a shape error where the real model works
+- `QuantumEncodingLayer` and `build_encoding_qnode` reject an unknown `rotation` axis at
+  construction, where `entangler` and `readout` are already rejected; it used to construct
+  cleanly and fail inside PennyLane on the first forward pass
 
 ### Removed
 - `requirements.txt`; `pyproject.toml` is now the only place dependencies are declared

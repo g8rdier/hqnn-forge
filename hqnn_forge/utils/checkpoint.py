@@ -22,6 +22,12 @@ A ``torch.save`` file containing a plain dict::
         "state_dict": {...},
     }
 
+``format_version`` describes that layout only, not the constructors: a config
+that predates an argument the constructors have since gained is filled from
+``_LEGACY_DEFAULTS`` -- the behaviour from before that argument existed -- and
+loads with a ``RuntimeWarning`` naming what was filled.  A config missing
+anything else is still refused.
+
 Only primitives and tensors are stored, so the file loads with
 ``torch.load(weights_only=True)``: loading a checkpoint never executes code
 from it, and only classes in ``hqnn_forge.models`` can be rebuilt.
@@ -31,6 +37,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import warnings
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -52,6 +59,22 @@ FORMAT_VERSION: int = 1
 #: describes the circuit the weights were trained in, so overriding it needs
 #: ``allow_architecture_override=True``.
 WEIGHT_SAFE_ARGS: frozenset[str] = frozenset({"device_name", "diff_method", "dropout_p"})
+
+#: Constructor arguments the classifiers have gained since checkpoints were
+#: first written, mapped to the behaviour that predates each one.  A config
+#: missing one of these is a checkpoint older than the argument, and
+#: ``load_checkpoint`` fills it from here -- with a warning, never silently.
+#: The values are written out rather than read from the signature on purpose:
+#: they must stay the *old* behaviour even if the constructor default changes,
+#: and every addition to this table is then a deliberate line in a diff.  A
+#: config missing anything else is a broken checkpoint and still raises.
+_LEGACY_DEFAULTS: dict[str, Any] = {
+    "embedding_rotation": "X",   # added with the published-SHNN options; before
+    "entangler": "ring",         # them the circuit was RX + CNOT ring + Rot,
+    "readout": "all",            # read out on every qubit, with a tanh encoder
+    "encoder_activation": "tanh",
+    "init_std": 0.1,             # inert unless init_strategy="normal"
+}
 
 #: Set by ``load_checkpoint`` on a model it rebuilt under a forced
 #: architecture override, and refused by ``save_checkpoint``.  Without it, one
@@ -172,8 +195,17 @@ def load_checkpoint(
         If the file is not a checkpoint or is incomplete, on an unknown format
         version, a library version mismatch (unless allowed), an unknown class,
         an override outside :data:`WEIGHT_SAFE_ARGS` without
-        ``allow_architecture_override``, or a config with missing or unexpected
-        constructor fields.
+        ``allow_architecture_override``, or a config with unexpected fields or
+        with missing ones outside :data:`_LEGACY_DEFAULTS`.
+
+    Warns
+    -----
+    RuntimeWarning
+        If the stored config is missing constructor arguments added after it
+        was written.  They are filled from :data:`_LEGACY_DEFAULTS`, the
+        behaviour from before each argument existed, and named in the warning,
+        so a checkpoint from before an option was introduced still rebuilds the
+        model it holds.
     RuntimeError
         If the stored weights do not fit the rebuilt architecture.
     """
@@ -244,6 +276,28 @@ def load_checkpoint(
 
     missing = sorted(expected - set(config))
     unexpected = sorted(set(config) - expected)
+
+    # A checkpoint written before the constructor gained an argument does not
+    # carry it.  Filling it from _LEGACY_DEFAULTS rebuilds the model that was
+    # saved, since those values are what the circuit did before the argument
+    # existed -- but loudly, so a reload of an old checkpoint is never a silent
+    # change of architecture.  Anything missing that is not in the table is a
+    # broken config and still raises below.
+    back_filled = {
+        name: _LEGACY_DEFAULTS[name] for name in missing if name in _LEGACY_DEFAULTS
+    }
+    if back_filled:
+        config.update(back_filled)
+        missing = [name for name in missing if name not in back_filled]
+        warnings.warn(
+            f"checkpoint predates {sorted(back_filled)} on {class_name}; "
+            f"rebuilding it with {back_filled}, the behaviour from before those "
+            f"arguments existed, so it is the model that was saved.  Re-save it "
+            f"to pin them in the config.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
     if missing or unexpected:
         details = []
         if missing:
@@ -275,12 +329,16 @@ def _init_parameter_names(cls: type) -> set[str]:
     """
     Keyword names of ``cls.__init__``.
 
-    A checkpoint must carry every one of them, not only those without a
-    default: get_config records them all, and a default that changed between
-    versions would otherwise silently change the rebuilt model.
+    A checkpoint is expected to carry every one of them, not only those
+    without a default: get_config records them all, and a default that changed
+    between versions would otherwise silently change the rebuilt model.  A
+    checkpoint older than an argument is the one exception, and
+    :func:`load_checkpoint` fills those from :data:`_LEGACY_DEFAULTS` with a
+    warning rather than in silence.
     """
     return {
         name
         for name, p in inspect.signature(cls).parameters.items()
         if p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)
     }
+

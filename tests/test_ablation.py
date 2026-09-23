@@ -123,6 +123,15 @@ class TestExactReplacement:
             assert layer is model.quantum_layer
             torch.testing.assert_close(layer(torch.randn(2, N_QUBITS)), torch.zeros(2, N_QUBITS))
 
+    def test_readout_first_is_filled_to_the_readout_width(self, x: torch.Tensor) -> None:
+        # With readout="first" the layer emits one number, not n_qubits of them,
+        # and the head is built for that width: filling n_qubits wide would make
+        # the ablated forward fail where the real one works.
+        model = _model(HybridBinaryClassifier, entangler="strongly_entangling", readout="first")
+        with torch.no_grad(), disable_quantum_layer(model, fill=0.25) as layer:
+            assert layer(torch.randn(5, N_QUBITS)).shape == (5, 1)
+            torch.testing.assert_close(model(x), model.head(torch.full((5, 1), 0.25)))
+
     def test_training_inside_updates_only_live_parameters(self, x: torch.Tensor) -> None:
         model = _model(ParallelHybridClassifier)
         quantum_before = model.quantum_layer.qlayer.weights.detach().clone()

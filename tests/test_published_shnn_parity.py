@@ -15,18 +15,20 @@ validates the rebuild.
 
 Checked structurally (fast, no training):
 
-* the parts of the library's ``HybridBinaryClassifier(8, 8, 2)`` that match
-  the published model -- qubits, layers, quantum parameter count, gate budget;
-* the parts that do not, pinned explicitly (total parameters, embedding axis,
-  entangler order and range, readout width, depth), so that closing the gap
-  (#131) or drifting further both show up here.
+* ``HybridBinaryClassifier.published_shnn()`` (#131) is the published model:
+  122 parameters, identical circuit resources and CNOT pairs, and identical
+  logits once the weights are copied across;
+* the library's *default* ``HybridBinaryClassifier(8, 8, 2)`` shares qubits,
+  layers, quantum parameter count and gate budget with it, and the defaults
+  that differ (head width, embedding axis, entangler order and range, depth,
+  encoder range) are pinned so a change to them shows up here.
 
 Not checked, and why: the published MCC (0.5758 ± 0.0371) and MCC/kParam
 (4.720) come from 5-fold CV on the 284,807-row Kaggle dataset with SMOTE and
 100 epochs; reproducing them needs the dataset (not redistributable) and hours
-of simulation, so they are out of scope for the test suite.  And since the
-library's model differs from the published one (above), a numerical match
-would not be expected until #131 is resolved.
+of simulation, so they are out of scope for the test suite.  With the
+structure now identical, a full run of ``published_shnn()`` on that data is
+the remaining check of the reported numbers.
 """
 
 from __future__ import annotations
@@ -131,6 +133,14 @@ def published() -> tuple[nn.Module, CircuitSummary, qml.tape.QuantumScript]:
 
 
 @pytest.fixture(scope="module")
+def configured() -> tuple[HybridBinaryClassifier, CircuitSummary]:
+    model = HybridBinaryClassifier.published_shnn(
+        device_name="default.qubit", diff_method="backprop"
+    )
+    return model, circuit_summary(model)
+
+
+@pytest.fixture(scope="module")
 def ours() -> tuple[HybridBinaryClassifier, CircuitSummary, qml.tape.QuantumScript]:
     torch.manual_seed(0)  # the encoder's random init feeds test_encoder_output_range
     model = _ours()
@@ -147,7 +157,78 @@ class TestReferenceRebuild:
         assert sum(p.numel() for p in model["vqc"].parameters()) == PUBLISHED_QUANTUM_PARAMS
 
 
-class TestWhatMatches:
+class TestPublishedConfigurationParity:
+    """
+    ``HybridBinaryClassifier.published_shnn()`` must *be* the published model:
+    same parameter count, same circuit resources, same CNOT pairs, and the
+    same logits when the weights are copied across.
+    """
+
+    def test_parameter_counts(self, configured: tuple) -> None:
+        model, summary = configured
+        assert model.count_parameters() == PUBLISHED_PARAMS
+        assert summary.n_trainable_params == PUBLISHED_QUANTUM_PARAMS
+        assert sum(p.numel() for p in model.classical_encoder.parameters()) == 8 * 8 + 8
+        assert sum(p.numel() for p in model.head.parameters()) == 2
+
+    def test_circuit_resources_are_identical(self, published: tuple, configured: tuple) -> None:
+        _, ref, _ = published
+        _, summary = configured
+        assert summary.n_qubits == ref.n_qubits
+        assert summary.depth == ref.depth == 15
+        assert summary.n_gates == ref.n_gates == 40
+        assert summary.n_two_qubit_gates == ref.n_two_qubit_gates == 16
+        assert dict(summary.gate_counts) == dict(ref.gate_counts)
+        assert summary.gate_counts["RY"] == 8 and "RX" not in summary.gate_counts
+
+    def test_cnot_pairs_and_gate_order_are_identical(
+        self, published: tuple, configured: tuple
+    ) -> None:
+        _, _, ref_tape = published
+        model, _ = configured
+        our_tape = _our_tape(model)
+        assert _cnot_pairs(our_tape) == _cnot_pairs(ref_tape)
+        assert _first_entangler_gate(our_tape) == _first_entangler_gate(ref_tape) == "Rot"
+
+    def test_same_logits_with_the_same_weights(self, published: tuple, configured: tuple) -> None:
+        """
+        End-to-end numerical parity: copy the encoder, quantum and head
+        weights from the rebuilt published model and compare logits.
+        """
+        reference, _, _ = published
+        model, _ = configured
+        with torch.no_grad():
+            model.classical_encoder[0].weight.copy_(reference["pre"][0].weight)
+            model.classical_encoder[0].bias.copy_(reference["pre"][0].bias)
+            model.quantum_layer.qlayer.weights.copy_(reference["vqc"].weights)
+            model.head.weight.copy_(reference["post"].weight)
+            model.head.bias.copy_(reference["post"].bias)
+        torch.manual_seed(0)
+        x = torch.randn(6, N_QUBITS)
+        with torch.no_grad():
+            ours = model(x).squeeze(-1)
+            angles = reference["pre"](x)
+            theirs = reference["post"](reference["vqc"](angles).reshape(-1, 1)).squeeze(-1)
+        torch.testing.assert_close(ours, theirs, rtol=1e-6, atol=1e-6)
+
+    def test_quantum_init_is_normal_with_std_0_1(self) -> None:
+        torch.manual_seed(0)
+        model = HybridBinaryClassifier.published_shnn(
+            device_name="default.qubit", diff_method="backprop"
+        )
+        weights = model.quantum_layer.qlayer.weights.detach()
+        assert weights.std().item() == pytest.approx(0.1, rel=0.3)  # 48 draws
+        assert abs(weights.mean().item()) < 0.1
+
+
+class TestDefaultConfigurationIsAVariant:
+    """
+    The library's default ``HybridBinaryClassifier(8, 8, 2)`` shares the
+    qubit count, layer count, quantum parameter count and gate budget with
+    the published SHNN but is not that model.  Each assertion documents one
+    default that differs, so a change to the defaults shows up here.
+    """
+
     def test_qubits_layers_and_quantum_parameters(self, published: tuple, ours: tuple) -> None:
         _, ref, _ = published
         model, summary, _ = ours
@@ -167,18 +248,11 @@ class TestWhatMatches:
         model, _, _ = ours
         assert sum(p.numel() for p in model.classical_encoder.parameters()) == 8 * 8 + 8
 
-
-class TestKnownDifferences:
-    """Each assertion documents one gap tracked in #131."""
-
     def test_total_parameters_differ_by_the_head(self, ours: tuple) -> None:
         model, _, _ = ours
-        # Published head: Linear(1→1) = 2.  Ours: Linear(8→1) = 9.
+        # Published head: Linear(1→1) = 2.  Default: Linear(8→1) = 9.
         assert model.count_parameters() == PUBLISHED_PARAMS - 2 + 9 == 129
-
-    def test_readout_width(self, ours: tuple) -> None:
-        model, _, _ = ours
-        assert model.head.in_features == N_QUBITS  # published reads out ⟨Z_0⟩ only
+        assert model.head.in_features == N_QUBITS  # readout="all"
 
     def test_embedding_axis(self, published: tuple, ours: tuple) -> None:
         _, ref, _ = published
