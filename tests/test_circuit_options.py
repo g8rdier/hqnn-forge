@@ -139,6 +139,14 @@ class TestReadout:
         with pytest.raises(ValueError, match="readout"):
             QuantumEncodingLayer(n_qubits=N_QUBITS, n_layers=1, readout="last", **CPU)
 
+    def test_unknown_rotation_raises_at_construction(self) -> None:
+        # qml.AngleEmbedding only rejects the axis when the circuit first runs,
+        # a forward pass away from the constructor that was handed it.
+        with pytest.raises(ValueError, match="rotation"):
+            QuantumEncodingLayer(n_qubits=N_QUBITS, n_layers=1, rotation="W", **CPU)  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="rotation"):
+            build_encoding_qnode(n_qubits=N_QUBITS, n_layers=1, rotation="W", **CPU)  # type: ignore[arg-type]
+
     def test_measure_z_returns_one_expectation_per_wire(self) -> None:
         with qml.queuing.AnnotatedQueue() as q:
             measurements = measure_z(3, "all")
@@ -269,6 +277,40 @@ class TestClassifierOptions:
             _classifier(cls, encoder_activation="relu")
         with pytest.raises(ValueError, match="init_strategy"):
             _classifier(cls, init_strategy="xavier")
+        with pytest.raises(ValueError, match="embedding_rotation|rotation"):
+            _classifier(cls, embedding_rotation="W")
+        with pytest.raises(ValueError, match="init_std"):
+            _classifier(cls, init_std=0.0)
+
+    @pytest.mark.parametrize("cls", CLASSIFIERS)
+    def test_an_option_that_would_be_ignored_raises_instead(self, cls: type) -> None:
+        """
+        Both options below are inert outside the configuration that uses them.
+        Accepting one there would record it in get_config() and in a checkpoint,
+        so the config would describe a model the library never built.
+        """
+        with pytest.raises(ValueError, match="encoder_activation"):
+            cls(
+                n_input_features=N_QUBITS,
+                n_qubits=N_QUBITS,
+                n_layers=1,
+                use_classical_encoder=False,
+                encoder_activation="sigmoid",
+                **CPU,
+            )
+        with pytest.raises(ValueError, match="init_std"):
+            _classifier(cls, init_strategy="restricted", init_std=0.05)
+
+        # The defaults stay accepted in both places: they say nothing.
+        no_encoder = cls(
+            n_input_features=N_QUBITS,
+            n_qubits=N_QUBITS,
+            n_layers=1,
+            use_classical_encoder=False,
+            **CPU,
+        )
+        assert isinstance(no_encoder.classical_encoder, nn.Identity)
+        assert _classifier(cls, init_strategy="normal", init_std=0.05).init_std == 0.05
 
 
 class TestPublishedPreset:

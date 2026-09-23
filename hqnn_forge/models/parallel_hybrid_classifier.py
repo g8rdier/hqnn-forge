@@ -102,7 +102,11 @@ from hqnn_forge.initializers.restricted_variance import (
     block_local_init_,
 )
 from hqnn_forge.models.base import BinaryClassifierBase
-from hqnn_forge.models.hybrid_classifier import _PUBLISHED_SHNN
+from hqnn_forge.models.hybrid_classifier import (
+    _DEFAULT_ENCODER_ACTIVATION,
+    _DEFAULT_INIT_STD,
+    _PUBLISHED_SHNN,
+)
 
 
 class ParallelHybridClassifier(BinaryClassifierBase):
@@ -155,9 +159,12 @@ class ParallelHybridClassifier(BinaryClassifierBase):
         only, so the head is ``Linear(1 → 1)``.
     encoder_activation:
         ``"tanh"`` (default): encoder output ``tanh(·)·π`` in (-π, π).
-        ``"sigmoid"``: ``π·sigmoid(·)`` in (0, π).
+        ``"sigmoid"``: ``π·sigmoid(·)`` in (0, π).  Requires
+        ``use_classical_encoder=True``; there is no activation without an
+        encoder, so a non-default value raises rather than being ignored.
     init_std:
         Standard deviation for ``init_strategy="normal"``.  Default: 0.1.
+        Raises under the other strategies, which derive their own sigma.
 
     The published SHNN (thesis / ``hqnn-fraud-detection-benchmark``) is
     ``embedding_rotation="Y"``, ``entangler="strongly_entangling"``,
@@ -229,6 +236,14 @@ class ParallelHybridClassifier(BinaryClassifierBase):
                 f"init_strategy must be 'restricted', 'block_local' or 'normal'; "
                 f"got {init_strategy!r}."
             )
+        if init_std <= 0.0:
+            raise ValueError(f"init_std must be > 0; got {init_std}.")
+        if init_strategy != "normal" and init_std != _DEFAULT_INIT_STD:
+            raise ValueError(
+                f"init_std applies to init_strategy='normal' only; "
+                f"'{init_strategy}' derives its own sigma from the circuit size, so "
+                f"init_std={init_std} would be recorded in the config and ignored."
+            )
 
         self.n_input_features     = n_input_features
         self.n_qubits             = n_qubits
@@ -258,6 +273,12 @@ class ParallelHybridClassifier(BinaryClassifierBase):
                 raise ValueError(
                     f"When use_classical_encoder=False, n_input_features "
                     f"({n_input_features}) must equal n_qubits ({n_qubits})."
+                )
+            if encoder_activation != _DEFAULT_ENCODER_ACTIVATION:
+                raise ValueError(
+                    f"encoder_activation applies with use_classical_encoder=True only; "
+                    f"without the encoder the features enter the circuit as given, so "
+                    f"{encoder_activation!r} would be recorded in the config and ignored."
                 )
             self.classical_encoder = nn.Identity()
 

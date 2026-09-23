@@ -222,6 +222,11 @@ def _make_angle_embedding_circuit(
     readout_wires(n_qubits, readout)  # validate early
     if entangler not in ("ring", "strongly_entangling"):
         raise ValueError(f"entangler must be 'ring' or 'strongly_entangling'; got {entangler!r}.")
+    if rotation not in ("X", "Y", "Z"):
+        # Eagerly, like the two above: qml.AngleEmbedding only rejects the axis
+        # when the circuit first runs, which is a forward pass away from the
+        # constructor that was given it -- and past get_config and a checkpoint.
+        raise ValueError(f"rotation must be 'X', 'Y' or 'Z'; got {rotation!r}.")
 
     def circuit(
         inputs: torch.Tensor,
@@ -334,7 +339,9 @@ def build_encoding_qnode(
     Raises
     ------
     ValueError
-        If ``n_qubits < 2`` (minimum for a meaningful entangling ring).
+        If ``n_qubits < 2`` (minimum for a meaningful entangling ring), or if
+        ``rotation``, ``entangler`` or ``readout`` is not one of the values
+        above -- all checked here, before the circuit first runs.
 
     Examples
     --------
