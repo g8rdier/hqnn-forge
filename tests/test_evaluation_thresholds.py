@@ -63,14 +63,24 @@ class TestMetrics:
         for _ in range(20):
             y_true = rng.integers(0, 2, 50)
             y_pred = rng.integers(0, 2, 50)
-            assert matthews_corrcoef(y_true, y_pred) == pytest.approx(sk.matthews_corrcoef(y_true, y_pred), abs=1e-12)
-            assert f1_score(y_true, y_pred) == pytest.approx(sk.f1_score(y_true, y_pred, zero_division=0), abs=1e-12)
-            assert balanced_accuracy(y_true, y_pred) == pytest.approx(sk.balanced_accuracy_score(y_true, y_pred), abs=1e-12)
+            assert matthews_corrcoef(y_true, y_pred) == pytest.approx(
+                sk.matthews_corrcoef(y_true, y_pred), abs=1e-12
+            )
+            assert f1_score(y_true, y_pred) == pytest.approx(
+                sk.f1_score(y_true, y_pred, zero_division=0), abs=1e-12
+            )
+            assert balanced_accuracy(y_true, y_pred) == pytest.approx(
+                sk.balanced_accuracy_score(y_true, y_pred), abs=1e-12
+            )
         # The random labellings above always contain both classes; the
         # undefined cases are where the conventions have to be pinned down
         for y_true, y_pred in [([0, 0, 0], [0, 0, 1]), ([0, 1, 1], [1, 1, 1]), ([0, 0], [0, 0])]:
-            assert matthews_corrcoef(y_true, y_pred) == pytest.approx(sk.matthews_corrcoef(y_true, y_pred))
-            assert f1_score(y_true, y_pred) == pytest.approx(sk.f1_score(y_true, y_pred, zero_division=0))
+            assert matthews_corrcoef(y_true, y_pred) == pytest.approx(
+                sk.matthews_corrcoef(y_true, y_pred)
+            )
+            assert f1_score(y_true, y_pred) == pytest.approx(
+                sk.f1_score(y_true, y_pred, zero_division=0)
+            )
 
     def test_balanced_accuracy_departs_from_scikit_learn_on_an_absent_class(self) -> None:
         """A single-class split must not score 1.0, or the search would chase it."""
@@ -107,7 +117,7 @@ class TestFindOptimalThreshold:
         assert find_optimal_threshold(Y, P) == find_optimal_threshold(Y, P, metric="mcc")
 
     def test_accepts_callable_metric(self) -> None:
-        accuracy = lambda t, p: float((torch.as_tensor(t) == torch.as_tensor(p)).float().mean())  # noqa: E731
+        accuracy = lambda t, p: float((torch.as_tensor(t) == torch.as_tensor(p)).float().mean())
         result = find_optimal_threshold(Y, P, metric=accuracy)
         assert result.score == pytest.approx(0.8)
 
@@ -155,7 +165,7 @@ class TestFindOptimalThreshold:
         # Predicting nothing positive is the best accuracy when positives are rare noise
         y = torch.tensor([0, 0, 0, 0, 0, 0, 0, 0, 0, 1])
         p = torch.tensor([0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05])
-        accuracy = lambda t, pr: float((torch.as_tensor(t) == torch.as_tensor(pr)).float().mean())  # noqa: E731
+        accuracy = lambda t, pr: float((torch.as_tensor(t) == torch.as_tensor(pr)).float().mean())
         result = find_optimal_threshold(y, p, metric=accuracy)
         assert result.threshold > p.max().item() and result.score == pytest.approx(0.9)
 
@@ -175,7 +185,6 @@ class TestFindOptimalThreshold:
     def test_numpy_inputs(self) -> None:
         result = find_optimal_threshold(Y.numpy(), P.numpy())
         assert result == find_optimal_threshold(Y, P)
-
 
     @pytest.mark.parametrize("metric", sorted(METRICS))
     def test_vectorised_score_matches_the_scalar_metric(self, metric: str) -> None:
@@ -228,8 +237,11 @@ class TestParameterEfficiency:
         from hqnn_forge.models import HybridBinaryClassifier
 
         model = HybridBinaryClassifier(
-            n_input_features=4, n_qubits=4, n_layers=1,
-            device_name="default.qubit", diff_method="parameter-shift",
+            n_input_features=4,
+            n_qubits=4,
+            n_layers=1,
+            device_name="default.qubit",
+            diff_method="parameter-shift",
         )
         expected = 0.5 / (model.count_parameters() / 1000)
         assert parameter_efficiency(model, 0.5) == pytest.approx(expected)

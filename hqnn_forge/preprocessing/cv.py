@@ -40,6 +40,7 @@ FloatArray = npt.NDArray[np.float64]
 # Stratified k-fold
 # ---------------------------------------------------------------------------
 
+
 def stratified_kfold(
     y: npt.ArrayLike,
     n_splits: int = 5,
@@ -119,6 +120,7 @@ def stratified_kfold(
 # SMOTE
 # ---------------------------------------------------------------------------
 
+
 class SmoteResult(NamedTuple):
     """
     Oversampled data.
@@ -186,9 +188,7 @@ def smote(
     if X_arr.ndim != 2:
         raise ValueError(f"X must be 2-D; got shape {X_arr.shape}.")
     if labels.shape != (X_arr.shape[0],):
-        raise ValueError(
-            f"y must have shape ({X_arr.shape[0]},) to match X; got {labels.shape}."
-        )
+        raise ValueError(f"y must have shape ({X_arr.shape[0]},) to match X; got {labels.shape}.")
     if not 0.0 < sampling_ratio <= 1.0:
         raise ValueError(f"sampling_ratio must lie in (0, 1]; got {sampling_ratio}.")
     if k_neighbors < 1:
@@ -233,6 +233,7 @@ def smote(
 # ---------------------------------------------------------------------------
 # Fold-safe composition
 # ---------------------------------------------------------------------------
+
 
 class Fold(NamedTuple):
     """One cross-validation fold with an oversampled training split."""
@@ -366,8 +367,15 @@ def iter_folds(
         )
     ):
         if not oversample:
-            yield Fold(X_arr[tr].copy(), labels[tr].copy(), X_arr[va].copy(), labels[va].copy(),
-                       tr, va, np.empty((0, 2), dtype=np.intp))
+            yield Fold(
+                X_arr[tr].copy(),
+                labels[tr].copy(),
+                X_arr[va].copy(),
+                labels[va].copy(),
+                tr,
+                va,
+                np.empty((0, 2), dtype=np.intp),
+            )
             continue
         try:
             fold = oversample_fold(

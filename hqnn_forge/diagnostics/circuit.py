@@ -109,6 +109,7 @@ class CircuitSummary:
 # Resolving what to inspect
 # ---------------------------------------------------------------------------
 
+
 def _resolve_layer(target: nn.Module) -> tuple[nn.Module, qml.qnn.TorchLayer, int]:
     """
     Return ``(layer, qlayer, n_qubits)`` for the encoding layer inside *target*.
@@ -150,6 +151,7 @@ def _logical_tape(
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def circuit_summary(target: nn.Module) -> CircuitSummary:
     """
@@ -193,18 +195,14 @@ def circuit_summary(target: nn.Module) -> CircuitSummary:
         ),
         depth=int(resources.depth),
         n_gates=int(resources.num_gates),
-        n_two_qubit_gates=sum(
-            count for size, count in resources.gate_sizes.items() if size >= 2
-        ),
+        n_two_qubit_gates=sum(count for size, count in resources.gate_sizes.items() if size >= 2),
         gate_counts=dict(sorted(resources.gate_types.items())),
         device_name=str(qnode.device.name),
         diff_method=str(qnode.diff_method),
     )
 
 
-def draw_circuit(
-    target: nn.Module, inputs: torch.Tensor | None = None, decimals: int = 2
-) -> str:
+def draw_circuit(target: nn.Module, inputs: torch.Tensor | None = None, decimals: int = 2) -> str:
     """
     Text drawing of the logical circuit for one sample, with the layer's
     current weights.  Suitable for ``print`` or a log line alongside a

@@ -40,14 +40,13 @@ import torch.nn as nn
 Metric = Callable[[torch.Tensor, torch.Tensor], float]
 
 #: A metric expressed on confusion counts, elementwise over a batch of labellings.
-CountMetric = Callable[
-    [torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor
-]
+CountMetric = Callable[[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]
 
 
 # ---------------------------------------------------------------------------
 # Confusion-matrix metrics
 # ---------------------------------------------------------------------------
+
 
 def _as_binary(y: object, name: str) -> torch.Tensor:
     t = torch.as_tensor(y).reshape(-1)
@@ -82,6 +81,7 @@ def _guarded_div(num: torch.Tensor, denom: torch.Tensor) -> torch.Tensor:
 # The count metrics below are written elementwise over tensors of confusion
 # counts, so one call scores a whole sweep of candidate thresholds.  The public
 # scalar metrics are thin wrappers around them, so both paths share a formula.
+
 
 def _mcc_counts(
     tp: torch.Tensor, tn: torch.Tensor, fp: torch.Tensor, fn: torch.Tensor
@@ -158,6 +158,7 @@ _COUNT_METRICS: Mapping[str, CountMetric] = {
 # Threshold search
 # ---------------------------------------------------------------------------
 
+
 class ThresholdSearchResult(NamedTuple):
     """Best threshold found and the metric value it achieves."""
 
@@ -199,9 +200,9 @@ def _sweep(t: torch.Tensor, p: torch.Tensor, dtype: torch.dtype) -> _Sweep:
     starts = torch.cat([torch.zeros(1, dtype=torch.long), counts.cumsum(0)])
     below = torch.cat([torch.zeros(1, dtype=torch.float64), labels.cumsum(0)])[starts]
 
-    fn = below                                          # positives below the threshold
+    fn = below  # positives below the threshold
     tn = starts.to(torch.float64) - below
-    tp = below[-1] - below                              # positives at or above it
+    tp = below[-1] - below  # positives at or above it
     fp = (n - starts).to(torch.float64) - tp
 
     # Each candidate is reported as the midpoint of the interval of thresholds
@@ -332,6 +333,7 @@ def find_optimal_threshold(
 # ---------------------------------------------------------------------------
 # Parameter efficiency
 # ---------------------------------------------------------------------------
+
 
 def parameter_efficiency(model: nn.Module | int, score: float) -> float:
     """

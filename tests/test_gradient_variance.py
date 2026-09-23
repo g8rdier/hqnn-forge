@@ -107,14 +107,26 @@ class TestMechanics:
     def test_result_fields(self) -> None:
         r = gradient_variance(_layer(3, 2), n_samples=5, init="block_local", input_scale=1.0)
         assert isinstance(r, GradientVarianceResult)
-        assert (r.layer_type, r.n_qubits, r.n_layers, r.init, r.n_samples) == ("QuantumEncodingLayer", 3, 2, "block_local", 5)
+        assert (r.layer_type, r.n_qubits, r.n_layers, r.init, r.n_samples) == (
+            "QuantumEncodingLayer",
+            3,
+            2,
+            "block_local",
+            5,
+        )
         assert r.input_scale == 1.0
         assert r.per_parameter.shape == (2, 3, 3)
         assert r.total_variance == pytest.approx(float(r.per_parameter.sum()))
         assert r.mean_variance == pytest.approx(float(r.per_parameter.mean()))
         assert set(r.to_dict()) == {
-            "layer_type", "n_qubits", "n_layers", "init", "input_scale",
-            "n_samples", "total_variance", "mean_variance",
+            "layer_type",
+            "n_qubits",
+            "n_layers",
+            "init",
+            "input_scale",
+            "n_samples",
+            "total_variance",
+            "mean_variance",
         }
 
     def test_matches_a_hand_rolled_estimate(self) -> None:
@@ -165,7 +177,9 @@ class TestMechanics:
     def test_custom_cost(self) -> None:
         layer = _layer(3)
         z0 = gradient_variance(layer, n_samples=5, generator=_gen())
-        z_all = gradient_variance(layer, n_samples=5, generator=_gen(), cost_fn=lambda out: out.sum())
+        z_all = gradient_variance(
+            layer, n_samples=5, generator=_gen(), cost_fn=lambda out: out.sum()
+        )
         assert not torch.allclose(z0.per_parameter, z_all.per_parameter)
 
     def test_accepts_model_and_iqp_layer(self) -> None:
@@ -235,7 +249,16 @@ class TestSweep:
         )
         assert [(r.n_qubits, r.n_layers) for r in results] == [(2, 1), (2, 2), (3, 1), (3, 2)]
         table = format_sweep(results).splitlines()
-        assert table[0].split() == ["init", "qubits", "layers", "total", "var", "mean", "var", "ratio"]
+        assert table[0].split() == [
+            "init",
+            "qubits",
+            "layers",
+            "total",
+            "var",
+            "mean",
+            "var",
+            "ratio",
+        ]
         assert len(table) == 2 + 4
         # First row per (init, layers) has no ratio; the repeat for 3 qubits has one
         assert len(table[2].split()) == 5 and len(table[4].split()) == 6

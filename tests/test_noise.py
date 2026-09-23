@@ -6,6 +6,7 @@ hqnn_forge.noise: post-hoc depolarizing noise and noise sweeps.
 
 from __future__ import annotations
 
+import itertools
 import math
 
 import pytest
@@ -39,7 +40,9 @@ NON_BACKPROP_CONFIGS = [
         "lightning.qubit",
         "adjoint",
         id="lightning.qubit/adjoint",
-        marks=pytest.mark.skipif(not _lightning_available(), reason="pennylane-lightning not installed"),
+        marks=pytest.mark.skipif(
+            not _lightning_available(), reason="pennylane-lightning not installed"
+        ),
     ),
 ]
 
@@ -55,7 +58,13 @@ def _layer(
 
 def _model(cls: type = HybridBinaryClassifier) -> torch.nn.Module:
     torch.manual_seed(0)
-    return cls(n_input_features=5, n_qubits=N_QUBITS, n_layers=2, device_name="default.qubit", diff_method="backprop")
+    return cls(
+        n_input_features=5,
+        n_qubits=N_QUBITS,
+        n_layers=2,
+        device_name="default.qubit",
+        diff_method="backprop",
+    )
 
 
 @pytest.fixture
@@ -75,7 +84,9 @@ class TestNoiseEffect:
 
     @pytest.mark.parametrize("cls", [QuantumEncodingLayer, IQPEncodingLayer])
     @pytest.mark.parametrize("p", [0.05, 0.3, 0.75])
-    def test_end_noise_damps_by_exactly_one_minus_four_thirds_p(self, cls: type, p: float, x: torch.Tensor) -> None:
+    def test_end_noise_damps_by_exactly_one_minus_four_thirds_p(
+        self, cls: type, p: float, x: torch.Tensor
+    ) -> None:
         layer = _layer(cls)
         with torch.no_grad():
             clean = layer(x)
@@ -107,7 +118,7 @@ class TestNoiseEffect:
             for p in (0.0, 0.02, 0.05, 0.1, 0.2):
                 with apply_depolarizing_noise(layer, p):
                     magnitudes.append(layer(x).abs().mean().item())
-        assert all(a > b for a, b in zip(magnitudes, magnitudes[1:])), magnitudes
+        assert all(a > b for a, b in itertools.pairwise(magnitudes)), magnitudes
 
     def test_full_depolarization_zeroes_every_expectation(self, x: torch.Tensor) -> None:
         layer = _layer()
@@ -217,10 +228,12 @@ class TestSweep:
     def test_sweep_points_and_scores(self) -> None:
         model = _model()
         X, y = torch.randn(6, 5), torch.tensor([0, 1, 0, 1, 1, 0])
-        spread = lambda _y, probs: float((probs - 0.5).abs().mean())  # noqa: E731
+        spread = lambda _y, probs: float((probs - 0.5).abs().mean())
         points = noise_sweep(model, X, [0.0, 0.1, 0.4], y=y, score_fn=spread)
         assert [pt.p for pt in points] == [0.0, 0.1, 0.4]
-        assert all(isinstance(pt, NoiseSweepPoint) and pt.probabilities.shape == (6,) for pt in points)
+        assert all(
+            isinstance(pt, NoiseSweepPoint) and pt.probabilities.shape == (6,) for pt in points
+        )
         torch.testing.assert_close(points[0].probabilities, model.predict_proba(X), rtol=0, atol=0)
         # More noise pushes the quantum features towards 0, so the output depends
         # less on the input: the probabilities spread less around 0.5
@@ -232,7 +245,9 @@ class TestSweep:
         assert [pt.p for pt in points] == [0.2]
         assert points[0].score is None
 
-    def test_sweep_rejects_a_bad_level_before_evaluating(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_sweep_rejects_a_bad_level_before_evaluating(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         # Each level costs an O(4^n) mixed-state run, so a bad one at the end
         # has to be caught before the first of them, not after: building any
         # noisy circuit at all fails this test.

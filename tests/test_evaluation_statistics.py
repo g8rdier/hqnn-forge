@@ -25,11 +25,16 @@ def _brute_force_p(diffs: np.ndarray, alternative: str) -> float:
     d = diffs[diffs != 0]
     ranks = _average_ranks(np.abs(d))
     observed = ranks[d > 0].sum()
-    stats = [sum(r for r, s in zip(ranks, signs) if s) for signs in itertools.product([0, 1], repeat=len(d))]
+    stats = [
+        sum(r for r, s in zip(ranks, signs) if s)
+        for signs in itertools.product([0, 1], repeat=len(d))
+    ]
     stats = np.array(stats)
     upper = np.mean(stats >= observed - 1e-9)
     lower = np.mean(stats <= observed + 1e-9)
-    return {"greater": upper, "less": lower, "two-sided": min(1.0, 2 * min(upper, lower))}[alternative]
+    return {"greater": upper, "less": lower, "two-sided": min(1.0, 2 * min(upper, lower))}[
+        alternative
+    ]
 
 
 class TestAverageRanks:
@@ -169,7 +174,9 @@ class TestWilcoxon:
 
     def test_p_value_is_symmetric_in_argument_order(self) -> None:
         a, b = [0.3, 0.5, 0.2, 0.8, 0.45], [0.1, 0.6, 0.4, 0.7, 0.4]
-        assert wilcoxon_signed_rank(a, b).p_value == pytest.approx(wilcoxon_signed_rank(b, a).p_value)
+        assert wilcoxon_signed_rank(a, b).p_value == pytest.approx(
+            wilcoxon_signed_rank(b, a).p_value
+        )
         assert wilcoxon_signed_rank(a, b, alternative="greater").p_value == pytest.approx(
             wilcoxon_signed_rank(b, a, alternative="less").p_value
         )

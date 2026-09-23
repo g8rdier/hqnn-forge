@@ -22,7 +22,10 @@ def _model(cls: type, **kw: object) -> nn.Module:
     return cls(n_input_features=N_FEATURES, n_qubits=N_QUBITS, n_layers=2, **CPU, **kw)
 
 
-MODELS = [pytest.param(HybridBinaryClassifier, id="serial"), pytest.param(ParallelHybridClassifier, id="parallel")]
+MODELS = [
+    pytest.param(HybridBinaryClassifier, id="serial"),
+    pytest.param(ParallelHybridClassifier, id="parallel"),
+]
 
 
 @pytest.fixture
@@ -50,7 +53,9 @@ class TestAblation:
             assert p.grad is None
         assert model.head.weight.grad is not None
 
-    def test_circuit_is_not_executed(self, cls: type, x: torch.Tensor, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_circuit_is_not_executed(
+        self, cls: type, x: torch.Tensor, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         model = _model(cls)
 
         def boom(*_: object, **__: object) -> None:
@@ -142,7 +147,9 @@ class TestExactReplacement:
                 opt.zero_grad()
                 model(x).pow(2).mean().backward()
                 opt.step()
-        torch.testing.assert_close(model.quantum_layer.qlayer.weights.detach(), quantum_before, rtol=0, atol=0)
+        torch.testing.assert_close(
+            model.quantum_layer.qlayer.weights.detach(), quantum_before, rtol=0, atol=0
+        )
         for before, p in zip(encoder_before, model.classical_encoder.parameters()):
             torch.testing.assert_close(p.detach(), before, rtol=0, atol=0)
 

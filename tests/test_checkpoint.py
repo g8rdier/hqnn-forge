@@ -14,15 +14,21 @@ import torch
 
 import hqnn_forge
 from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
-from hqnn_forge.utils import load_checkpoint, save_checkpoint
 from hqnn_forge.utils import checkpoint as ckpt
+from hqnn_forge.utils import load_checkpoint, save_checkpoint
 
 CPU = dict(device_name="default.qubit", diff_method="backprop")
 
 MODELS = [
     pytest.param(HybridBinaryClassifier, dict(encoding_type="angle"), id="serial-angle"),
-    pytest.param(HybridBinaryClassifier, dict(encoding_type="iqp", init_strategy="block_local"), id="serial-iqp"),
-    pytest.param(ParallelHybridClassifier, dict(classical_hidden_dim=5, dropout_p=0.2), id="parallel"),
+    pytest.param(
+        HybridBinaryClassifier,
+        dict(encoding_type="iqp", init_strategy="block_local"),
+        id="serial-iqp",
+    ),
+    pytest.param(
+        ParallelHybridClassifier, dict(classical_hidden_dim=5, dropout_p=0.2), id="parallel"
+    ),
     pytest.param(
         HybridBinaryClassifier,
         dict(
@@ -88,7 +94,9 @@ class TestRoundTrip:
 
     def test_config_round_trips_every_constructor_argument(self) -> None:
         for cls in (HybridBinaryClassifier, ParallelHybridClassifier):
-            model = cls(n_input_features=4, n_qubits=4, n_layers=1, use_classical_encoder=False, **CPU)
+            model = cls(
+                n_input_features=4, n_qubits=4, n_layers=1, use_classical_encoder=False, **CPU
+            )
             assert set(model.get_config()) == ckpt._init_parameter_names(cls)
             rebuilt = cls(**model.get_config())
             assert rebuilt.get_config() == model.get_config()
@@ -206,7 +214,10 @@ class TestCheckpointsOlderThanAnOption:
 
 class TestFailures:
     def test_unsupported_model(self, tmp_path: Path) -> None:
-        with pytest.raises(TypeError, match="supports the classifiers in hqnn_forge.models.*got torch.nn.modules.linear.Linear"):
+        with pytest.raises(
+            TypeError,
+            match="supports the classifiers in hqnn_forge.models.*got torch.nn.modules.linear.Linear",
+        ):
             save_checkpoint(torch.nn.Linear(2, 1), tmp_path / "x.pt")
 
     def test_subclass_is_not_silently_saved_as_parent(self, tmp_path: Path) -> None:
@@ -222,9 +233,13 @@ class TestFailures:
         payload = torch.load(path, weights_only=True)
         payload["hqnn_forge_version"] = "0.0.1"
         other = _save_payload(payload, tmp_path / "old.pt")
-        with pytest.raises(ValueError, match=r"written by hqnn_forge 0\.0\.1.*allow_version_mismatch=True"):
+        with pytest.raises(
+            ValueError, match=r"written by hqnn_forge 0\.0\.1.*allow_version_mismatch=True"
+        ):
             load_checkpoint(other)
-        assert isinstance(load_checkpoint(other, allow_version_mismatch=True), HybridBinaryClassifier)
+        assert isinstance(
+            load_checkpoint(other, allow_version_mismatch=True), HybridBinaryClassifier
+        )
 
     def test_format_version_mismatch(self, saved: tuple, tmp_path: Path) -> None:
         _, path = saved
@@ -264,7 +279,9 @@ class TestFailures:
 
     def test_architecture_override_needs_the_opt_in(self, saved: tuple) -> None:
         _, path = saved
-        with pytest.raises(ValueError, match=r"\['n_layers'\] describe the circuit the saved weights"):
+        with pytest.raises(
+            ValueError, match=r"\['n_layers'\] describe the circuit the saved weights"
+        ):
             load_checkpoint(path, n_layers=3)
 
     def test_opted_in_architecture_override_still_checks_shapes(self, saved: tuple) -> None:
@@ -284,7 +301,9 @@ class TestFailures:
         wrong once allowed.
         """
         model, path = saved
-        with pytest.raises(ValueError, match=r"\['encoding_type'\].*allow_architecture_override=True"):
+        with pytest.raises(
+            ValueError, match=r"\['encoding_type'\].*allow_architecture_override=True"
+        ):
             load_checkpoint(path, encoding_type="iqp")
 
         forced = load_checkpoint(path, encoding_type="iqp", allow_architecture_override=True)
@@ -354,7 +373,9 @@ class TestFailures:
             def forward(self, x: torch.Tensor) -> torch.Tensor:
                 return x
 
-        with pytest.raises(NotImplementedError, match="Bare does not record its constructor arguments"):
+        with pytest.raises(
+            NotImplementedError, match="Bare does not record its constructor arguments"
+        ):
             Bare().get_config()
 
 
@@ -390,7 +411,9 @@ class TestForcedOverrideProvenance:
         with torch.no_grad():
             assert not torch.allclose(forced(x), model(x), rtol=1e-3, atol=1e-3)
 
-        with pytest.raises(ValueError, match=r"allow_architecture_override=True, forcing \['encoding_type'\]"):
+        with pytest.raises(
+            ValueError, match=r"allow_architecture_override=True, forcing \['encoding_type'\]"
+        ):
             save_checkpoint(forced, tmp_path / "laundered.pt")
         assert not (tmp_path / "laundered.pt").exists()
 

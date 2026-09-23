@@ -96,13 +96,13 @@ class TestSmote:
         res = smote(X, y, random_state=0)
         assert np.array_equal(res.X[: len(X)], X) and np.array_equal(res.y[: len(y)], y)
         assert int((res.y == 1).sum()) == int((res.y == 0).sum())
-        assert np.all(res.y[len(y):] == 1)
+        assert np.all(res.y[len(y) :] == 1)
         assert res.sources.shape == (len(res.y) - len(y), 2)
 
     def test_synthetic_points_lie_between_their_sources(self, imbalanced: tuple) -> None:
         X, y = imbalanced
         res = smote(X, y, random_state=0)
-        synth = res.X[len(X):]
+        synth = res.X[len(X) :]
         a, b = X[res.sources[:, 0]], X[res.sources[:, 1]]
         assert np.all(y[res.sources] == 1)
         assert np.all(res.sources[:, 0] != res.sources[:, 1])
@@ -200,7 +200,7 @@ class TestFoldSafety:
             assert np.all(np.isin(fold.sources, fold.train_idx))
             assert not np.any(np.isin(fold.sources, fold.val_idx))
             # and the stored sources really are the pair each synthetic row was built from
-            synth = fold.X_train[fold.train_idx.size:]
+            synth = fold.X_train[fold.train_idx.size :]
             a, b = X[fold.sources[:, 0]], X[fold.sources[:, 1]]
             u = np.sum((synth - a) * (b - a), axis=1) / np.sum((b - a) ** 2, axis=1)
             np.testing.assert_allclose(a + u[:, None] * (b - a), synth, atol=1e-12)
@@ -243,8 +243,8 @@ class TestFoldSafety:
         tr, va = stratified_kfold(y, 3, random_state=0)[0]
         one = oversample_fold(X, y, tr, va, k_neighbors=3, random_state=np.random.default_rng(1))
         two = oversample_fold(X, y, tr, va, k_neighbors=3, random_state=np.random.default_rng(2))
-        assert np.array_equal(one.X_train[:tr.size], two.X_train[:tr.size])
-        assert not np.allclose(one.X_train[tr.size:], two.X_train[tr.size:])
+        assert np.array_equal(one.X_train[: tr.size], two.X_train[: tr.size])
+        assert not np.allclose(one.X_train[tr.size :], two.X_train[tr.size :])
 
     def test_each_fold_draws_from_its_own_smote_stream(self, imbalanced: tuple) -> None:
         """

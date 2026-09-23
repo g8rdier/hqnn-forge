@@ -124,12 +124,9 @@ def disable_quantum_layer(model: nn.Module, fill: float = 0.0) -> Iterator[nn.Mo
         # numbers for input the full model refuses.
         if x.shape[-1] != n_qubits:
             raise ValueError(
-                f"Input feature dimension {x.shape[-1]} does not match "
-                f"n_qubits={n_qubits}."
+                f"Input feature dimension {x.shape[-1]} does not match n_qubits={n_qubits}."
             )
-        return torch.full(
-            (*x.shape[:-1], n_outputs), fill, dtype=x.dtype, device=x.device
-        )
+        return torch.full((*x.shape[:-1], n_outputs), fill, dtype=x.dtype, device=x.device)
 
     # nn.Module.__call__ dispatches to self.forward, so an instance attribute
     # shadows the class method for this layer only.
