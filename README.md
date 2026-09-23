@@ -76,6 +76,8 @@ Classical encoder   Linear(n_input_features → n_qubits) + Tanh, scaled by π i
 Quantum layer       AngleEmbedding RX(x_i) on qubit i   (or IQP embedding)
      │              n_layers × [ CNOT ring → per-qubit Rot(φ, θ, ω) ]
      │              → ⟨Z_i⟩ for every qubit, shape (batch, n_qubits)
+     │              (the defaults; see the options below for the axis,
+     │               the entangler and the ⟨Z_0⟩-only readout)
      ▼
 Classical head      Linear(n_qubits → 1)
      │
@@ -113,8 +115,22 @@ Options shared by both models:
 
 - `encoding_type="angle"` (default) or `"iqp"` (Havlíček-style feature map with pairwise
   `x_i x_j` phases).
-- `init_strategy="restricted"` (one σ for the whole circuit) or `"block_local"` (σ narrowing
-  with layer depth); see `hqnn_forge.initializers`.
+- `init_strategy="restricted"` (one σ for the whole circuit), `"block_local"` (σ narrowing
+  with layer depth) or `"normal"` (plain `N(0, init_std²)`, `init_std=0.1` by default); see
+  `hqnn_forge.initializers`.
+- `embedding_rotation="X"` (default), `"Y"` or `"Z"`: the Pauli axis of the angle embedding
+  (angle encoding only).
+- `entangler="ring"` (default: CNOT ring then per-qubit `Rot`) or `"strongly_entangling"`
+  (`qml.StronglyEntanglingLayers`: `Rot` first, then a CNOT ring whose range grows with the
+  layer index).
+- `readout="all"` (default: ⟨Z_i⟩ on every qubit) or `"first"` (⟨Z_0⟩ only, so the head reads
+  a single number).
+- `encoder_activation="tanh"` (default: `tanh(·)·π`, in (-π, π)) or `"sigmoid"`
+  (`π·sigmoid(·)`, in (0, π)).
+- `published_shnn()` on either class builds the configuration published in the thesis and in
+  `hqnn-fraud-detection-benchmark`: 8 qubits, 2 layers, RY embedding, strongly-entangling
+  ansatz, ⟨Z_0⟩ readout, sigmoid encoder, `N(0, 0.1²)` init — 122 trainable parameters for the
+  serial model. Keyword arguments override it.
 - `use_classical_encoder=False` to feed features already scaled into (-π, π), for example from
   `PCANormalizer(scale_to_pi=True)`, straight into the circuit. `n_input_features` must then
   equal `n_qubits`.
