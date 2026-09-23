@@ -1,17 +1,28 @@
-# Runs ruff check and ruff format before each commit, with the same
-# line-length and target-version as [tool.ruff] in pyproject.toml (the hooks
-# read that file). Keep `rev` in step with the ruff version in uv.lock so the
-# hooks and the CI lint job apply the same rule set.
+# Runs ruff check and ruff format before each commit, with the settings from
+# [tool.ruff] in pyproject.toml.
 #
-# Both hooks are limited to Python files. ruff 0.16 also formats the code
-# blocks in Markdown files, which CI's `ruff format --check hqnn_forge tests
-# examples` does not cover; restricting the hooks keeps the two in agreement.
+# Local hooks run ruff through `uv run --frozen`, so they use the ruff version
+# pinned in uv.lock: the same one the CI lint job runs, with no second version
+# to keep in step when Dependabot bumps the lockfile. `--extra dev` makes sure
+# ruff is installed in the project environment.
+#
+# The file types match the upstream ruff-pre-commit defaults and what CI's
+# `ruff check .` and `ruff format --check .` discover: `ruff format` also
+# formats the Python code blocks in Markdown files, `ruff check` does not.
+# `--force-exclude` keeps ruff's own exclusions in effect when pre-commit
+# passes file names explicitly.
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.7
+  - repo: local
     hooks:
       - id: ruff-check
-        args: [--fix]
-        types_or: [python, pyi]
+        name: ruff check
+        entry: uv run --frozen --extra dev ruff check --fix --force-exclude
+        language: system
+        types_or: [python, pyi, jupyter]
+        require_serial: true
       - id: ruff-format
-        types_or: [python, pyi]
+        name: ruff format
+        entry: uv run --frozen --extra dev ruff format --force-exclude
+        language: system
+        types_or: [python, pyi, jupyter, markdown]
+        require_serial: true
