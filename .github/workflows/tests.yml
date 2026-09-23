@@ -79,29 +79,36 @@ jobs:
   # is exercised on every PR and has to be raised when it stops working.
   #
   # Only the runtime deps and the lightning extra are resolved lowest: the dev
-  # tools are declared without floors, and lowest-direct would pick mypy 0.1
-  # and ruff 0.0.x, which do not even build. pytest is installed afterwards at
-  # its normal resolution, which leaves the runtime pins untouched.
+  # tools are declared without floors, and lowest-direct would pick mypy 0.1,
+  # which does not build. pytest is installed afterwards at its normal
+  # resolution, using the spec from the dev extra, which leaves the runtime
+  # pins untouched.
   test-lowest:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     - name: Install uv
       uses: astral-sh/setup-uv@v10.1.0
       with:
         python-version: "3.11"
         enable-cache: true
+        # Without a suffix this job shares the test-locked 3.11 cache key and
+        # the two would restore each other's (differently resolved) cache
+        cache-suffix: lowest-direct
 
     - name: Install the declared floors
       run: |
         uv venv
         uv pip install --resolution lowest-direct -e ".[lightning]"
-        uv pip install "pytest>=8.0"
+        PYTEST_SPEC=$(uv run --no-sync python -c 'import re, tomllib; print(next(d for d in tomllib.load(open("pyproject.toml", "rb"))["project"]["optional-dependencies"]["dev"] if re.match(r"pytest\s*[<>=!~]", d)))')
+        uv pip install "$PYTEST_SPEC"
 
-    - name: Show the resolved floors
-      run: uv pip list | grep -i -E "^(torch|numpy|pennylane|pennylane-lightning) "
+    # The resolver silently installs a newer version when another dependency
+    # requires one, so an unreachable floor would otherwise still go green
+    - name: Check every floor was installed
+      run: uv run --no-sync python .github/scripts/check_floors.py
 
     - name: Run pytest
       run: uv run --no-sync pytest tests/ -v
