@@ -6,6 +6,7 @@ Round-trip and failure tests for hqnn_forge.utils.checkpoint.
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import pytest
@@ -130,6 +131,79 @@ class TestRoundTrip:
         assert payload["class_name"] == "HybridBinaryClassifier"
 
 
+class TestCheckpointsOlderThanAnOption:
+    """
+    A checkpoint written before the constructor gained an argument has no key
+    for it.  Rebuilding it from ``_LEGACY_DEFAULTS`` gives back the model that
+    was saved, because those values are what the circuit did before the
+    argument existed -- and the warning says so out loud.
+    """
+
+    @staticmethod
+    def _stripped(model: torch.nn.Module, path: Path, out: Path) -> Path:
+        """``path``'s payload with every post-#131 key removed from its config."""
+        save_checkpoint(model, path)
+        payload = torch.load(path, weights_only=True)
+        for name in ckpt._LEGACY_DEFAULTS:
+            del payload["config"][name]
+        return _save_payload(payload, out)
+
+    @pytest.mark.parametrize(
+        "cls", [HybridBinaryClassifier, ParallelHybridClassifier], ids=["serial", "parallel"]
+    )
+    def test_it_loads_and_predicts_what_the_saved_model_predicted(
+        self, cls: type, tmp_path: Path
+    ) -> None:
+        model = _trained(cls, {})
+        old = self._stripped(model, tmp_path / "new.pt", tmp_path / "old.pt")
+
+        with pytest.warns(RuntimeWarning, match="predates"):
+            loaded = load_checkpoint(old)
+
+        assert type(loaded) is cls
+        assert loaded.get_config() == model.get_config()
+        x = torch.randn(5, 6)
+        model.eval()
+        with torch.no_grad():
+            torch.testing.assert_close(loaded(x), model(x), rtol=0, atol=0)
+
+    def test_the_warning_names_every_argument_it_filled(self, tmp_path: Path) -> None:
+        model = _trained(HybridBinaryClassifier, {})
+        old = self._stripped(model, tmp_path / "new.pt", tmp_path / "old.pt")
+
+        with pytest.warns(RuntimeWarning) as record:
+            load_checkpoint(old)
+
+        message = str(record[0].message)
+        for name, value in ckpt._LEGACY_DEFAULTS.items():
+            assert name in message
+            assert repr(value) in message
+
+    def test_a_reload_that_filled_nothing_does_not_warn(self, saved: tuple) -> None:
+        _, path = saved
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            load_checkpoint(path)
+
+    def test_the_table_only_names_real_constructor_arguments(self) -> None:
+        # Guards the table against rot: an argument renamed or dropped would
+        # otherwise leave an entry here that silently never matches.
+        for cls in (HybridBinaryClassifier, ParallelHybridClassifier):
+            assert set(ckpt._LEGACY_DEFAULTS) <= ckpt._init_parameter_names(cls)
+
+    def test_re_saving_pins_the_filled_arguments(self, tmp_path: Path) -> None:
+        model = _trained(HybridBinaryClassifier, {})
+        old = self._stripped(model, tmp_path / "new.pt", tmp_path / "old.pt")
+        with pytest.warns(RuntimeWarning):
+            loaded = load_checkpoint(old)
+
+        again = tmp_path / "pinned.pt"
+        save_checkpoint(loaded, again)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            load_checkpoint(again)
+
+
 class TestFailures:
     def test_unsupported_model(self, tmp_path: Path) -> None:
         with pytest.raises(TypeError, match="supports the classifiers in hqnn_forge.models.*got torch.nn.modules.linear.Linear"):
@@ -160,6 +234,9 @@ class TestFailures:
             load_checkpoint(_save_payload(payload, tmp_path / "future.pt"))
 
     def test_missing_constructor_field(self, saved: tuple, tmp_path: Path) -> None:
+        # Not in _LEGACY_DEFAULTS, so it is a broken config rather than an old
+        # one: back-filling it would rebuild an 'iqp' checkpoint as 'angle',
+        # which fits the same weight shapes and predicts differently.
         _, path = saved
         payload = torch.load(path, weights_only=True)
         del payload["config"]["encoding_type"]
