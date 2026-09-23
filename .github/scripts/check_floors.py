@@ -15,7 +15,7 @@ from packaging.requirements import Requirement
 from packaging.version import Version
 
 # The optional extras the test-lowest job resolves lowest alongside the runtime deps
-CHECKED_EXTRAS = ["lightning"]
+CHECKED_EXTRAS = ["lightning", "sklearn"]
 
 
 def main() -> int:
