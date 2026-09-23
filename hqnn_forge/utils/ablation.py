@@ -66,9 +66,9 @@ def disable_quantum_layer(model: nn.Module, fill: float = 0.0) -> Iterator[nn.Mo
     Inside the block the layer returns a tensor of shape
     ``(*batch_dims, n_outputs)`` filled with ``fill``, in the input's dtype and
     device, without running the circuit.  ``n_outputs`` is the layer's readout
-    width -- ``n_qubits`` for ``readout="all"``, 1 for ``readout="first"`` --
-    so the head downstream sees the width it was built for.  The output therefore carries no
-    gradient to the quantum weights or to anything upstream of the layer.  The
+    width -- ``n_qubits`` for ``readout="all"``, 1 for ``readout="first"`` -- so
+    the head downstream sees the width it was built for.  The output therefore
+    carries no gradient to the quantum weights or to anything upstream of it.  The
     original ``forward`` is restored on exit, including when the block raises.
 
     Training inside the block is allowed and trains only the parameters that

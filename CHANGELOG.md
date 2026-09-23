@@ -34,6 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   version CI runs; 0.38 is incompatible with `autoray>=0.7`, and 0.42 was only tested on
   Python 3.10
 
+### Fixed
+- `disable_quantum_layer` fills the quantum layer's readout width (`n_outputs`) rather than
+  `n_qubits`, so an ablated model built with `readout="first"` matches its `Linear(1 → 1)` head
+  instead of raising a shape error where the real model works
+- `QuantumEncodingLayer` and `build_encoding_qnode` reject an unknown `rotation` axis at
+  construction, where `entangler` and `readout` are already rejected; it used to construct
+  cleanly and fail inside PennyLane on the first forward pass
+
 ### Removed
 - `requirements.txt`; `pyproject.toml` is now the only place dependencies are declared
 - Python 3.10 support; `requires-python` is now `>=3.11`. 3.10 reaches end of life in
