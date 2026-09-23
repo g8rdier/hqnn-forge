@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
+import pennylane as qml
 import pytest
 import torch
 
@@ -25,12 +27,30 @@ N_LAYERS = 1
 BATCH = 5
 
 
-def _layer(diff_method: str = "backprop", **kwargs: object) -> AmplitudeEncodingLayer:
+def _lightning_available() -> bool:
+    try:
+        qml.device("lightning.qubit", wires=1)
+    except Exception:  # noqa: BLE001 - any failure means "not installed"
+        return False
+    return True
+
+
+requires_lightning = pytest.mark.skipif(
+    not _lightning_available(), reason="pennylane-lightning not installed"
+)
+
+
+def _layer(
+    diff_method: str = "backprop",
+    device_name: str = "default.qubit",
+    n_layers: int = N_LAYERS,
+    **kwargs: object,
+) -> AmplitudeEncodingLayer:
     torch.manual_seed(0)
     return AmplitudeEncodingLayer(
         n_qubits=N_QUBITS,
-        n_layers=N_LAYERS,
-        device_name="default.qubit",
+        n_layers=n_layers,
+        device_name=device_name,  # type: ignore[arg-type]
         diff_method=diff_method,  # type: ignore[arg-type]
         **kwargs,  # type: ignore[arg-type]
     )
@@ -86,6 +106,49 @@ def _cnot_ring_permutation(bits: list[int]) -> list[int]:
 def _basis_index_to_bits(k: int, n: int) -> list[int]:
     """PennyLane orders amplitudes with wire 0 as the most significant bit."""
     return [(k >> (n - 1 - i)) & 1 for i in range(n)]
+
+
+def _apply_1q(state: np.ndarray, gate: np.ndarray, wire: int) -> np.ndarray:
+    state = np.moveaxis(state, wire, 0)
+    state = np.tensordot(gate, state, axes=([1], [0]))
+    return np.moveaxis(state, 0, wire)
+
+
+def _apply_cnot(state: np.ndarray, control: int, target: int) -> np.ndarray:
+    state = state.copy()
+    idx: list[slice | int] = [slice(None)] * state.ndim
+    idx[control] = 1
+    sub = state[tuple(idx)]
+    # After fixing the control axis, the target axis shifts down by one if it came later.
+    t = target - 1 if target > control else target
+    state[tuple(idx)] = np.flip(sub, axis=t)
+    return state
+
+
+def _rot(phi: float, theta: float, omega: float) -> np.ndarray:
+    """PennyLane's Rot(φ, θ, ω) = RZ(ω) · RY(θ) · RZ(φ)."""
+
+    def rz(a: float) -> np.ndarray:
+        return np.diag([np.exp(-0.5j * a), np.exp(0.5j * a)])
+
+    c, s = np.cos(theta / 2), np.sin(theta / 2)
+    ry = np.array([[c, -s], [s, c]])
+    return rz(omega) @ ry @ rz(phi)
+
+
+def _numpy_expvals(x: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    """⟨Z_i⟩ after amplitude-embedding x/‖x‖ and the CNOT-ring + Rot layers."""
+    n = weights.shape[1]
+    state = (x / np.linalg.norm(x)).astype(complex).reshape((2,) * n)  # wire 0 = axis 0 = MSB
+    for layer_weights in weights:
+        for q in range(n):
+            state = _apply_cnot(state, q, (q + 1) % n)
+        for q in range(n):
+            state = _apply_1q(state, _rot(*layer_weights[q]), q)
+    probs = np.abs(state) ** 2
+    return np.array(
+        [np.moveaxis(probs, q, 0)[0].sum() - np.moveaxis(probs, q, 0)[1].sum() for q in range(n)]
+    )
 
 
 class TestEncodingMatchesHandComputation:
@@ -144,10 +207,34 @@ class TestEncodingMatchesHandComputation:
         with torch.no_grad():
             torch.testing.assert_close(layer(x), layer(7.5 * x), rtol=0, atol=1e-6)
 
+    def test_huge_scale_is_encoded(self) -> None:
+        """
+        A float32 norm overflows from about 1.8e19; the layer scales by the
+        largest feature first, so 1e20·x still encodes x instead of NaN.
+        """
+        layer = _layer()
+        x = torch.randn(BATCH, N_AMPLITUDES)
+        with torch.no_grad():
+            torch.testing.assert_close(layer(1e20 * x), layer(x), rtol=0, atol=1e-6)
+
+    def test_matches_numpy_state_vector_with_several_layers(self) -> None:
+        """
+        Two layers with random non-zero weights against a NumPy state-vector
+        simulation written from the gate definitions, so a wrong layer index
+        in the weight slice, or layers applied in the wrong order, fails.
+        """
+        n_layers = 2
+        layer = _layer(n_layers=n_layers).double()
+        weights = layer.qlayer.weights.detach().numpy()
+        assert np.abs(weights[1] - weights[0]).min() > 1e-3  # the layers really differ
+        x = torch.randn(BATCH, N_AMPLITUDES, dtype=torch.float64)
+        with torch.no_grad():
+            got = layer(x).numpy()
+        want = np.stack([_numpy_expvals(x[i].numpy(), weights) for i in range(BATCH)])
+        np.testing.assert_allclose(got, want, rtol=0, atol=1e-10)
+
     def test_matches_qml_amplitude_embedding_reference(self) -> None:
         """Per-sample agreement with a reference QNode built from the template."""
-        import pennylane as qml
-
         n_features = 6
         layer = _layer(n_features=n_features)
         dev = qml.device("default.qubit", wires=N_QUBITS)
@@ -224,16 +311,104 @@ class TestGradientFlow:
             radial, torch.zeros(BATCH, dtype=torch.float64), atol=1e-9, rtol=0
         )
 
-    @pytest.mark.parametrize("diff_method", ["parameter-shift", "finite-diff"])
-    def test_input_gradient_refused_under_gate_parameter_methods(self, diff_method: str) -> None:
+    @pytest.mark.parametrize(
+        ("diff_method", "device_name"),
+        [
+            ("parameter-shift", "default.qubit"),
+            ("finite-diff", "default.qubit"),
+            pytest.param("adjoint", "lightning.qubit", marks=requires_lightning),
+        ],
+    )
+    def test_input_gradient_without_zero_amplitudes_matches_backprop(
+        self, diff_method: str, device_name: str
+    ) -> None:
         """
-        PennyLane returns NaN, not an error, for the state-prep gradient under
-        these methods; the layer refuses up front instead of training on NaN.
+        These methods differentiate the state-prep decomposition rather than
+        the state vector; with no zero amplitudes the input gradient still
+        agrees with backprop.
         """
-        layer = _layer(diff_method)
+        x = torch.randn(BATCH, N_AMPLITUDES, dtype=torch.float64)
+        grads = []
+        for method, device in (("backprop", "default.qubit"), (diff_method, device_name)):
+            layer = _layer(method, device, n_layers=2).double()
+            xi = x.clone().requires_grad_(True)
+            layer(xi).sum().backward()
+            assert xi.grad is not None
+            grads.append(xi.grad)
+        # finite-diff is first order in its step, so it gets a looser tolerance.
+        atol = 1e-5 if diff_method == "finite-diff" else 1e-7
+        torch.testing.assert_close(grads[1], grads[0], rtol=0, atol=atol)
+
+    @pytest.mark.parametrize(
+        ("diff_method", "device_name"),
+        [
+            ("parameter-shift", "default.qubit"),
+            ("finite-diff", "default.qubit"),
+            pytest.param("adjoint", "lightning.qubit", marks=requires_lightning),
+        ],
+    )
+    @pytest.mark.parametrize("zero_source", ["padding", "zero_feature"])
+    def test_input_gradient_with_zero_amplitude_is_refused(
+        self, diff_method: str, device_name: str, zero_source: str
+    ) -> None:
+        """
+        A zero amplitude makes PennyLane's input gradient NaN, silently.  The
+        raw QNode confirms that here; the layer refuses instead.
+        """
+        if zero_source == "padding":
+            layer = _layer(diff_method, device_name, n_features=6)
+            x = torch.randn(BATCH, 6)
+        else:
+            layer = _layer(diff_method, device_name)
+            x = torch.randn(BATCH, N_AMPLITUDES)
+            x[1, 3] = 0.0
+        with pytest.raises(RuntimeError, match="exactly-zero amplitude"):
+            layer(x.requires_grad_(True))
+
+    def test_zero_amplitude_gradient_is_really_nan(self) -> None:
+        """Pins the PennyLane behaviour the guard exists for; if this starts
+        failing, the guard may no longer be needed."""
+        dev = qml.device("default.qubit", wires=N_QUBITS)
+
+        @qml.qnode(dev, interface="torch", diff_method="parameter-shift")
+        def circuit(inputs: torch.Tensor) -> torch.Tensor:
+            qml.AmplitudeEmbedding(inputs, wires=range(N_QUBITS))
+            qml.RX(0.3, wires=0)
+            return qml.expval(qml.PauliZ(0) @ qml.PauliX(1))
+
+        x = torch.randn(N_AMPLITUDES, dtype=torch.float64)
+        x[3] = 0.0
+        x = (x / x.norm()).requires_grad_(True)
+        circuit(x).backward()
+        assert x.grad is not None
+        assert torch.isnan(x.grad).any()
+
+    def test_input_gradient_refused_under_default_qubit_adjoint(self) -> None:
+        """default.qubit's adjoint returns an all-zero input gradient, even dense."""
+        layer = _layer("adjoint")
         x = torch.randn(BATCH, N_AMPLITUDES, requires_grad=True)
-        with pytest.raises(RuntimeError, match="backprop"):
+        with pytest.raises(RuntimeError, match="all-zero input"):
             layer(x)
+
+    @pytest.mark.parametrize("diff_method", ["adjoint", "parameter-shift", "finite-diff"])
+    def test_inference_under_no_grad_is_allowed(self, diff_method: str) -> None:
+        """No gradient is computed under no_grad, so nothing is refused."""
+        layer = _layer(diff_method, n_features=6)
+        x = torch.randn(BATCH, 6, requires_grad=True)
+        with torch.no_grad():
+            out = layer(x)
+        assert out.shape == (BATCH, N_QUBITS)
+
+    def test_raw_qnode_refuses_too(self) -> None:
+        """The check lives in the circuit, so direct QNode users are covered."""
+        qnode = build_amplitude_qnode(
+            n_qubits=N_QUBITS, n_layers=1, device_name="default.qubit", diff_method="adjoint"
+        )
+        x = torch.zeros(N_AMPLITUDES, requires_grad=True)
+        with torch.no_grad():
+            x[0] = 1.0
+        with pytest.raises(RuntimeError, match="all-zero input"):
+            qnode(x, torch.zeros(1, N_QUBITS, 3))
 
     def test_detached_input_is_fine_under_parameter_shift(self) -> None:
         layer = _layer("parameter-shift")
@@ -266,6 +441,14 @@ class TestInputValidation:
         x = torch.randn(BATCH, N_AMPLITUDES)
         x[2] = 0.0
         with pytest.raises(ValueError, match="all-zero"):
+            layer(x)
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_sample_raises(self, bad: float) -> None:
+        layer = _layer()
+        x = torch.randn(BATCH, N_AMPLITUDES)
+        x[2, 0] = bad
+        with pytest.raises(ValueError, match="NaN or ±inf"):
             layer(x)
 
     def test_n_qubits_lt_2_raises(self) -> None:
