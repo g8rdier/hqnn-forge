@@ -13,6 +13,7 @@ updates:
           - "pytest*"
           - "ruff"
           - "mypy"
+          - "vermin"
 
   # Keeps the actions in tests.yml current; without this entry checkout,
   # setup-python and setup-uv would never be updated. The three arrive in one
