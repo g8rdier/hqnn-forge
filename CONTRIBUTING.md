@@ -92,19 +92,24 @@ split into smaller, more atomic commits.
 ## Dependency Changes
 
 `uv.lock` is tracked in the repository and CI tests against it: the `test-locked` job in
-`.github/workflows/tests.yml` runs `uv sync --locked`, which installs the exact versions the
-lockfile records and fails if the lockfile no longer matches `pyproject.toml`.
+`.github/workflows/tests.yml` runs `uv sync --locked --all-extras`, which installs the exact
+versions the lockfile records and fails if the lockfile no longer matches `pyproject.toml`.
 
-*   **After editing dependencies in `pyproject.toml`**, regenerate the lockfile and commit it
-    in the same PR:
+A normal install doesn't need uv — the pip install in the README is unchanged. uv is only
+needed to regenerate the lockfile; see the [uv installation
+docs](https://docs.astral.sh/uv/getting-started/installation/) if you don't have it.
+
+*   **After editing `pyproject.toml`**, regenerate the lockfile and commit it in the same PR:
 
     ```bash
     uv lock
     git add pyproject.toml uv.lock
     ```
 
-    This applies to every dependency edit by hand: adding or removing a package, changing a
-    version floor, or touching an extra.
+    This applies to every hand edit of a field the lockfile records: adding or removing a
+    package, changing a version floor, touching an extra — and also the project's own
+    `version` and `requires-python`, which `uv.lock` pins as well. A release PR that only
+    bumps `version` still needs `uv lock`.
 
 *   **What the failure looks like** when the lockfile is stale:
 
