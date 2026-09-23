@@ -42,16 +42,16 @@ pip install -e ".[lightning]"
 ```python
 import torch
 from hqnn_forge.models import HybridBinaryClassifier
-from hqnn_forge.utils  import FocalLoss
+from hqnn_forge.utils import FocalLoss
 
 model = HybridBinaryClassifier(n_input_features=8, n_qubits=8, n_layers=2)
 loss_fn = FocalLoss(alpha=0.25, gamma=2.0)
 
-x = torch.randn(16, 8)          # batch of 16 samples, 8 PCA features
+x = torch.randn(16, 8)  # batch of 16 samples, 8 PCA features
 y = torch.randint(0, 2, (16,)).float()
 
 logits = model(x)
-loss   = loss_fn(logits.squeeze(), y)
+loss = loss_fn(logits.squeeze(), y)
 loss.backward()
 ```
 
