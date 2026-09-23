@@ -154,6 +154,33 @@ hqnn_forge/
 
 ---
 
+## Development Setup
+
+```bash
+pip install -e ".[lightning,dev]"
+uvx pre-commit install
+```
+
+The `dev` extra brings `ruff`, `mypy` and `pytest`. `uvx pre-commit install` registers the hooks
+in `.pre-commit-config.yaml`, which run `ruff check --fix` and `ruff format` on every commit with
+the settings from `pyproject.toml`. The hooks call ruff through `uv run`, so they need
+[uv](https://docs.astral.sh/uv/getting-started/installation/) on the `PATH` and use the ruff
+version pinned in `uv.lock`, the same one CI uses. To run them over the whole tree at any time:
+
+```bash
+uvx pre-commit run --all-files
+```
+
+The hooks cover the two ruff steps of the CI lint job, including the Python code blocks in
+Markdown files. The lint job also type-checks the package, which the hooks do not; run it
+before pushing changes to `hqnn_forge/`:
+
+```bash
+uv run --frozen --extra dev mypy hqnn_forge
+```
+
+---
+
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the issue/branch/PR workflow, commit conventions,
