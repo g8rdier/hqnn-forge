@@ -14,7 +14,7 @@ build_amplitude_qnode   Factory for the amplitude-embedding QNode.
 
 See Also
 --------
-hqnn_forge.encoding.iqp_embedding  IQP-style encoding (IQPEncodingLayer).
+hqnn_forge.encoding.iqp_embedding  IQP embedding (pairwise IsingZZ phases) + entangling ansatz.
 """
 
 from hqnn_forge.encoding.amplitude_embedding import (

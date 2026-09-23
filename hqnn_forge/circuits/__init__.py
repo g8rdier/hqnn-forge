@@ -13,10 +13,10 @@ strongly_entangling_layer   CNOT ring + per-qubit Rot(φ, θ, ω) block.
 hardware_efficient_layer    CZ ladder + per-qubit RY(θ) block (lower CNOT depth).
 """
 
-from hqnn_forge.circuits.strongly_entangling import strongly_entangling_layer
 from hqnn_forge.circuits.hardware_efficient import hardware_efficient_layer
+from hqnn_forge.circuits.strongly_entangling import strongly_entangling_layer
 
 __all__: list[str] = [
-    "strongly_entangling_layer",
     "hardware_efficient_layer",
+    "strongly_entangling_layer",
 ]

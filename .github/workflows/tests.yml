@@ -10,6 +10,57 @@ permissions:
   contents: read
 
 jobs:
+  # ruff and mypy are configured in pyproject.toml but were never enforced. One
+  # interpreter is enough: the rule set depends on the pinned ruff version, not
+  # on the interpreter, and [tool.mypy] fixes python_version = "3.12" itself.
+  # The tools come from uv.lock so a ruff release cannot change the rule set
+  # under an open PR; Dependabot bumps them like every other dev dependency.
+  # --all-extras so mypy sees matplotlib, scikit-learn and pennylane-lightning:
+  # with ignore_missing_imports, a missing extra silently types its imports as Any.
+  # ruff covers the whole tree (it respects .gitignore). mypy covers the package
+  # only: tests/ and examples/ each have a baseline to fix first (#145).
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v10.1.0
+      with:
+        python-version: "3.12"
+        enable-cache: true
+
+    - name: Install dependencies from the lockfile
+      run: uv sync --locked --all-extras
+
+    - name: Lint
+      run: uv run --frozen ruff check .
+
+    - name: Check formatting
+      run: uv run --frozen ruff format --check .
+
+    - name: Type-check
+      run: uv run --frozen mypy hqnn_forge
+
+    # Neither ruff nor mypy checks stdlib API usage against the 3.11 floor:
+    # ruff's target-version covers syntax only, and mypy has to target 3.12
+    # because the numpy stubs use PEP 695 syntax. vermin fails on a call such
+    # as itertools.batched or Path.walk that only exists from 3.12 on.
+    # --exclude long: vermin reads torch's Tensor.long() on a local as the
+    # Python 2 long builtin, marks the file "incompatible" and drops its
+    # minimum while still exiting 0. That skip is silent, so the grep below
+    # turns any remaining "File with incompatible versions" line into a failure.
+    - name: Check stdlib usage against the 3.11 floor
+      run: |
+        out=$(uv run --frozen vermin --no-tips -t=3.11- --violations --eval-annotations \
+          --exclude long hqnn_forge tests examples .github/scripts 2>&1) || { echo "$out"; exit 1; }
+        echo "$out"
+        if grep -q "File with incompatible versions" <<< "$out"; then
+          echo "::error::vermin skipped the files above; their minimum version was not checked"
+          exit 1
+        fi
+
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -25,10 +76,15 @@ jobs:
         python-version: ${{ matrix.python-version }}
         cache: 'pip'
         
+    # Every extra the suite can import, which is the same set the locked job
+    # installs with --all-extras below. An extra left out here does not fail the
+    # job: tests/test_evaluation_plots.py and tests/test_sklearn_estimator.py
+    # skip their whole module when matplotlib or scikit-learn is missing, so the
+    # tests would just stop running. Keep the two jobs' sets identical.
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -e ".[dev,lightning]"
+        pip install -e ".[dev,lightning,sklearn,examples]"
         
     - name: Run pytest
       run: |
@@ -64,3 +120,47 @@ jobs:
 
     - name: Run pytest
       run: uv run --frozen pytest tests/ -v
+
+  # The two matrices above never install the declared floors: test resolves to
+  # the newest versions the ">=" constraints allow and test-locked to whatever
+  # uv.lock pins, so a floor in pyproject.toml is otherwise only tested by
+  # coincidence, and a lockfile bump can silently leave it untested. This job
+  # installs every direct runtime dependency at exactly its floor (transitive
+  # ones resolve normally) on 3.11, the requires-python floor, so every floor
+  # is exercised on every PR and has to be raised when it stops working.
+  #
+  # Only the runtime deps and the lightning and sklearn extras are resolved
+  # lowest. The dev tools are declared without floors, and lowest-direct would
+  # pick mypy 0.1, which does not build; examples adds only matplotlib, also
+  # without a floor, to the scikit-learn already covered by sklearn. pytest is
+  # installed afterwards at its normal resolution, using the spec from the dev
+  # extra, which leaves the runtime pins untouched.
+  test-lowest:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v10.1.0
+      with:
+        python-version: "3.11"
+        enable-cache: true
+        # Without a suffix this job shares the test-locked 3.11 cache key and
+        # the two would restore each other's (differently resolved) cache
+        cache-suffix: lowest-direct
+
+    - name: Install the declared floors
+      run: |
+        uv venv
+        uv pip install --resolution lowest-direct -e ".[lightning,sklearn]"
+        PYTEST_SPEC=$(uv run --no-sync python -c 'import re, tomllib; print(next(d for d in tomllib.load(open("pyproject.toml", "rb"))["project"]["optional-dependencies"]["dev"] if re.match(r"pytest\s*[<>=!~]", d)))')
+        uv pip install "$PYTEST_SPEC"
+
+    # The resolver silently installs a newer version when another dependency
+    # requires one, so an unreachable floor would otherwise still go green
+    - name: Check every floor was installed
+      run: uv run --no-sync python .github/scripts/check_floors.py
+
+    - name: Run pytest
+      run: uv run --no-sync pytest tests/ -v
