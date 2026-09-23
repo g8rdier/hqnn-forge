@@ -13,7 +13,7 @@ import torch.optim as optim
 
 from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
 from hqnn_forge.preprocessing import PCANormalizer
-from hqnn_forge.utils import FocalLoss
+from hqnn_forge.utils import FocalLoss, compute_class_weights, weighted_bce_loss
 
 N_QUBITS = 4
 N_LAYERS = 2
@@ -69,6 +69,41 @@ class TestEndToEndPipeline:
             optimizer.step()
             losses.append(loss.item())
 
+        assert losses[-1] < losses[0]
+
+    def test_class_weighted_training_loss_decreases(
+        self, synthetic_dataset: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+    ) -> None:
+        X_train_np, y_train_np, _, _ = synthetic_dataset
+
+        pca = PCANormalizer(n_components=N_QUBITS, scale_to_pi=True)
+        X_train = pca.fit_transform(X_train_np)
+        y_train = torch.tensor(y_train_np, dtype=torch.float32)
+        class_weights = compute_class_weights(y_train)
+        assert class_weights[1] > class_weights[0]
+
+        model = HybridBinaryClassifier(
+            n_input_features=N_QUBITS,
+            n_qubits=N_QUBITS,
+            n_layers=N_LAYERS,
+            use_classical_encoder=False,
+            device_name="default.qubit",
+            diff_method="parameter-shift",
+            init_strategy="restricted",
+        )
+        optimizer = optim.Adam(model.parameters(), lr=0.05)
+
+        losses = []
+        model.train()
+        for _ in range(3):
+            optimizer.zero_grad()
+            logits = model(X_train).squeeze(-1)
+            loss = weighted_bce_loss(logits, y_train, class_weights)
+            loss.backward()
+            optimizer.step()
+            losses.append(loss.item())
+
+        assert all(torch.isfinite(torch.tensor(losses)))
         assert losses[-1] < losses[0]
 
     def test_predict_proba_after_training(
