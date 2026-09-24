@@ -4,18 +4,21 @@ tests/test_multiclass_hybrid_classifier.py
 hqnn_forge.models.MulticlassHybridClassifier on a synthetic 3-class problem:
 output shapes, probability semantics under both strategies, gradient flow to
 every class head and to the quantum weights, and a short training run that
-has to beat chance.
+has to beat chance.  Also: numerical stability of the one-vs-rest
+probabilities at saturated logits, init validation, and a checkpoint round trip.
 """
 
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import pytest
 import torch
 import torch.nn as nn
 
 from hqnn_forge.models import MulticlassHybridClassifier
+from hqnn_forge.utils.checkpoint import load_checkpoint, save_checkpoint
 
 N_FEATURES = 6
 N_QUBITS = 4
@@ -100,14 +103,61 @@ class TestOutputs:
         expected = torch.tensor([[1.0, 0, 0], [0, 0, 1.0], [0, 1.0, 0]])
         assert torch.equal(model.one_hot(y), expected)
 
-    def test_predict_runs_in_eval_mode_and_restores_it(self) -> None:
+    def test_one_hot_follows_the_model_dtype(self) -> None:
+        model = _model(strategy="one_vs_rest").double()
+        X, y = _three_class_dataset(n_per_class=2)
+        target = model.one_hot(y)
+        assert target.dtype == torch.float64
+        loss = nn.BCEWithLogitsLoss()(model(X.double()), target)
+        assert loss.dtype == torch.float64
+
+    @pytest.mark.parametrize("method", ["predict_proba", "predict"])
+    def test_prediction_runs_in_eval_mode_and_restores_it(self, method: str) -> None:
         model = _model(dropout_p=0.5)
         model.train()
         x = torch.randn(BATCH, N_FEATURES)
-        a = model.predict_proba(x)
-        b = model.predict_proba(x)
-        assert torch.equal(a, b)  # dropout off inside predict_proba
+        # With dropout active, the forward pass is stochastic from call to call.
+        torch.manual_seed(1)
+        assert not torch.equal(model(x), model(x))
+        predict = getattr(model, method)
+        with torch.no_grad():
+            expected = getattr(model.eval(), method)(x)
+        model.train()
+        for _ in range(3):
+            assert torch.equal(predict(x), expected)  # dropout off inside
         assert model.training and model.dropout.training
+
+
+class TestOneVsRestSaturation:
+    """``predict_proba`` and ``predict`` at logits a trained OvR model reaches."""
+
+    @staticmethod
+    def _with_logits(logits: torch.Tensor) -> MulticlassHybridClassifier:
+        """A one-vs-rest model whose output is ``logits`` for every input row."""
+        model = _model(strategy="one_vs_rest")
+        with torch.no_grad():
+            model.head.weight.zero_()
+            model.head.bias.copy_(logits)
+        return model
+
+    def test_all_negative_logits_stay_finite(self) -> None:
+        # Every sigmoid underflows to 0 in float32 below about -88.
+        logits = torch.tensor([-110.0, -120.0, -130.0])
+        probs = self._with_logits(logits).predict_proba(torch.randn(2, N_FEATURES))
+        assert torch.isfinite(probs).all()
+        # Exact value: sigmoid(l) ≈ exp(l) here, so the ratio is softmax(l).
+        expected = torch.softmax(logits.double(), dim=-1).float().expand(2, -1)
+        torch.testing.assert_close(probs, expected)
+
+    def test_matches_normalised_sigmoids_in_float64(self) -> None:
+        logits = torch.tensor([-3.0, 0.5, 4.0])
+        probs = self._with_logits(logits).predict_proba(torch.randn(1, N_FEATURES))
+        scores = torch.sigmoid(logits.double())
+        torch.testing.assert_close(probs[0].double(), scores / scores.sum(), rtol=1e-6, atol=0)
+
+    def test_predict_uses_the_logits_when_probabilities_saturate(self) -> None:
+        model = self._with_logits(torch.tensor([17.0, 20.0, 30.0]))
+        assert torch.equal(model.predict(torch.randn(2, N_FEATURES)), torch.tensor([2, 2]))
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +215,38 @@ class TestParametersAndGradients:
         )
         std = model.quantum_layer.qlayer.weights.detach().std().item()
         assert std == pytest.approx(math.pi / math.sqrt(16 * 16), rel=0.2)
+
+    def test_block_local_init_matches_its_per_layer_sigma(self) -> None:
+        torch.manual_seed(0)
+        n_qubits, n_layers = 16, 4
+        model = MulticlassHybridClassifier(
+            n_input_features=n_qubits,
+            n_qubits=n_qubits,
+            n_layers=n_layers,
+            n_classes=3,
+            init_strategy="block_local",
+            **CPU,  # type: ignore[arg-type]
+        )
+        weights = model.quantum_layer.qlayer.weights.detach()
+        for layer in range(n_layers):
+            expected = math.pi / math.sqrt(n_qubits * (layer + 1))
+            assert weights[layer].std().item() == pytest.approx(expected, rel=0.3)
+        # The schedule shrinks with depth; restricted init would be flat.
+        assert weights[0].std() > 1.5 * weights[-1].std()
+
+    def test_normal_init_uses_init_std(self) -> None:
+        torch.manual_seed(0)
+        model = MulticlassHybridClassifier(
+            n_input_features=16,
+            n_qubits=16,
+            n_layers=16,
+            n_classes=3,
+            init_strategy="normal",
+            init_std=0.05,
+            **CPU,  # type: ignore[arg-type]
+        )
+        std = model.quantum_layer.qlayer.weights.detach().std().item()
+        assert std == pytest.approx(0.05, rel=0.2)
 
 
 # ---------------------------------------------------------------------------
@@ -240,3 +322,40 @@ class TestOptions:
     def test_rejects_unknown_encoding(self) -> None:
         with pytest.raises(ValueError, match="encoding_type"):
             _model(encoding_type="amplitude")
+
+    def test_rejects_unknown_init_strategy(self) -> None:
+        with pytest.raises(ValueError, match="init_strategy"):
+            _model(init_strategy="block-local")
+
+    def test_rejects_init_std_it_would_ignore(self) -> None:
+        with pytest.raises(ValueError, match="init_std applies"):
+            _model(init_std=0.3)
+
+    def test_rejects_non_positive_init_std(self) -> None:
+        with pytest.raises(ValueError, match="init_std must be > 0"):
+            _model(init_strategy="normal", init_std=0.0)
+
+
+# ---------------------------------------------------------------------------
+# Checkpointing
+# ---------------------------------------------------------------------------
+
+
+class TestCheckpoint:
+    def test_config_rebuilds_the_architecture(self) -> None:
+        model = _model(strategy="one_vs_rest", n_classes=5, dropout_p=0.2)
+        rebuilt = MulticlassHybridClassifier(**model.get_config())
+        assert rebuilt.get_config() == model.get_config()
+        assert rebuilt.count_parameters() == model.count_parameters()
+
+    @pytest.mark.parametrize("strategy", ["softmax", "one_vs_rest"])
+    def test_round_trip(self, strategy: str, tmp_path: Path) -> None:
+        model = _model(strategy=strategy)
+        x = torch.randn(BATCH, N_FEATURES)
+        path = tmp_path / "multiclass.pt"
+        save_checkpoint(model, path)
+        loaded = load_checkpoint(path)
+        assert isinstance(loaded, MulticlassHybridClassifier)
+        assert loaded.get_config() == model.get_config()
+        torch.testing.assert_close(loaded.predict_proba(x), model.predict_proba(x))
+        assert torch.equal(loaded.predict(x), model.predict(x))

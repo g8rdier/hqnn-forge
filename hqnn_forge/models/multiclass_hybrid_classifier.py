@@ -52,8 +52,12 @@ Design Notes
   :class:`~hqnn_forge.utils.FocalLoss`; this class exists for ``n_classes >
   2``.
 
-* Initialisation, encoder bypass and encoding options mirror
-  :class:`~hqnn_forge.models.HybridBinaryClassifier`.
+* Initialisation (``"restricted"``, ``"block_local"``, ``"normal"`` with
+  ``init_std``), encoder bypass and ``encoding_type`` behave as in
+  :class:`~hqnn_forge.models.HybridBinaryClassifier`.  The circuit options
+  added there since (``embedding_rotation``, ``entangler``, ``readout``,
+  ``encoder_activation``) are not supported here yet: this model always uses
+  the RX embedding, CNOT ring, all-qubit readout and a tanh encoder.
 
 Parameters
 ----------
@@ -68,18 +72,18 @@ n_classes:
 strategy:
     ``"softmax"`` or ``"one_vs_rest"``; see above.
 use_classical_encoder, dropout_p, device_name, diff_method, init_strategy,
-encoding_type:
+encoding_type, init_std:
     As for :class:`~hqnn_forge.models.HybridBinaryClassifier`.
 """
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 import torch
 import torch.nn as nn
 
-from hqnn_forge.encoding.angle_embedding import QuantumEncodingLayer
+from hqnn_forge.encoding.angle_embedding import DeviceName, DiffMethod, QuantumEncodingLayer
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.initializers.restricted_variance import (
     block_local_init_,
@@ -88,6 +92,8 @@ from hqnn_forge.initializers.restricted_variance import (
 from hqnn_forge.utils.modes import eval_mode
 
 MulticlassStrategy = Literal["softmax", "one_vs_rest"]
+
+_DEFAULT_INIT_STD = 0.1
 
 
 class MulticlassHybridClassifier(nn.Module):
@@ -118,9 +124,14 @@ class MulticlassHybridClassifier(nn.Module):
     diff_method:
         Gradient method.  Default: ``"adjoint"``.
     init_strategy:
-        ``"restricted"`` or ``"block_local"``.  Default: ``"restricted"``.
+        ``"restricted"``, ``"block_local"`` or ``"normal"``
+        (``N(0, init_std²)``).  Default: ``"restricted"``.
     encoding_type:
         ``"angle"`` or ``"iqp"``.  Default: ``"angle"``.
+    init_std:
+        Standard deviation for ``init_strategy="normal"``.  Default: 0.1.
+        Any other value with another ``init_strategy`` raises, since it would
+        be recorded in the config and ignored.
 
     Attributes
     ----------
@@ -154,17 +165,45 @@ class MulticlassHybridClassifier(nn.Module):
         strategy: MulticlassStrategy = "softmax",
         use_classical_encoder: bool = True,
         dropout_p: float = 0.0,
-        device_name: str = "lightning.qubit",
-        diff_method: str = "adjoint",
+        device_name: DeviceName = "lightning.qubit",
+        diff_method: DiffMethod = "adjoint",
         init_strategy: str = "restricted",
         encoding_type: str = "angle",
+        init_std: float = _DEFAULT_INIT_STD,
     ) -> None:
         super().__init__()
+        self._config: dict[str, Any] = dict(
+            n_input_features=n_input_features,
+            n_qubits=n_qubits,
+            n_layers=n_layers,
+            n_classes=n_classes,
+            strategy=strategy,
+            use_classical_encoder=use_classical_encoder,
+            dropout_p=dropout_p,
+            device_name=device_name,
+            diff_method=diff_method,
+            init_strategy=init_strategy,
+            encoding_type=encoding_type,
+            init_std=init_std,
+        )
 
         if n_classes < 2:
             raise ValueError(f"n_classes must be ≥ 2; got {n_classes}.")
         if strategy not in ("softmax", "one_vs_rest"):
             raise ValueError(f"strategy must be 'softmax' or 'one_vs_rest'; got {strategy!r}.")
+        if init_strategy not in ("restricted", "block_local", "normal"):
+            raise ValueError(
+                f"init_strategy must be 'restricted', 'block_local' or 'normal'; "
+                f"got {init_strategy!r}."
+            )
+        if init_std <= 0.0:
+            raise ValueError(f"init_std must be > 0; got {init_std}.")
+        if init_strategy != "normal" and init_std != _DEFAULT_INIT_STD:
+            raise ValueError(
+                f"init_std applies to init_strategy='normal' only; "
+                f"'{init_strategy}' derives its own sigma from the circuit size, so "
+                f"init_std={init_std} would be recorded in the config and ignored."
+            )
 
         self.n_input_features = n_input_features
         self.n_qubits = n_qubits
@@ -172,6 +211,7 @@ class MulticlassHybridClassifier(nn.Module):
         self.n_classes = n_classes
         self.strategy = strategy
         self.init_strategy = init_strategy
+        self.init_std = init_std
         self.use_classical_encoder = use_classical_encoder
 
         # ── Classical encoder ─────────────────────────────────────────────
@@ -194,16 +234,16 @@ class MulticlassHybridClassifier(nn.Module):
             self.quantum_layer = QuantumEncodingLayer(
                 n_qubits=n_qubits,
                 n_layers=n_layers,
-                device_name=device_name,  # type: ignore[arg-type]
-                diff_method=diff_method,  # type: ignore[arg-type]
+                device_name=device_name,
+                diff_method=diff_method,
             )
         elif encoding_type == "iqp":
             self.quantum_layer = IQPEncodingLayer(
                 n_qubits=n_qubits,
                 n_layers=n_layers,
                 n_repeats=1,
-                device_name=device_name,  # type: ignore[arg-type]
-                diff_method=diff_method,  # type: ignore[arg-type]
+                device_name=device_name,
+                diff_method=diff_method,
             )
         else:
             raise ValueError(f"Unsupported encoding_type: {encoding_type}")
@@ -219,7 +259,7 @@ class MulticlassHybridClassifier(nn.Module):
 
     # ------------------------------------------------------------------
     def _initialise_weights(self) -> None:
-        """Restricted-variance init on the quantum weights; Xavier on the linear layers."""
+        """Restricted-variance (or chosen) init on the quantum weights; Xavier on the linear layers."""
         for module in self.modules():
             if isinstance(module, nn.Linear):
                 nn.init.xavier_uniform_(module.weight)
@@ -229,6 +269,9 @@ class MulticlassHybridClassifier(nn.Module):
         weights = self.quantum_layer.qlayer.weights  # (n_layers, n_qubits, 3)
         if self.init_strategy == "block_local":
             block_local_init_(weights.data, n_qubits=self.n_qubits)
+        elif self.init_strategy == "normal":
+            with torch.no_grad():
+                weights.normal_(mean=0.0, std=self.init_std)
         else:
             restricted_normal_init_(weights.data, n_qubits=self.n_qubits, n_layers=self.n_layers)
 
@@ -265,6 +308,10 @@ class MulticlassHybridClassifier(nn.Module):
         Per-class probabilities, shape ``(batch_size, n_classes)``, rows
         summing to one.  Softmax of the logits under ``"softmax"``; sigmoid
         of each logit, normalised across classes, under ``"one_vs_rest"``.
+        The latter is computed as ``softmax(logsigmoid(logits))``, which is
+        the same quantity but stays finite when every sigmoid in a row
+        underflows (all logits below about -88 in float32), where the direct
+        ratio would be ``0 / 0``.
 
         Runs in eval mode whatever mode the model is in (dropout off) and
         restores every submodule's ``training`` flag afterwards.
@@ -273,16 +320,21 @@ class MulticlassHybridClassifier(nn.Module):
             logits = self.forward(x)
         if self.strategy == "softmax":
             return torch.softmax(logits, dim=-1)
-        scores = torch.sigmoid(logits)
-        return scores / scores.sum(dim=-1, keepdim=True)
+        return torch.softmax(nn.functional.logsigmoid(logits), dim=-1)
 
     # ------------------------------------------------------------------
     @torch.no_grad()
     def predict(self, x: torch.Tensor) -> torch.Tensor:
         """
         Predicted class labels, shape ``(batch_size,)``, dtype ``torch.long``:
-        the argmax over classes.  The same under both strategies, since the
-        normalisation in ``predict_proba`` is monotone per row.
+        the argmax of the logits, under both strategies.
+
+        This is the argmax of :meth:`predict_proba` in exact arithmetic, since
+        both normalisations are monotone per row, but not always in floating
+        point: under ``"one_vs_rest"`` large positive logits saturate the
+        sigmoid, so e.g. logits ``[17, 20, 30]`` give probabilities that tie at
+        ``1/3`` in float32 while ``predict`` still returns class 2.  Use this
+        method, not ``predict_proba(x).argmax(-1)``, for labels.
         """
         with eval_mode(self):
             logits = self.forward(x)
@@ -291,11 +343,13 @@ class MulticlassHybridClassifier(nn.Module):
     # ------------------------------------------------------------------
     def one_hot(self, y: torch.Tensor) -> torch.Tensor:
         """
-        Integer labels ``(batch_size,)`` → float one-hot ``(batch_size,
-        n_classes)``, the target format of ``nn.BCEWithLogitsLoss`` for the
-        one-vs-rest strategy.
+        Integer labels ``(batch_size,)`` → one-hot ``(batch_size, n_classes)``
+        in the dtype of the class heads, the target format of
+        ``nn.BCEWithLogitsLoss`` for the one-vs-rest strategy.  Matching the
+        heads' dtype keeps the loss of a ``model.double()`` in float64.
         """
-        return nn.functional.one_hot(y.long(), num_classes=self.n_classes).to(torch.float32)
+        one_hot = nn.functional.one_hot(y.long(), num_classes=self.n_classes)
+        return one_hot.to(self.head.weight.dtype)
 
     # ------------------------------------------------------------------
     def count_parameters(self, trainable_only: bool = True) -> int:
@@ -306,6 +360,17 @@ class MulticlassHybridClassifier(nn.Module):
             else (p for p in self.parameters() if p.requires_grad)
         )
         return sum(p.numel() for p in params)
+
+    # ------------------------------------------------------------------
+    def get_config(self) -> dict[str, Any]:
+        """
+        Constructor arguments of this model, as a fresh dict.
+
+        ``type(model)(**model.get_config())`` builds a model with the same
+        architecture (weights are re-initialised; load a ``state_dict`` for
+        those).  Used by ``hqnn_forge.utils.checkpoint``.
+        """
+        return dict(self._config)
 
     # ------------------------------------------------------------------
     def extra_repr(self) -> str:

@@ -41,7 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `lightning.gpu` and `lightning.kokkos` accepted as `device_name`, with a fallback chain
   through `lightning.qubit` to `default.qubit` and a `RuntimeWarning` per step
 - `MulticlassHybridClassifier`: shared quantum layer with `n_classes` linear heads, softmax or
-  one-vs-rest probabilities, argmax `predict`
+  one-vs-rest probabilities, argmax `predict`; supported by `save_checkpoint` /
+  `load_checkpoint`
 
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from
