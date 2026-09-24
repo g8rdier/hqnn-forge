@@ -24,10 +24,23 @@ reads the state vector.  The layer's variational block is included as it
 stands, with the layer's current weights.  For the single-upload encoders
 this makes no difference: the ansatz is a data-independent unitary ``V`` and
 ``|⟨Φ(x)|V†V|Φ(x')⟩|² = |⟨Φ(x)|Φ(x')⟩|²``, so the kernel is that of the
-embedding alone whatever the weights are.  For :class:`DataReuploadingLayer`
-the weights sit between uploads and do shape the kernel; they are then part
-of the kernel's definition (a "trainable kernel" in the sense of Hubregtsen
-et al. 2022), and the matrix is that of the layer as currently parametrised.
+embedding alone whatever the weights are.
+
+For :class:`DataReuploadingLayer` the blocks ``weights[0]`` to
+``weights[-2]`` sit between uploads and do shape the kernel; they are then
+part of the kernel's definition (a "trainable kernel" in the sense of
+Hubregtsen et al. 2022), and the matrix is that of the layer as currently
+parametrised.  The last block, ``weights[-1]``, comes after the last upload
+and cancels as the single-upload ansatz does, so with ``n_layers=1`` the
+kernel does not depend on ``weights`` at all.  A trainable
+``input_scaling`` multiplies the features inside every scaled upload and
+always shapes the kernel.
+
+Only the circuit as written is replayed.  A transform on the layer's QNode
+(noise, compilation) would be dropped by the replay, so any transform other
+than the ``broadcast_expand`` the encoders add for non-backprop
+differentiation makes these functions raise rather than return the kernel
+of a different circuit.
 
 Scaling: O(M²) against the VQC
 ------------------------------
@@ -91,14 +104,21 @@ def _resolve_layer(layer: nn.Module) -> tuple[qml.qnn.TorchLayer, int, PrepareIn
             f"IQPEncodingLayer, AmplitudeEncodingLayer, DataReuploadingLayer); "
             f"got {type(layer).__name__}."
         )
-    # apply_depolarizing_noise swaps qlayer.qnode for a default.mixed QNode
-    # with a qml.noise.insert transform.  The level=0 tape drops that
-    # transform and the replay runs on default.qubit, so the kernel would be
-    # the noiseless one without any sign of it.
-    if getattr(qlayer, "_hqnn_noise_original", None) is not None:
+    # The level=0 tape drops every transform on the QNode and the replay runs
+    # on default.qubit, so a transformed circuit (apply_depolarizing_noise's
+    # qml.noise.insert, qml.add_noise, a compile pass) would silently give the
+    # kernel of the untransformed one.  broadcast_expand only splits a batch
+    # into per-sample tapes and leaves each circuit as it is.
+    unknown = [
+        t
+        for t in qlayer.qnode.compile_pipeline
+        if t.tape_transform is not qml.transforms.broadcast_expand.tape_transform
+    ]
+    if unknown:
         raise RuntimeError(
-            "quantum_kernel_matrix computes the noiseless state-vector kernel and "
-            "cannot run inside apply_depolarizing_noise; call it outside the block."
+            f"quantum_kernel_matrix computes the untransformed state-vector kernel, but "
+            f"the layer's QNode carries {unknown}, which the replay would drop.  Inside "
+            f"apply_depolarizing_noise, call it outside the block."
         )
     return qlayer, n_qubits, prepare
 
@@ -111,14 +131,9 @@ def _prepare(X: torch.Tensor, prepare: PrepareInputs, name: str) -> torch.Tensor
         raise ValueError(f"{name} must have shape (n_samples, n_features); got {tuple(X.shape)}.")
     if X.shape[0] == 0:
         raise ValueError(f"{name} has no samples.")
-    X = X.detach().to(torch.float64)
-    # Checked here for every encoder: a NaN angle is simulated without error
-    # and turns a whole row and column of K into NaN, diagonal included.
-    if not bool(torch.isfinite(X).all()):
-        raise ValueError(f"{name} contains NaN or ±inf.")
-    # The same validation and transform forward applies (width check, the
-    # amplitude encoder's padding and normalisation).
-    return prepare(X)
+    # The same validation and transform forward applies (width and finiteness
+    # checks, the amplitude encoder's padding and normalisation).
+    return prepare(X.detach().to(torch.float64))
 
 
 def _simulate(prepared: torch.Tensor, qlayer: qml.qnn.TorchLayer, n_qubits: int) -> torch.Tensor:
@@ -172,9 +187,10 @@ def encoded_states(X: torch.Tensor, layer: nn.Module) -> torch.Tensor:
         ``prepare_inputs`` rejects it (wrong number of features, an all-zero
         amplitude vector).
     RuntimeError
-        If called inside :func:`hqnn_forge.noise.apply_depolarizing_noise` on
-        the same layer: the replay is noiseless, so it refuses rather than
-        return the noiseless states.
+        If the layer's QNode carries a transform other than
+        ``broadcast_expand``, for example inside
+        :func:`hqnn_forge.noise.apply_depolarizing_noise`: the replay would
+        drop it, so it refuses rather than return the untransformed states.
     """
     qlayer, n_qubits, prepare = _resolve_layer(layer)
     return _simulate(_prepare(X, prepare, "X"), qlayer, n_qubits)
@@ -222,8 +238,9 @@ def kernel_from_states(
     states_y = states_x if symmetric else states_y.to(torch.complex128)
     # The n_x × n_y intermediates dominate memory for a large training set:
     # the complex Gram matrix (16 bytes per entry) and the float64 kernel
-    # (8 bytes).  The Gram matrix is freed as soon as its modulus is taken,
-    # and everything after that works in place.
+    # (8 bytes).  The Gram matrix is freed as soon as its modulus is taken.
+    # The squaring is in place; the symmetric path's mirroring allocates one
+    # more n × n float64 matrix, which still fits under the 24 n² byte peak.
     gram = states_x @ states_y.conj().T
     kernel = gram.abs()
     del gram

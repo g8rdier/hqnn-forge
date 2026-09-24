@@ -74,6 +74,7 @@ from hqnn_forge.encoding.angle_embedding import (
     _expand_batch_dimension,
     _resolve_device,
     apply_variational_layers,
+    check_inputs,
     measure_z,
 )
 
@@ -359,25 +360,21 @@ class AmplitudeEncodingLayer(nn.Module):
         (:mod:`hqnn_forge.kernels`) validate and transform inputs exactly as
         ``forward`` does.
         """
-        if x.shape[-1] != self.n_features:
-            raise ValueError(
-                f"Input feature dimension {x.shape[-1]} does not match "
-                f"n_features={self.n_features} (at most 2**n_qubits={self.n_amplitudes} "
-                f"features fit in {self.n_qubits} qubits)."
-            )
+        check_inputs(
+            x,
+            self.n_features,
+            name="n_features",
+            hint=f"  At most 2**n_qubits={self.n_amplitudes} features fit in "
+            f"{self.n_qubits} qubits.",
+        )
         # Dividing by the largest |x_k| first keeps the norm in [1, √n]: a raw
         # float32 norm overflows to inf from about 1.8e19 and underflows to 0
         # below about 1e-19.  After the division the largest entry is ±1, so
         # any non-zero finite scale is safe and only an exact zero is refused.
         # x/‖x‖ does not depend on the scale, so neither does its gradient,
-        # and the scale can be detached.  amax propagates NaN, so this one
-        # check (and one host sync) covers NaN, ±inf and all-zero.
+        # and the scale can be detached.
         scale = x.detach().abs().amax(dim=-1, keepdim=True)
-        if not bool((torch.isfinite(scale) & (scale > 0)).all()):
-            if not bool(torch.isfinite(x).all()):
-                raise ValueError(
-                    "Amplitude embedding cannot encode a feature vector containing NaN or ±inf."
-                )
+        if not bool((scale > 0).all()):
             raise ValueError(
                 "Amplitude embedding cannot encode an all-zero feature vector: "
                 "it has no direction, so there is no state to prepare."

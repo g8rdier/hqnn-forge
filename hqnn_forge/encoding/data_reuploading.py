@@ -93,6 +93,7 @@ from hqnn_forge.encoding.angle_embedding import (
     _expand_batch_dimension,
     _resolve_device,
     apply_variational_layers,
+    check_inputs,
     measure_z,
     readout_wires,
     validate_circuit_options,
@@ -413,7 +414,7 @@ class DataReuploadingLayer(nn.Module):
     # ------------------------------------------------------------------
     def prepare_inputs(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Check that ``x`` has ``n_qubits`` features; the angles are used as given.
+        Check that ``x`` has ``n_qubits`` finite features; the angles are used as given.
 
         The optional ``input_scaling`` is a circuit parameter, applied inside
         the QNode, not here.
@@ -423,10 +424,7 @@ class DataReuploadingLayer(nn.Module):
         (:mod:`hqnn_forge.kernels`) validate and transform inputs exactly as
         ``forward`` does.
         """
-        if x.shape[-1] != self.n_qubits:
-            raise ValueError(
-                f"Input feature dimension {x.shape[-1]} does not match n_qubits={self.n_qubits}."
-            )
+        check_inputs(x, self.n_qubits)
         return x
 
     # ------------------------------------------------------------------

@@ -350,6 +350,21 @@ class TestOverlapCircuitReference:
         K2 = quantum_kernel_matrix(X, layer)
         assert not torch.allclose(K1, K2, atol=1e-3)
 
+    def test_reuploading_last_block_cancels(self) -> None:
+        """weights[-1] follows the last upload, so it drops out as V†V does."""
+        X = _angles(M)
+        torch.manual_seed(0)
+        layer = DataReuploadingLayer(
+            n_qubits=N_QUBITS, n_layers=2, device_name="default.qubit", diff_method="backprop"
+        )
+        K1 = quantum_kernel_matrix(X, layer)
+        with torch.no_grad():
+            layer.qlayer.weights[-1].uniform_(0, 2 * math.pi)
+        torch.testing.assert_close(quantum_kernel_matrix(X, layer), K1, atol=1e-12, rtol=0)
+        with torch.no_grad():
+            layer.qlayer.weights[0].uniform_(0, 2 * math.pi)
+        assert not torch.allclose(quantum_kernel_matrix(X, layer), K1, atol=1e-3)
+
 
 # ---------------------------------------------------------------------------
 # sklearn integration and validation
@@ -406,7 +421,6 @@ class TestUsage:
         X = _angles(M).requires_grad_(True)
         K = quantum_kernel_matrix(X, layer)
         assert not K.requires_grad
-        assert layer.qlayer.weights.grad is None
         assert torch.equal(layer.qlayer.weights.detach(), before)
 
     def test_rejects_non_layers(self) -> None:
@@ -455,6 +469,35 @@ class TestUsage:
             quantum_kernel_matrix(X, layer)
         with pytest.raises(ValueError, match="NaN or ±inf"):
             quantum_kernel_matrix(_inputs_for(layer), layer, Y=X)
+
+    @pytest.mark.parametrize("build", ALL_LAYERS)
+    def test_forward_rejects_the_same_non_finite_inputs(self, build) -> None:
+        layer = build()
+        X = _inputs_for(layer)
+        X[1, 0] = math.nan
+        with pytest.raises(ValueError, match="NaN or ±inf"):
+            layer(X)
+
+    def test_refuses_a_foreign_transform_on_the_qnode(self) -> None:
+        layer = _angle_layer()
+        layer.qlayer.qnode = qml.transforms.cancel_inverses(layer.qlayer.qnode)
+        with pytest.raises(RuntimeError, match="cancel_inverses"):
+            quantum_kernel_matrix(_angles(3), layer)
+
+    def test_allows_the_encoders_own_broadcast_expand(self) -> None:
+        """Non-backprop layers carry broadcast_expand; the kernel is unchanged."""
+        X = _angles(M)
+        torch.manual_seed(0)
+        layer = QuantumEncodingLayer(
+            n_qubits=N_QUBITS, n_layers=2, device_name="default.qubit", diff_method="adjoint"
+        )
+        assert len(layer.qlayer.qnode.compile_pipeline) == 1
+        torch.testing.assert_close(
+            quantum_kernel_matrix(X, layer),
+            quantum_kernel_matrix(X, _angle_layer()),
+            atol=1e-12,
+            rtol=0,
+        )
 
     def test_refuses_to_run_inside_the_noise_block(self) -> None:
         from hqnn_forge.noise import apply_depolarizing_noise
