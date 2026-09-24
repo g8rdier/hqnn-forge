@@ -65,6 +65,7 @@ def apply_variational_layers(
     n_qubits: int,
     n_layers: int,
     entangler: Entangler = "ring",
+    layer_offset: int = 0,
 ) -> None:
     """
     Apply the ``n_layers`` variational blocks to the current circuit.
@@ -81,9 +82,23 @@ def apply_variational_layers(
     Both take ``weights`` of shape ``(n_layers, n_qubits, 3)`` and use
     ``n_layers · n_qubits`` ``Rot`` and CNOT gates; they differ in gate order
     and, from the second layer on, in which qubits the CNOTs connect.
+
+    ``layer_offset`` is the index of the first block within the whole ansatz,
+    for circuits that interleave other gates between blocks and so apply them
+    a few at a time: the ``"strongly_entangling"`` range of block ``ℓ`` is
+    ``(layer_offset + ℓ) mod (n-1) + 1``, so applying the blocks one by one
+    with offsets ``0 … L-1`` gives the same ranges as applying all ``L`` at
+    once.  The ``"ring"`` block does not depend on the layer index.
     """
     if entangler == "strongly_entangling":
-        qml.StronglyEntanglingLayers(weights, wires=range(n_qubits))
+        # A single wire has no CNOT partner: leave the ranges to the template,
+        # which uses 0 there instead of dividing by n - 1 = 0.
+        ranges = (
+            [(layer_offset + layer) % (n_qubits - 1) + 1 for layer in range(n_layers)]
+            if n_qubits > 1
+            else None
+        )
+        qml.StronglyEntanglingLayers(weights, wires=range(n_qubits), ranges=ranges)
         return
     if entangler != "ring":
         raise ValueError(f"entangler must be 'ring' or 'strongly_entangling'; got {entangler!r}.")
@@ -99,6 +114,28 @@ def apply_variational_layers(
                 weights[layer, qubit, 2],  # ω
                 wires=qubit,
             )
+
+
+def validate_circuit_options(
+    n_qubits: int,
+    entangler: Entangler,
+    readout: Readout,
+    rotation: RotationAxis | None = None,
+) -> None:
+    """
+    Raise ``ValueError`` for an ``entangler``, ``readout`` or (if given)
+    ``rotation`` outside the allowed values.
+
+    The encoding builders call this eagerly: ``qml.AngleEmbedding`` only
+    rejects the axis when the circuit first runs, which is a forward pass away
+    from the constructor that was given it -- and past get_config and a
+    checkpoint.
+    """
+    readout_wires(n_qubits, readout)
+    if entangler not in ("ring", "strongly_entangling"):
+        raise ValueError(f"entangler must be 'ring' or 'strongly_entangling'; got {entangler!r}.")
+    if rotation is not None and rotation not in ("X", "Y", "Z"):
+        raise ValueError(f"rotation must be 'X', 'Y' or 'Z'; got {rotation!r}.")
 
 
 def readout_wires(n_qubits: int, readout: Readout = "all") -> list[int]:
@@ -221,14 +258,7 @@ def _make_angle_embedding_circuit(
     callable
         A plain Python function suitable for ``@qml.qnode`` decoration.
     """
-    readout_wires(n_qubits, readout)  # validate early
-    if entangler not in ("ring", "strongly_entangling"):
-        raise ValueError(f"entangler must be 'ring' or 'strongly_entangling'; got {entangler!r}.")
-    if rotation not in ("X", "Y", "Z"):
-        # Eagerly, like the two above: qml.AngleEmbedding only rejects the axis
-        # when the circuit first runs, which is a forward pass away from the
-        # constructor that was given it -- and past get_config and a checkpoint.
-        raise ValueError(f"rotation must be 'X', 'Y' or 'Z'; got {rotation!r}.")
+    validate_circuit_options(n_qubits, entangler, readout, rotation)
 
     def circuit(
         inputs: torch.Tensor,

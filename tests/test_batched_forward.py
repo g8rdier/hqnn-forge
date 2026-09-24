@@ -10,11 +10,13 @@ device/diff_method pair the library supports.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
+from functools import partial
 
 import pytest
 import torch
 
-from hqnn_forge.encoding import QuantumEncodingLayer
+from hqnn_forge.encoding import DataReuploadingLayer, QuantumEncodingLayer
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.initializers import restricted_normal_init_
 
@@ -49,15 +51,33 @@ DEVICE_CONFIGS = [
 LAYER_CLASSES = [
     pytest.param(QuantumEncodingLayer, id="angle"),
     pytest.param(IQPEncodingLayer, id="iqp"),
+    pytest.param(DataReuploadingLayer, id="reuploading"),
+    pytest.param(
+        partial(DataReuploadingLayer, trainable_input_scaling=True), id="reuploading-scaled"
+    ),
+    # Z leaves its first upload unscaled, so scaling row r multiplies upload r + 1.
+    pytest.param(
+        partial(DataReuploadingLayer, rotation="Z", trainable_input_scaling=True),
+        id="reuploading-scaled-z",
+    ),
 ]
 
 
-def _build(layer_cls: type, device_name: str, diff_method: str) -> torch.nn.Module:
+def _build(
+    layer_cls: Callable[..., torch.nn.Module], device_name: str, diff_method: str
+) -> torch.nn.Module:
     torch.manual_seed(0)
     layer = layer_cls(
         n_qubits=N_QUBITS, n_layers=N_LAYERS, device_name=device_name, diff_method=diff_method
     )
     restricted_normal_init_(layer.qlayer.weights, n_qubits=N_QUBITS, n_layers=N_LAYERS)
+    scaling = getattr(layer.qlayer, "input_scaling", None)
+    if scaling is not None:
+        # Distinct per-entry scales rather than the ones-initialisation, so each
+        # upload sees differently scaled features.  Row indexing itself is pinned
+        # against reference circuits in test_data_reuploading.py.
+        with torch.no_grad():
+            scaling.copy_(torch.linspace(0.5, 1.5, scaling.numel()).reshape(scaling.shape))
     return layer
 
 
@@ -76,7 +96,11 @@ def batch() -> torch.Tensor:
 @pytest.mark.parametrize("device_name, diff_method", DEVICE_CONFIGS)
 class TestBatchedMatchesPerSample:
     def test_outputs_match(
-        self, layer_cls: type, device_name: str, diff_method: str, batch: torch.Tensor
+        self,
+        layer_cls: Callable[..., torch.nn.Module],
+        device_name: str,
+        diff_method: str,
+        batch: torch.Tensor,
     ) -> None:
         layer = _build(layer_cls, device_name, diff_method)
         with torch.no_grad():
@@ -86,7 +110,11 @@ class TestBatchedMatchesPerSample:
         torch.testing.assert_close(batched, looped, rtol=0, atol=1e-6)
 
     def test_gradients_match(
-        self, layer_cls: type, device_name: str, diff_method: str, batch: torch.Tensor
+        self,
+        layer_cls: Callable[..., torch.nn.Module],
+        device_name: str,
+        diff_method: str,
+        batch: torch.Tensor,
     ) -> None:
         layer = _build(layer_cls, device_name, diff_method)
         # Weight the outputs so the loss depends on every (sample, qubit) entry
@@ -95,17 +123,23 @@ class TestBatchedMatchesPerSample:
 
         layer.zero_grad()
         (layer(batch) * weights).sum().backward()
-        grad_batched = layer.qlayer.weights.grad.clone()
+        grads_batched = {n: p.grad.clone() for n, p in layer.named_parameters()}
 
         layer.zero_grad()
         (_per_sample(layer, batch) * weights).sum().backward()
-        grad_looped = layer.qlayer.weights.grad.clone()
+        grads_looped = {n: p.grad.clone() for n, p in layer.named_parameters()}
 
-        assert grad_batched.abs().sum() > 0
-        torch.testing.assert_close(grad_batched, grad_looped, rtol=1e-5, atol=1e-6)
+        # Every trainable tensor, e.g. the re-uploading layer's input_scaling too.
+        for name, grad_batched in grads_batched.items():
+            assert grad_batched.abs().sum() > 0, name
+            torch.testing.assert_close(grad_batched, grads_looped[name], rtol=1e-5, atol=1e-6)
 
     def test_rows_are_independent(
-        self, layer_cls: type, device_name: str, diff_method: str, batch: torch.Tensor
+        self,
+        layer_cls: Callable[..., torch.nn.Module],
+        device_name: str,
+        diff_method: str,
+        batch: torch.Tensor,
     ) -> None:
         """Row i of the batched output is the single-sample output for row i."""
         layer = _build(layer_cls, device_name, diff_method)
@@ -131,7 +165,11 @@ class TestBatchShapes:
 @pytest.mark.parametrize("device_name, diff_method", DEVICE_CONFIGS)
 class TestInputGradients:
     def test_input_gradients_match_per_sample(
-        self, layer_cls: type, device_name: str, diff_method: str, batch: torch.Tensor
+        self,
+        layer_cls: Callable[..., torch.nn.Module],
+        device_name: str,
+        diff_method: str,
+        batch: torch.Tensor,
     ) -> None:
         """
         With a classical encoder upstream the loss needs d(out)/d(inputs), so

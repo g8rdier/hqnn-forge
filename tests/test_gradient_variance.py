@@ -24,7 +24,7 @@ from hqnn_forge.diagnostics import (
     gradient_variance,
     gradient_variance_sweep,
 )
-from hqnn_forge.encoding import QuantumEncodingLayer
+from hqnn_forge.encoding import DataReuploadingLayer, QuantumEncodingLayer
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.models import HybridBinaryClassifier
 
@@ -215,6 +215,14 @@ class TestMechanics:
         """Measuring one of two weight tensors would understate total_variance."""
         with pytest.raises(NotImplementedError, match="w1, w2"):
             gradient_variance(_two_weight_layer(), n_samples=3)
+
+    def test_reuploading_layer_is_measured_only_without_input_scaling(self) -> None:
+        """Trainable input_scaling is a second tensor next to weights, so it is refused."""
+        plain = DataReuploadingLayer(n_qubits=2, n_layers=2, **CPU)
+        assert gradient_variance(plain, n_samples=3).per_parameter.shape == (2, 2, 3)
+        scaled = DataReuploadingLayer(n_qubits=2, n_layers=2, trainable_input_scaling=True, **CPU)
+        with pytest.raises(NotImplementedError, match="input_scaling, weights"):
+            gradient_variance(scaled, n_samples=3)
 
     def test_equality_is_a_bool_and_the_result_hashes(self) -> None:
         """per_parameter is compare=False, so == does not return a Tensor."""

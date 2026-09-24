@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AmplitudeEncodingLayer`: amplitude embedding of up to `2**n_qubits` features per sample,
   with zero-padding and L2 normalisation in `forward`, ahead of the same entangling ansatz;
   gradients with respect to the inputs are only supported under `backprop`
+- `DataReuploadingLayer`: angle embedding repeated before every variational layer
+  (Pérez-Salinas et al. 2020), with the same `entangler` and `readout` options and optional
+  trainable per-upload input scaling; `rotation="Z"` requires `n_layers >= 2` and leaves its
+  first upload, a phase on `|0⟩`, unscaled
+- `apply_variational_layers` takes a `layer_offset`, so a circuit applying the blocks one at
+  a time keeps the `"strongly_entangling"` ranges of the whole ansatz
 
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from
