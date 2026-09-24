@@ -65,6 +65,7 @@ def apply_variational_layers(
     n_qubits: int,
     n_layers: int,
     entangler: Entangler = "ring",
+    layer_offset: int = 0,
 ) -> None:
     """
     Apply the ``n_layers`` variational blocks to the current circuit.
@@ -81,9 +82,17 @@ def apply_variational_layers(
     Both take ``weights`` of shape ``(n_layers, n_qubits, 3)`` and use
     ``n_layers · n_qubits`` ``Rot`` and CNOT gates; they differ in gate order
     and, from the second layer on, in which qubits the CNOTs connect.
+
+    ``layer_offset`` is the index of the first block within the whole ansatz,
+    for circuits that interleave other gates between blocks and so apply them
+    a few at a time: the ``"strongly_entangling"`` range of block ``ℓ`` is
+    ``(layer_offset + ℓ) mod (n-1) + 1``, so applying the blocks one by one
+    with offsets ``0 … L-1`` gives the same ranges as applying all ``L`` at
+    once.  The ``"ring"`` block does not depend on the layer index.
     """
     if entangler == "strongly_entangling":
-        qml.StronglyEntanglingLayers(weights, wires=range(n_qubits))
+        ranges = [(layer_offset + layer) % (n_qubits - 1) + 1 for layer in range(n_layers)]
+        qml.StronglyEntanglingLayers(weights, wires=range(n_qubits), ranges=ranges)
         return
     if entangler != "ring":
         raise ValueError(f"entangler must be 'ring' or 'strongly_entangling'; got {entangler!r}.")
