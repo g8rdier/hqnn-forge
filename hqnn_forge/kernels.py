@@ -35,13 +35,21 @@ A kernel matrix over ``M`` training points has ``M(M+1)/2`` distinct entries,
 of which the ``M`` diagonal ones are 1 by construction.  On hardware the
 other ``M(M-1)/2``, that is ``O(M²)``, are circuit evaluations, each an
 overlap estimate with shot noise, before the SVM even starts, and every
-prediction costs ``M`` more overlaps against the training set.  A VQC needs ``O(M)`` circuit
-evaluations per epoch and one per prediction.  On a state-vector simulator
-the picture is friendlier: ``M`` state vectors of size ``2^n`` and one
-``M × M`` Gram product, which is what this module does.  Either way the
-kernel approach stops being practical at the ``M`` where the VQC approach is
-still routine, which is the trade-off discussed in the project's academic
-context.
+prediction costs ``M`` more overlaps against the training set.
+
+A VQC with ``P`` trainable circuit parameters estimates its gradient on
+hardware by the parameter-shift rule, about ``2P + 1`` circuit evaluations
+per sample, so ``E`` epochs cost about ``E · M · (2P + 1)`` evaluations, and
+a prediction costs one.  Training the kernel is therefore the cheaper of the
+two until ``M(M-1)/2`` overtakes ``E · M · (2P + 1)``, around
+``M ≈ 2E(2P + 1)``: for ``QuantumEncodingLayer(n_qubits=8, n_layers=2)``
+(``P = 48``) trained for 50 epochs, that is ``M ≈ 9,700``.  Past that point,
+and at every prediction whatever ``M`` is, the kernel costs more.
+
+On a state-vector simulator the picture is different: ``M`` state vectors of
+size ``2^n`` and one ``M × M`` Gram product, which is what this module does.
+There the limit is memory for the ``M × M`` matrix (see the Notes of
+:func:`quantum_kernel_matrix`), not circuit evaluations.
 
 References
 ----------
@@ -83,6 +91,15 @@ def _resolve_layer(layer: nn.Module) -> tuple[qml.qnn.TorchLayer, int, PrepareIn
             f"IQPEncodingLayer, AmplitudeEncodingLayer, DataReuploadingLayer); "
             f"got {type(layer).__name__}."
         )
+    # apply_depolarizing_noise swaps qlayer.qnode for a default.mixed QNode
+    # with a qml.noise.insert transform.  The level=0 tape drops that
+    # transform and the replay runs on default.qubit, so the kernel would be
+    # the noiseless one without any sign of it.
+    if getattr(qlayer, "_hqnn_noise_original", None) is not None:
+        raise RuntimeError(
+            "quantum_kernel_matrix computes the noiseless state-vector kernel and "
+            "cannot run inside apply_depolarizing_noise; call it outside the block."
+        )
     return qlayer, n_qubits, prepare
 
 
@@ -94,9 +111,14 @@ def _prepare(X: torch.Tensor, prepare: PrepareInputs, name: str) -> torch.Tensor
         raise ValueError(f"{name} must have shape (n_samples, n_features); got {tuple(X.shape)}.")
     if X.shape[0] == 0:
         raise ValueError(f"{name} has no samples.")
+    X = X.detach().to(torch.float64)
+    # Checked here for every encoder: a NaN angle is simulated without error
+    # and turns a whole row and column of K into NaN, diagonal included.
+    if not bool(torch.isfinite(X).all()):
+        raise ValueError(f"{name} contains NaN or ±inf.")
     # The same validation and transform forward applies (width check, the
     # amplitude encoder's padding and normalisation).
-    return prepare(X.detach().to(torch.float64))
+    return prepare(X)
 
 
 def _simulate(prepared: torch.Tensor, qlayer: qml.qnn.TorchLayer, n_qubits: int) -> torch.Tensor:
@@ -146,8 +168,13 @@ def encoded_states(X: torch.Tensor, layer: nn.Module) -> torch.Tensor:
     TypeError
         If ``layer`` is not an encoding layer or ``X`` is not a tensor.
     ValueError
-        If ``X`` is not a non-empty 2-D tensor, or ``prepare_inputs`` rejects
-        it (wrong number of features, an all-zero amplitude vector).
+        If ``X`` is not a non-empty 2-D tensor, contains NaN or ±inf, or
+        ``prepare_inputs`` rejects it (wrong number of features, an all-zero
+        amplitude vector).
+    RuntimeError
+        If called inside :func:`hqnn_forge.noise.apply_depolarizing_noise` on
+        the same layer: the replay is noiseless, so it refuses rather than
+        return the noiseless states.
     """
     qlayer, n_qubits, prepare = _resolve_layer(layer)
     return _simulate(_prepare(X, prepare, "X"), qlayer, n_qubits)
@@ -164,6 +191,8 @@ def kernel_from_states(
     ----------
     states_x:
         States of shape ``(n_x, dim)``, as returned by :func:`encoded_states`.
+        Any real or complex dtype; both sets are promoted to ``complex128``,
+        so states stored as ``complex64`` can be reused as they are.
     states_y:
         Optional second set of states, shape ``(n_y, dim)``.  ``None``
         (default) gives the square Gram matrix of ``states_x`` with itself,
@@ -189,12 +218,22 @@ def kernel_from_states(
             f"states_x and states_y must be 2-D with the same state dimension; got "
             f"{tuple(states_x.shape)} and {tuple(states_y.shape)}."
         )
-    kernel = (states_x @ states_y.conj().T).abs().pow(2).to(torch.float64)
+    states_x = states_x.to(torch.complex128)
+    states_y = states_x if symmetric else states_y.to(torch.complex128)
+    # The n_x × n_y intermediates dominate memory for a large training set:
+    # the complex Gram matrix (16 bytes per entry) and the float64 kernel
+    # (8 bytes).  The Gram matrix is freed as soon as its modulus is taken,
+    # and everything after that works in place.
+    gram = states_x @ states_y.conj().T
+    kernel = gram.abs()
+    del gram
+    kernel.square_()
     if symmetric:
-        # Exact symmetry, not just up to rounding.  Nothing is clamped: the
-        # diagonal is left as computed, so a state that is not normalised
-        # shows up as K[i, i] != 1.
-        kernel = 0.5 * (kernel + kernel.T)
+        # Exact symmetry, not just up to rounding: mirror the upper triangle
+        # onto the lower one.  Nothing is clamped: the diagonal is left as
+        # computed, so a state that is not normalised shows up as K[i, i] != 1.
+        kernel.triu_()
+        kernel += kernel.triu(1).T
     return kernel
 
 
@@ -231,7 +270,7 @@ def quantum_kernel_matrix(
 
     Raises
     ------
-    TypeError, ValueError
+    TypeError, ValueError, RuntimeError
         As :func:`encoded_states`, for ``X`` and ``Y``.  Both are validated
         before anything is simulated.
 
@@ -248,9 +287,15 @@ def quantum_kernel_matrix(
 
     Notes
     -----
-    Each input set is one batched circuit replay, and the kernel one
-    ``(n, 2^q) × (2^q, n)`` product, so the square case is O(n · 2^q) in
-    memory and O(n² · 2^q) in time.  ``|G|²`` with ``G = S S†`` is the Schur
+    ``X`` and ``Y`` are simulated together in one batched circuit replay,
+    and the kernel is one ``(n, 2^q) × (2^q, n)`` product, so time is
+    O(n² · 2^q).  Memory is O(n · 2^q) for the states plus O(n²) for the
+    matrix: at peak the complex128 Gram product and the float64 kernel sit
+    side by side, about ``24 n²`` bytes, which is 9.6 GB at ``n = 20,000``.
+    For larger training sets, compute :func:`encoded_states` once and build
+    the matrix in row blocks with :func:`kernel_from_states`.
+
+    ``|G|²`` with ``G = S S†`` is the Schur
     product of a positive semi-definite matrix with its conjugate, hence
     positive semi-definite itself; small negative eigenvalues of order 1e-15
     are rounding.
@@ -258,7 +303,10 @@ def quantum_kernel_matrix(
     qlayer, n_qubits, prepare = _resolve_layer(layer)
     # Validate both input sets before simulating either.
     prepared_x = _prepare(X, prepare, "X")
-    prepared_y = None if Y is None else _prepare(Y, prepare, "Y")
-    states_x = _simulate(prepared_x, qlayer, n_qubits)
-    states_y = None if prepared_y is None else _simulate(prepared_y, qlayer, n_qubits)
-    return kernel_from_states(states_x, states_y)
+    if Y is None:
+        return kernel_from_states(_simulate(prepared_x, qlayer, n_qubits))
+    prepared_y = _prepare(Y, prepare, "Y")
+    # One replay for both sets: same circuit and weights, one tape and device.
+    states = _simulate(torch.cat([prepared_x, prepared_y]), qlayer, n_qubits)
+    n_x = prepared_x.shape[0]
+    return kernel_from_states(states[:n_x], states[n_x:])

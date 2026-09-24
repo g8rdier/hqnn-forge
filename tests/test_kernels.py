@@ -8,11 +8,12 @@ Two of the encoders have closed-form kernels, which serve as oracles:
 * Angle embedding (RX, product state): ``k(x, y) = Π_i cos²((x_i − y_i) / 2)``.
 * Amplitude embedding: ``k(x, y) = (x·y)² / (‖x‖² ‖y‖²)``.
 
-The IQP and re-uploading kernels are checked against the overlap circuit
-``|⟨0| U†(x) U(y) |0⟩|²`` built directly in PennyLane.  That reference comes
-from the same replayed tape, so ``TestMatchesForward`` separately checks that
-the replayed states reproduce ``layer(x)``: ⟨Z_i⟩ computed from
-``encoded_states`` must equal what the layer's own forward returns.
+The IQP and re-uploading kernels are checked two ways: against the overlap
+circuit ``|⟨0| U†(x) U(y) |0⟩|²`` built from the layer's own tape, and against
+states from circuits written out in this file from the documented topology,
+which do not go through the replayed tape at all.  ``TestMatchesForward``
+also checks that the replayed states reproduce ``layer(x)``: ⟨Z_i⟩ computed
+from ``encoded_states`` must equal what the layer's own forward returns.
 """
 
 from __future__ import annotations
@@ -265,13 +266,74 @@ def _overlap_kernel(layer: torch.nn.Module, X: torch.Tensor) -> torch.Tensor:
     return K
 
 
+def _written_out_kernel(states: list[torch.Tensor]) -> torch.Tensor:
+    S = torch.stack([torch.as_tensor(s).to(torch.complex128) for s in states])
+    return (S @ S.conj().T).abs().pow(2)
+
+
+def _iqp_reference(X: torch.Tensor) -> torch.Tensor:
+    """qml.IQPEmbedding's own decomposition; the ansatz after it cancels."""
+    dev = qml.device("default.qubit", wires=N_QUBITS)
+
+    @qml.qnode(dev)
+    def state(x: torch.Tensor) -> qml.measurements.StateMP:
+        qml.IQPEmbedding(x, wires=range(N_QUBITS))
+        return qml.state()
+
+    return _written_out_kernel([state(x) for x in X])
+
+
+def _reuploading_reference(X: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+    """RX(x) upload, CNOT ring, Rot on every qubit, repeated per layer."""
+    dev = qml.device("default.qubit", wires=N_QUBITS)
+
+    @qml.qnode(dev)
+    def state(x: torch.Tensor) -> qml.measurements.StateMP:
+        for layer in range(weights.shape[0]):
+            for q in range(N_QUBITS):
+                qml.RX(x[q], wires=q)
+            for q in range(N_QUBITS):
+                qml.CNOT(wires=[q, (q + 1) % N_QUBITS])
+            for q in range(N_QUBITS):
+                qml.Rot(*weights[layer, q], wires=q)
+        return qml.state()
+
+    return _written_out_kernel([state(x) for x in X])
+
+
+def _layers(*ids: str) -> list:
+    selected = [p for p in ALL_LAYERS if p.id in ids]
+    assert [p.id for p in selected] == list(ids)
+    return selected
+
+
 class TestOverlapCircuitReference:
-    @pytest.mark.parametrize("build", ALL_LAYERS[1:2] + ALL_LAYERS[3:])
+    @pytest.mark.parametrize("build", _layers("iqp", "reuploading"))
     def test_matches_overlap_circuit(self, build) -> None:
         layer = build()
         X = _angles(M)
         K = quantum_kernel_matrix(X, layer)
         torch.testing.assert_close(K, _overlap_kernel(layer, X), atol=1e-10, rtol=0)
+
+    def test_iqp_matches_a_written_out_circuit(self) -> None:
+        layer = IQPEncodingLayer(
+            n_qubits=N_QUBITS, n_layers=1, device_name="default.qubit", diff_method="backprop"
+        )
+        X = _angles(M)
+        K = quantum_kernel_matrix(X, layer)
+        torch.testing.assert_close(K, _iqp_reference(X), atol=1e-10, rtol=0)
+
+    def test_reuploading_matches_a_written_out_circuit(self) -> None:
+        layer = DataReuploadingLayer(
+            n_qubits=N_QUBITS, n_layers=3, device_name="default.qubit", diff_method="backprop"
+        )
+        torch.manual_seed(2)
+        with torch.no_grad():
+            layer.qlayer.weights.uniform_(0, 2 * math.pi)
+        weights = layer.qlayer.weights.detach().to(torch.float64)
+        X = _angles(M)
+        K = quantum_kernel_matrix(X, layer)
+        torch.testing.assert_close(K, _reuploading_reference(X, weights), atol=1e-10, rtol=0)
 
     def test_reuploading_kernel_depends_on_the_weights(self) -> None:
         """Unlike the single-upload encoders, the weights sit between uploads."""
@@ -382,3 +444,48 @@ class TestUsage:
         with pytest.raises(ValueError, match="does not match"):
             quantum_kernel_matrix(_angles(2), _angle_layer(), Y=torch.zeros(2, N_QUBITS + 1))
         assert calls == []
+
+    @pytest.mark.parametrize("build", ALL_LAYERS)
+    @pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
+    def test_rejects_non_finite_inputs(self, build, bad: float) -> None:
+        layer = build()
+        X = _inputs_for(layer)
+        X[1, 0] = bad
+        with pytest.raises(ValueError, match="NaN or ±inf"):
+            quantum_kernel_matrix(X, layer)
+        with pytest.raises(ValueError, match="NaN or ±inf"):
+            quantum_kernel_matrix(_inputs_for(layer), layer, Y=X)
+
+    def test_refuses_to_run_inside_the_noise_block(self) -> None:
+        from hqnn_forge.noise import apply_depolarizing_noise
+
+        layer = _angle_layer()
+        X = _angles(3)
+        with apply_depolarizing_noise(layer, 0.1):
+            with pytest.raises(RuntimeError, match="apply_depolarizing_noise"):
+                quantum_kernel_matrix(X, layer)
+            with pytest.raises(RuntimeError, match="apply_depolarizing_noise"):
+                encoded_states(X, layer)
+        # p = 0 replaces nothing, and the layer is usable again after the block.
+        with apply_depolarizing_noise(layer, 0.0):
+            quantum_kernel_matrix(X, layer)
+        quantum_kernel_matrix(X, layer)
+
+    def test_promotes_lower_precision_and_real_states(self) -> None:
+        S = encoded_states(_angles(M), _angle_layer())
+        expected = kernel_from_states(S)
+        S64 = S.to(torch.complex64)
+        torch.testing.assert_close(kernel_from_states(S64, S), expected, atol=1e-6, rtol=0)
+        torch.testing.assert_close(kernel_from_states(S64), expected, atol=1e-6, rtol=0)
+        real = S.real
+        assert kernel_from_states(real, S).dtype == torch.float64
+        torch.testing.assert_close(
+            kernel_from_states(real, real), (real @ real.T).pow(2), atol=1e-12, rtol=0
+        )
+
+    def test_simulates_x_and_y_in_one_replay(self, monkeypatch) -> None:
+        calls = []
+        real = kernels._simulate
+        monkeypatch.setattr(kernels, "_simulate", lambda *a: calls.append(1) or real(*a))
+        quantum_kernel_matrix(_angles(3, seed=0), _angle_layer(), Y=_angles(4, seed=1))
+        assert calls == [1]
