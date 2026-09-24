@@ -91,7 +91,13 @@ def apply_variational_layers(
     once.  The ``"ring"`` block does not depend on the layer index.
     """
     if entangler == "strongly_entangling":
-        ranges = [(layer_offset + layer) % (n_qubits - 1) + 1 for layer in range(n_layers)]
+        # A single wire has no CNOT partner: leave the ranges to the template,
+        # which uses 0 there instead of dividing by n - 1 = 0.
+        ranges = (
+            [(layer_offset + layer) % (n_qubits - 1) + 1 for layer in range(n_layers)]
+            if n_qubits > 1
+            else None
+        )
         qml.StronglyEntanglingLayers(weights, wires=range(n_qubits), ranges=ranges)
         return
     if entangler != "ring":
@@ -108,6 +114,28 @@ def apply_variational_layers(
                 weights[layer, qubit, 2],  # ω
                 wires=qubit,
             )
+
+
+def validate_circuit_options(
+    n_qubits: int,
+    entangler: Entangler,
+    readout: Readout,
+    rotation: RotationAxis | None = None,
+) -> None:
+    """
+    Raise ``ValueError`` for an ``entangler``, ``readout`` or (if given)
+    ``rotation`` outside the allowed values.
+
+    The encoding builders call this eagerly: ``qml.AngleEmbedding`` only
+    rejects the axis when the circuit first runs, which is a forward pass away
+    from the constructor that was given it -- and past get_config and a
+    checkpoint.
+    """
+    readout_wires(n_qubits, readout)
+    if entangler not in ("ring", "strongly_entangling"):
+        raise ValueError(f"entangler must be 'ring' or 'strongly_entangling'; got {entangler!r}.")
+    if rotation is not None and rotation not in ("X", "Y", "Z"):
+        raise ValueError(f"rotation must be 'X', 'Y' or 'Z'; got {rotation!r}.")
 
 
 def readout_wires(n_qubits: int, readout: Readout = "all") -> list[int]:
@@ -230,14 +258,7 @@ def _make_angle_embedding_circuit(
     callable
         A plain Python function suitable for ``@qml.qnode`` decoration.
     """
-    readout_wires(n_qubits, readout)  # validate early
-    if entangler not in ("ring", "strongly_entangling"):
-        raise ValueError(f"entangler must be 'ring' or 'strongly_entangling'; got {entangler!r}.")
-    if rotation not in ("X", "Y", "Z"):
-        # Eagerly, like the two above: qml.AngleEmbedding only rejects the axis
-        # when the circuit first runs, which is a forward pass away from the
-        # constructor that was given it -- and past get_config and a checkpoint.
-        raise ValueError(f"rotation must be 'X', 'Y' or 'Z'; got {rotation!r}.")
+    validate_circuit_options(n_qubits, entangler, readout, rotation)
 
     def circuit(
         inputs: torch.Tensor,

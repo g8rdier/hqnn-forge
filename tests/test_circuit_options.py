@@ -75,6 +75,53 @@ class TestEntangler:
                     torch.stack(ours(x, weights)), torch.stack(reference(x)), rtol=0, atol=1e-12
                 )
 
+    def test_layer_offset_continues_the_range_rule(self) -> None:
+        """
+        Blocks applied in two calls, 1 then 2 at layer_offset=1, give the same
+        circuit as all 3 in one call: ranges 1, 2, 3 on 4 qubits, not a
+        restart at 1 or one range repeated across the second call.
+        """
+        torch.manual_seed(0)
+        weights = torch.randn(N_LAYERS, N_QUBITS, 3, dtype=torch.float64)
+        dev = qml.device("default.qubit", wires=N_QUBITS)
+
+        @qml.qnode(dev, interface="torch")
+        def at_once() -> list:
+            apply_variational_layers(weights, N_QUBITS, N_LAYERS, "strongly_entangling")
+            return measure_z(N_QUBITS)
+
+        @qml.qnode(dev, interface="torch")
+        def split() -> list:
+            apply_variational_layers(weights[:1], N_QUBITS, 1, "strongly_entangling")
+            apply_variational_layers(
+                weights[1:], N_QUBITS, N_LAYERS - 1, "strongly_entangling", layer_offset=1
+            )
+            return measure_z(N_QUBITS)
+
+        torch.testing.assert_close(
+            torch.stack(split()), torch.stack(at_once()), rtol=0, atol=1e-12
+        )
+
+    def test_strongly_entangling_on_one_qubit(self) -> None:
+        """One wire has no CNOT partner; the block must not divide by n - 1 = 0."""
+        weights = torch.randn(2, 1, 3, dtype=torch.float64)
+        dev = qml.device("default.qubit", wires=1)
+
+        @qml.qnode(dev, interface="torch")
+        def ours() -> list:
+            apply_variational_layers(weights, 1, 2, "strongly_entangling")
+            return measure_z(1)
+
+        @qml.qnode(dev, interface="torch")
+        def reference() -> list:
+            for layer in range(2):
+                qml.Rot(*weights[layer, 0], wires=0)
+            return [qml.expval(qml.PauliZ(0))]
+
+        torch.testing.assert_close(
+            torch.stack(ours()), torch.stack(reference()), rtol=0, atol=1e-12
+        )
+
     def test_ring_is_unchanged(self) -> None:
         """The default entangler is still CNOT ring then Rot, as documented."""
         qnode = build_encoding_qnode(n_qubits=N_QUBITS, n_layers=1, **CPU)
