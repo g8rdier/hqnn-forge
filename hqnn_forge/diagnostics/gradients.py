@@ -107,9 +107,12 @@ class GradientVarianceResult:
         }
 
 
-def _resolve_weights(target: nn.Module) -> tuple[nn.Module, torch.Tensor, int, int]:
+def _resolve_weights(
+    target: nn.Module, caller: str = "gradient_variance"
+) -> tuple[nn.Module, torch.Tensor, int, int]:
     """
     Return ``(layer, weights, n_qubits, n_layers)`` for the layer inside *target*.
+    *caller* names the public function in the error messages.
 
     The trainable tensor is read off the TorchLayer's ``qnode_weights`` mapping
     rather than a fixed attribute name, the same way
@@ -129,13 +132,13 @@ def _resolve_weights(target: nn.Module) -> tuple[nn.Module, torch.Tensor, int, i
         or not isinstance(n_qubits, int)
     ):
         raise TypeError(
-            f"gradient_variance expects an encoding layer (QuantumEncodingLayer, "
+            f"{caller} expects an encoding layer (QuantumEncodingLayer, "
             f"IQPEncodingLayer) or a hybrid classifier with a quantum_layer attribute; "
             f"got {type(target).__name__}."
         )
     if len(qlayer.qnode_weights) != 1:
         raise NotImplementedError(
-            f"gradient_variance measures a single trainable weight tensor; "
+            f"{caller} measures a single trainable weight tensor; "
             f"{type(layer).__name__} has {len(qlayer.qnode_weights)} "
             f"({', '.join(sorted(qlayer.qnode_weights))})."
         )

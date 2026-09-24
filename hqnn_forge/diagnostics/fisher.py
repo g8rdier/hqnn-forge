@@ -20,19 +20,26 @@ For a statistical model ``p(y | x; θ)`` the Fisher information matrix is::
 The expectation over ``x`` is taken over the rows of ``data_sample``; the
 expectation over ``y`` is taken in closed form, which needs a likelihood:
 
-* A **hybrid classifier** (``forward`` returns one logit ``z`` per sample)
-  is the Bernoulli model ``p(y=1|x) = σ(z)``.  Then
+* A **hybrid classifier** (a model with a ``quantum_layer``, whose
+  ``forward`` returns one logit ``z`` per sample) is the Bernoulli model ``p(y=1|x) = σ(z)``.  Then
   ``E_y[∇ log p ∇ log pᵀ] = σ(z)(1 − σ(z)) ∇z ∇zᵀ``, exactly, so no labels
   are needed and nothing is sampled.
-* An **encoding layer** (``forward`` returns ``n_qubits`` expectation values)
-  has no likelihood of its own.  It is treated as a Gaussian observation
+* An **encoding layer** (``forward`` returns its expectation values, one
+  or ``n_qubits`` of them depending on ``readout``) has no likelihood of its
+  own.  It is treated as a Gaussian observation
   model with unit variance around its outputs, for which the Fisher matrix
   is ``E_x[ Jᵀ J ]`` with ``J = ∂ outputs / ∂ θ``: the Gauss-Newton matrix.
   This is the natural information matrix of a regression-style readout and
   what "the Fisher spectrum of the circuit" means in practice.
 
+The likelihood follows from which of the two was passed, not from the output
+width: a one-qubit layer, or one with ``readout="first"``, still returns an
+expectation value, not a logit.
+
 Only the quantum layer's weights are differentiated, so the spectrum is that
-of the circuit's parameters, whatever classical layers sit around it.
+of the circuit's parameters, whatever classical layers sit around it.  They
+are differentiated even when frozen (``requires_grad=False``); the flag is
+restored afterwards.
 
 Effective dimension
 -------------------
@@ -50,9 +57,18 @@ from.  :func:`effective_dimension` draws that expectation with the same
 normalised ``d_{γ,n} / d`` is the number that is comparable across
 architectures with different ``d``: it is close to 1 when the parameters are
 all used in independent directions and small when most of them are
-redundant.  Note that for finite ``n`` the estimate can exceed ``d``
-slightly (``F̂ = I`` gives ``d · log(1 + κ) / log κ``); this is a property of
-the definition, not a bug.
+redundant.
+
+The formula divides by ``log κ``, so it only means something once ``κ`` is
+comfortably above 1: at ``κ ≤ 1`` it changes sign or divides by zero, and
+just above 1 it explodes (``F̂ = I`` gives ``d · log(1 + κ) / log κ``, which
+is ``26 d`` at ``κ = 1.02``).  Both functions therefore require
+``κ ≥ e``, i.e. ``log κ ≥ 1``, where that identity-spectrum value is at most
+``d · log(1 + e) ≈ 1.31 d``; with ``γ = 1`` this means ``n ≥ 74``.  ``n`` is
+the size of the data set the model is meant for, not of ``data_sample``, so
+pass it explicitly when estimating from a small sample.  Even then the
+estimate can exceed ``d`` slightly; this is a property of the definition,
+not a bug.
 
 References
 ----------
@@ -66,7 +82,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
@@ -100,8 +116,10 @@ class FisherSpectrum:
     likelihood: str
     n_params: int
     n_data: int
-    matrix: torch.Tensor
-    eigenvalues: torch.Tensor
+    # Tensor fields are left out of the generated __eq__, which would otherwise
+    # call bool() on an element-wise tensor comparison and raise.
+    matrix: torch.Tensor = field(compare=False)
+    eigenvalues: torch.Tensor = field(compare=False)
 
     @property
     def trace(self) -> float:
@@ -118,9 +136,7 @@ class FisherSpectrum:
     @property
     def normalized_eigenvalues(self) -> torch.Tensor:
         """Eigenvalues scaled to sum to ``n_params`` (zeros if the trace is 0)."""
-        if self.trace <= 0.0:
-            return torch.zeros_like(self.eigenvalues)
-        return self.eigenvalues * (self.n_params / self.trace)
+        return _normalise_spectra(self.eigenvalues.unsqueeze(0))[0]
 
     def to_dict(self) -> dict[str, Any]:
         """Scalar fields plus the eigenvalues as a list, for logging."""
@@ -162,7 +178,7 @@ class EffectiveDimensionResult:
     n_theta_samples: int
     effective_dimension: float
     normalized_effective_dimension: float
-    mean_normalized_spectrum: torch.Tensor
+    mean_normalized_spectrum: torch.Tensor = field(compare=False)
 
     def to_dict(self) -> dict[str, Any]:
         """Scalar fields only, for logging."""
@@ -210,7 +226,18 @@ def _per_sample_jacobian(
     out = model(x.unsqueeze(0)).reshape(-1)
     rows = []
     for i in range(out.shape[0]):
-        (grad,) = torch.autograd.grad(out[i], weights, retain_graph=i < out.shape[0] - 1)
+        if out[i].requires_grad:
+            # An output that does not reach the weights (an ablated quantum
+            # layer) contributes a zero row rather than an autograd error.
+            (grad,) = torch.autograd.grad(
+                out[i],
+                weights,
+                retain_graph=i < out.shape[0] - 1,
+                allow_unused=True,
+                materialize_grads=True,
+            )
+        else:
+            grad = torch.zeros_like(weights)
         rows.append(grad.reshape(-1).to(torch.float64))
     return out.detach().to(torch.float64), torch.stack(rows)
 
@@ -223,7 +250,7 @@ def fisher_information_matrix(model: nn.Module, data_sample: torch.Tensor) -> Fi
     ----------
     model:
         A hybrid classifier (one logit per sample → Bernoulli likelihood) or
-        an encoding layer (``n_qubits`` outputs → unit-variance Gaussian
+        an encoding layer (its expectation values → unit-variance Gaussian
         likelihood, i.e. the Gauss-Newton matrix).  See the module docstring.
     data_sample:
         Inputs of shape ``(n_samples, n_features)`` the expectation over ``x``
@@ -242,21 +269,31 @@ def fisher_information_matrix(model: nn.Module, data_sample: torch.Tensor) -> Fi
     untouched, dropout included if active); put it in eval mode first for a
     deterministic answer.
     """
-    _, weights, _, _ = _resolve_weights(model)
+    layer, weights, _, _ = _resolve_weights(model, caller="fisher_information_matrix")
     X = _check_data(data_sample)
+    # Decided by what was passed, not by the output width: a one-qubit or
+    # readout="first" layer also returns a single value, which is not a logit.
+    likelihood = "gaussian" if layer is model else "bernoulli"
     d = weights.numel()
     fisher = torch.zeros(d, d, dtype=torch.float64)
-    likelihood = ""
-    for i in range(X.shape[0]):
-        out, jac = _per_sample_jacobian(model, weights, X[i])
-        if i == 0:
-            # A classifier gives one logit; a layer gives n_qubits outputs.
-            likelihood = "bernoulli" if out.shape[0] == 1 else "gaussian"
-        if likelihood == "bernoulli":
-            p = torch.sigmoid(out[0])
-            fisher += (p * (1 - p)) * (jac.T @ jac)
-        else:
-            fisher += jac.T @ jac
+    was_frozen = not weights.requires_grad
+    weights.requires_grad_(True)
+    try:
+        for i in range(X.shape[0]):
+            out, jac = _per_sample_jacobian(model, weights, X[i])
+            if likelihood == "bernoulli":
+                if out.shape[0] != 1:
+                    raise ValueError(
+                        f"fisher_information_matrix expects a classifier to return one logit "
+                        f"per sample; {type(model).__name__} returned {out.shape[0]}."
+                    )
+                p = torch.sigmoid(out[0])
+                fisher += (p * (1 - p)) * (jac.T @ jac)
+            else:
+                fisher += jac.T @ jac
+    finally:
+        if was_frozen:
+            weights.requires_grad_(False)
     fisher /= X.shape[0]
     fisher = 0.5 * (fisher + fisher.T)
     eigenvalues = torch.linalg.eigvalsh(fisher).flip(0).clamp_min(0.0)
@@ -286,6 +323,61 @@ def fisher_information_spectrum(model: nn.Module, data_sample: torch.Tensor) -> 
 # ---------------------------------------------------------------------------
 
 
+def _kappa(n_data: int, gamma: float) -> float:
+    return gamma * n_data / (2 * math.pi * math.log(n_data))
+
+
+def _min_n_data(gamma: float) -> int:
+    """Smallest ``n`` with ``κ(n) ≥ e``; ``κ`` increases with ``n`` for ``n > e``."""
+    hi = 3
+    while _kappa(hi, gamma) < math.e:
+        hi *= 2
+    lo = hi // 2
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if _kappa(mid, gamma) < math.e:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+
+def _check_kappa(n_data: int, gamma: float) -> float:
+    """Validate ``n_data`` and ``gamma`` and return ``κ``; see the module docstring."""
+    if not 0.0 < gamma <= 1.0:
+        raise ValueError(f"gamma must lie in (0, 1]; got {gamma}.")
+    if n_data <= 1:
+        raise ValueError(f"n_data must be > 1 (log n_data must be positive); got {n_data}.")
+    kappa = _kappa(n_data, gamma)
+    if kappa < math.e:
+        raise ValueError(
+            f"n_data={n_data} with gamma={gamma} gives κ = {kappa:.3g}; the effective "
+            f"dimension needs κ ≥ e, i.e. n_data ≥ {_min_n_data(gamma)} at this gamma. "
+            "n_data is the size of the data set the model is meant for; pass it "
+            "explicitly when data_sample is smaller."
+        )
+    return kappa
+
+
+def _normalise_spectra(lam: torch.Tensor) -> torch.Tensor:
+    """
+    ``F̂`` eigenvalues: ``(n_theta_samples, d)`` spectra scaled by ``d / E_θ[tr F]``
+    so that their mean trace is ``d``; zeros if every spectrum is zero.
+    """
+    lam = lam.to(torch.float64).clamp_min(0.0)
+    mean_trace = lam.sum(dim=1).mean()
+    if mean_trace <= 0.0:
+        return torch.zeros_like(lam)
+    return lam * (lam.shape[1] / mean_trace)
+
+
+def _effective_dimension(normalised: torch.Tensor, kappa: float) -> float:
+    """``d_{γ,n}`` from :func:`_normalise_spectra` output."""
+    half_log_det = 0.5 * torch.log1p(kappa * normalised).sum(dim=1)  # log sqrt(det(I + κ F̂))
+    log_mean = torch.logsumexp(half_log_det, dim=0) - math.log(normalised.shape[0])
+    return float(2 * log_mean / math.log(kappa))
+
+
 def effective_dimension_from_spectra(
     spectra: Sequence[torch.Tensor] | torch.Tensor,
     n_data: int,
@@ -301,14 +393,16 @@ def effective_dimension_from_spectra(
         eigenvalue tensors, one per parameter draw.  Eigenvalues of the raw
         Fisher matrices; the trace normalisation is done here.
     n_data:
-        ``n`` in the definition.  Must exceed 1 so that ``log n > 0``.
+        ``n`` in the definition.  Must be large enough that
+        ``κ = γ n / (2π log n) ≥ e`` (``n ≥ 74`` at ``γ = 1``); see the module
+        docstring.
     gamma:
         ``γ ∈ (0, 1]``.
 
     Returns
     -------
     float
-        The effective dimension; 0 if every spectrum is zero.
+        The effective dimension, ``≥ 0``; 0 if every spectrum is zero.
 
     Notes
     -----
@@ -316,10 +410,7 @@ def effective_dimension_from_spectra(
     the average over draws with a log-sum-exp, so large ``κ`` does not
     overflow.
     """
-    if n_data <= 1:
-        raise ValueError(f"n_data must be > 1 (log n_data must be positive); got {n_data}.")
-    if not 0.0 < gamma <= 1.0:
-        raise ValueError(f"gamma must lie in (0, 1]; got {gamma}.")
+    kappa = _check_kappa(n_data, gamma)
     lam = torch.as_tensor(
         torch.stack(list(spectra)) if not isinstance(spectra, torch.Tensor) else spectra,
         dtype=torch.float64,
@@ -328,16 +419,7 @@ def effective_dimension_from_spectra(
         raise ValueError(
             f"spectra must have shape (n_theta_samples, d) with at least one draw; got {tuple(lam.shape)}."
         )
-    lam = lam.clamp_min(0.0)
-    n_draws, d = lam.shape
-    mean_trace = lam.sum(dim=1).mean()
-    if mean_trace <= 0.0:
-        return 0.0
-    normalised = lam * (d / mean_trace)  # F̂: E_θ[tr F̂] = d
-    kappa = gamma * n_data / (2 * math.pi * math.log(n_data))
-    half_log_det = 0.5 * torch.log1p(kappa * normalised).sum(dim=1)  # log sqrt(det(I + κ F̂))
-    log_mean = torch.logsumexp(half_log_det, dim=0) - math.log(n_draws)
-    return float(2 * log_mean / math.log(kappa))
+    return _effective_dimension(_normalise_spectra(lam), kappa)
 
 
 def effective_dimension(
@@ -368,6 +450,8 @@ def effective_dimension(
         ``n`` in the definition: the size of the data set the model is meant
         for, which sets the resolution ``κ``.  Default: the number of rows
         in ``data_sample``.  Use the same value when comparing architectures.
+        Must give ``κ ≥ e`` (``n ≥ 74`` at ``γ = 1``); this is checked before
+        any Fisher matrix is computed.
     gamma:
         ``γ ∈ (0, 1]``.  Default: 1.
     n_theta_samples:
@@ -387,7 +471,8 @@ def effective_dimension(
         raise ValueError(f"n_theta_samples must be >= 1; got {n_theta_samples}.")
     X = _check_data(data_sample)
     n = X.shape[0] if n_data is None else n_data
-    _, weights, n_qubits, n_layers = _resolve_weights(model)
+    kappa = _check_kappa(n, gamma)
+    _, weights, n_qubits, n_layers = _resolve_weights(model, caller="effective_dimension")
     gen = generator if generator is not None else torch.Generator().manual_seed(0)
     init_name, init_fn = _make_init(init, n_qubits, n_layers, gen)
 
@@ -402,15 +487,9 @@ def effective_dimension(
         with torch.no_grad():
             weights.copy_(original)
 
-    lam = torch.stack(spectra)
-    d_eff = effective_dimension_from_spectra(lam, n, gamma)
+    normalised = _normalise_spectra(torch.stack(spectra))
+    d_eff = _effective_dimension(normalised, kappa)
     d = weights.numel()
-    mean_trace = lam.sum(dim=1).mean()
-    mean_spectrum = (
-        (lam * (d / mean_trace)).mean(dim=0)
-        if mean_trace > 0
-        else torch.zeros(d, dtype=torch.float64)
-    )
     return EffectiveDimensionResult(
         layer_type=type(model).__name__,
         init=init_name,
@@ -420,5 +499,5 @@ def effective_dimension(
         n_theta_samples=n_theta_samples,
         effective_dimension=d_eff,
         normalized_effective_dimension=d_eff / d if d else 0.0,
-        mean_normalized_spectrum=mean_spectrum,
+        mean_normalized_spectrum=normalised.mean(dim=0),
     )

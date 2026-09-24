@@ -202,8 +202,43 @@ class TestFisherMatrixMechanics:
             fisher_information_matrix(layer, torch.zeros(0, 2))
 
     def test_rejects_models_without_quantum_weights(self) -> None:
-        with pytest.raises(TypeError):
+        with pytest.raises(TypeError, match="fisher_information_matrix expects"):
             fisher_information_matrix(torch.nn.Linear(2, 1), torch.zeros(2, 2))
+
+    def test_single_output_layer_is_gaussian_not_bernoulli(self) -> None:
+        """
+        readout="first" at x = 0 returns only ⟨Z_0⟩ = cos θ_0, so JᵀJ is
+        sin²θ_0 in θ_0's slot.  The single output is an expectation value,
+        not a logit, so no σ(z)(1 − σ(z)) factor may appear.
+        """
+        torch.manual_seed(0)
+        layer = QuantumEncodingLayer(n_qubits=2, n_layers=1, readout="first", **CPU)
+        with torch.no_grad():
+            layer.qlayer.weights.copy_(WEIGHTS)
+        result = fisher_information_matrix(layer, torch.zeros(2, 2))
+        assert result.likelihood == "gaussian"
+        expected = torch.zeros(6, 6, dtype=torch.float64)
+        expected[1, 1] = math.sin(THETA[0]) ** 2
+        torch.testing.assert_close(result.matrix, expected, atol=1e-6, rtol=0)
+
+    def test_frozen_weights_are_measured_and_stay_frozen(self) -> None:
+        model = _two_qubit_classifier()
+        X = _angles(3, 2)
+        expected = fisher_information_matrix(model, X).matrix
+        model.quantum_layer.qlayer.weights.requires_grad_(False)
+        result = fisher_information_matrix(model, X)
+        torch.testing.assert_close(result.matrix, expected, rtol=0, atol=0)
+        assert not model.quantum_layer.qlayer.weights.requires_grad
+
+    def test_results_compare_without_touching_the_tensors(self) -> None:
+        layer = _two_qubit_layer()
+        # Separately computed, so the tensors are equal but not identical and
+        # tuple comparison cannot short-circuit on identity.
+        a = fisher_information_matrix(layer, torch.zeros(1, 2))
+        again = fisher_information_matrix(layer, torch.zeros(1, 2))
+        other = fisher_information_matrix(layer, torch.zeros(2, 2))
+        assert (a == again) is True
+        assert (a == other) is False  # n_data differs
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +248,11 @@ class TestFisherMatrixMechanics:
 
 def _kappa(n: int, gamma: float = 1.0) -> float:
     return gamma * n / (2 * math.pi * math.log(n))
+
+
+def _identity_bound(d: int, n: int, gamma: float = 1.0) -> float:
+    """d_eff of a flat spectrum, the most a single draw can reach: d·log(1+κ)/log κ."""
+    return d * math.log(1 + _kappa(n, gamma)) / math.log(_kappa(n, gamma))
 
 
 class TestEffectiveDimensionFormula:
@@ -241,23 +281,43 @@ class TestEffectiveDimensionFormula:
         assert low == pytest.approx(math.log(1 + _kappa(n) * d) / math.log(_kappa(n)), rel=1e-12)
 
     def test_zero_spectra_give_zero(self) -> None:
-        assert effective_dimension_from_spectra(torch.zeros(3, 5), n_data=50) == 0.0
+        assert effective_dimension_from_spectra(torch.zeros(3, 5), n_data=500) == 0.0
 
     def test_accepts_a_sequence_of_spectra(self) -> None:
         spectra = [torch.ones(4), torch.ones(4)]
-        assert effective_dimension_from_spectra(spectra, n_data=50) == pytest.approx(
-            effective_dimension_from_spectra(torch.ones(2, 4), n_data=50)
+        assert effective_dimension_from_spectra(spectra, n_data=500) == pytest.approx(
+            effective_dimension_from_spectra(torch.ones(2, 4), n_data=500)
         )
 
     def test_validation(self) -> None:
         with pytest.raises(ValueError, match="n_data"):
             effective_dimension_from_spectra(torch.ones(2, 3), n_data=1)
         with pytest.raises(ValueError, match="gamma"):
-            effective_dimension_from_spectra(torch.ones(2, 3), n_data=10, gamma=0.0)
+            effective_dimension_from_spectra(torch.ones(2, 3), n_data=500, gamma=0.0)
         with pytest.raises(ValueError, match="gamma"):
-            effective_dimension_from_spectra(torch.ones(2, 3), n_data=10, gamma=1.5)
+            effective_dimension_from_spectra(torch.ones(2, 3), n_data=500, gamma=1.5)
         with pytest.raises(ValueError, match="n_theta_samples, d"):
-            effective_dimension_from_spectra(torch.ones(3), n_data=10)
+            effective_dimension_from_spectra(torch.ones(3), n_data=500)
+
+    @pytest.mark.parametrize("n", [2, 7, 18, 19, 50, 73])
+    def test_rejects_kappa_below_e(self, n: int) -> None:
+        """
+        log κ ≤ 0 flips the sign (n ≤ 18 at γ = 1) and 0 < log κ < 1 inflates
+        the estimate far past d (n = 19 gave 159 for d = 6).
+        """
+        assert _kappa(n) < math.e
+        with pytest.raises(ValueError, match=r"κ ≥ e, i\.e\. n_data ≥ 74"):
+            effective_dimension_from_spectra(torch.ones(2, 6), n_data=n)
+
+    def test_smaller_gamma_raises_the_minimum_n(self) -> None:
+        with pytest.raises(ValueError, match="n_data ≥ 1213"):
+            effective_dimension_from_spectra(torch.ones(2, 6), n_data=1000, gamma=0.1)
+
+    def test_smallest_allowed_n_stays_close_to_d(self) -> None:
+        d = 6
+        got = effective_dimension_from_spectra(torch.ones(2, d), n_data=74)
+        assert got == pytest.approx(_identity_bound(d, 74), rel=1e-12)
+        assert d < got <= d * math.log(1 + math.e)
 
 
 # ---------------------------------------------------------------------------
@@ -281,7 +341,7 @@ class TestEffectiveDimension:
         assert result.n_params == 18
         assert result.n_data == 1000
         assert result.n_theta_samples == 4
-        assert 0.0 < result.effective_dimension
+        assert 0.0 < result.effective_dimension <= _identity_bound(18, 1000)
         assert result.normalized_effective_dimension == pytest.approx(
             result.effective_dimension / 18
         )
@@ -290,8 +350,22 @@ class TestEffectiveDimension:
         assert result.to_dict()["effective_dimension"] == result.effective_dimension
 
     def test_n_data_defaults_to_the_sample_size(self) -> None:
-        result = effective_dimension(_layer(), _angles(7, 2), n_theta_samples=2)
-        assert result.n_data == 7
+        torch.manual_seed(0)
+        layer = QuantumEncodingLayer(n_qubits=2, n_layers=1, readout="first", **CPU)
+        result = effective_dimension(layer, _angles(80, 2), n_theta_samples=1)
+        assert result.n_data == 80
+        assert 0.0 <= result.effective_dimension <= _identity_bound(6, 80)
+
+    def test_small_default_sample_asks_for_n_data(self) -> None:
+        with pytest.raises(ValueError, match="pass it explicitly"):
+            effective_dimension(_layer(), _angles(7, 2), n_theta_samples=2)
+
+    def test_validates_before_computing_anything(self) -> None:
+        """A Linear would fail weight resolution; the κ check must come first."""
+        with pytest.raises(ValueError, match="gamma"):
+            effective_dimension(torch.nn.Linear(2, 1), _angles(2, 2), n_data=1000, gamma=1.5)
+        with pytest.raises(ValueError, match="κ ≥ e"):
+            effective_dimension(torch.nn.Linear(2, 1), _angles(2, 2))
 
     def test_restores_weights_and_global_rng(self) -> None:
         layer = _layer(3, 2)
@@ -300,7 +374,7 @@ class TestEffectiveDimension:
         torch.manual_seed(123)
         expected_next = torch.rand(3)
         torch.manual_seed(123)
-        effective_dimension(layer, X, n_theta_samples=3, init="restricted")
+        effective_dimension(layer, X, n_data=1000, n_theta_samples=3, init="restricted")
         assert torch.equal(layer.qlayer.weights.detach(), before)
         assert torch.equal(torch.rand(3), expected_next)
 
@@ -308,10 +382,10 @@ class TestEffectiveDimension:
         layer = _layer(3, 2)
         X = _angles(4, 3)
         a = effective_dimension(
-            layer, X, n_theta_samples=3, generator=torch.Generator().manual_seed(5)
+            layer, X, n_data=1000, n_theta_samples=3, generator=torch.Generator().manual_seed(5)
         )
         b = effective_dimension(
-            layer, X, n_theta_samples=3, generator=torch.Generator().manual_seed(5)
+            layer, X, n_data=1000, n_theta_samples=3, generator=torch.Generator().manual_seed(5)
         )
         assert a.effective_dimension == b.effective_dimension
 
@@ -322,12 +396,21 @@ class TestEffectiveDimension:
         well below that with inputs spread over (-π, π).
         """
         layer = _layer()
-        gen = torch.Generator().manual_seed(0)
+        # Same seed for both, so the two runs see the same parameter draws
+        # and differ only in their inputs.
         at_zero = effective_dimension(
-            layer, torch.zeros(8, 2), n_data=1000, n_theta_samples=10, generator=gen
+            layer,
+            torch.zeros(8, 2),
+            n_data=1000,
+            n_theta_samples=10,
+            generator=torch.Generator().manual_seed(0),
         )
         spread = effective_dimension(
-            layer, _angles(8, 2), n_data=1000, n_theta_samples=10, generator=gen
+            layer,
+            _angles(8, 2),
+            n_data=1000,
+            n_theta_samples=10,
+            generator=torch.Generator().manual_seed(0),
         )
         assert at_zero.normalized_effective_dimension < 0.8 * spread.normalized_effective_dimension
 
@@ -336,10 +419,27 @@ class TestEffectiveDimension:
         model = HybridBinaryClassifier(n_input_features=4, n_qubits=3, n_layers=2, **CPU)
         result = effective_dimension(model, torch.randn(5, 4), n_data=200, n_theta_samples=2)
         assert result.n_params == 18
-        assert result.effective_dimension > 0.0
+        assert 0.0 < result.effective_dimension <= _identity_bound(18, 200)
 
     def test_validation(self) -> None:
         with pytest.raises(ValueError, match="n_theta_samples"):
             effective_dimension(_layer(), _angles(2, 2), n_theta_samples=0)
         with pytest.raises(ValueError, match="n_data"):
             effective_dimension(_layer(), _angles(1, 2), n_theta_samples=1)
+        with pytest.raises(TypeError, match="effective_dimension expects"):
+            effective_dimension(torch.nn.Linear(2, 1), _angles(2, 2), n_data=1000)
+
+    def test_results_compare_without_touching_the_tensors(self) -> None:
+        layer = _layer()
+        X = _angles(3, 2)
+        a, again = (
+            effective_dimension(
+                layer,
+                X,
+                n_data=1000,
+                n_theta_samples=2,
+                generator=torch.Generator().manual_seed(0),
+            )
+            for _ in range(2)
+        )
+        assert (a == again) is True
