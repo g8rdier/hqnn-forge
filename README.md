@@ -35,6 +35,23 @@ installs. To add it to an existing install:
 pip install -e ".[lightning]"
 ```
 
+### Device backends
+
+Every encoding layer and classifier takes a `device_name`. If the requested backend is not
+installed or finds no usable hardware, the library falls back one step at a time, with a
+`RuntimeWarning` at each step, along `requested → lightning.qubit → default.qubit`.
+
+| `device_name` | What it is | Prerequisites |
+|---|---|---|
+| `default.qubit` | PennyLane's reference state-vector simulator (Python/NumPy) | None; always available |
+| `lightning.qubit` | C++ state-vector simulator, CPU; adjoint differentiation | `pip install -e ".[lightning]"` (`pennylane-lightning`) |
+| `lightning.gpu` | State-vector simulator on NVIDIA GPUs via cuQuantum (cuStateVec) | `pip install pennylane-lightning-gpu`; Linux, an NVIDIA GPU with compute capability ≥ 7.0, a CUDA 12 driver. The wheel pulls in `custatevec-cu12` |
+| `lightning.kokkos` | State-vector simulator on Kokkos; OpenMP-parallel CPU on the PyPI wheel, CUDA or HIP GPUs when built from source | `pip install pennylane-lightning-kokkos` for the CPU build; see the [PennyLane-Lightning docs](https://docs.pennylane.ai/projects/lightning/) for a GPU build |
+
+The GPU backends pay off at larger qubit counts or batch sizes; at the 8 qubits the library
+targets, `lightning.qubit` is usually the fastest option. Both accelerated devices support the
+same `diff_method="adjoint"` as `lightning.qubit`.
+
 ---
 
 ## Quick Start

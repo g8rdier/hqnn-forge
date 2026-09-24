@@ -25,19 +25,20 @@ References
 from __future__ import annotations
 
 import logging
-import warnings
 from collections.abc import Callable
 from itertools import combinations
-from typing import Literal
 
 import pennylane as qml
 import torch
 import torch.nn as nn
 
 from hqnn_forge.encoding.angle_embedding import (
+    DeviceName,
+    DiffMethod,
     Entangler,
     Readout,
     _expand_batch_dimension,
+    _resolve_device,
     apply_variational_layers,
     check_inputs,
     measure_z,
@@ -48,26 +49,8 @@ from hqnn_forge.encoding.angle_embedding import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Type aliases
+# Type aliases and device factory: shared with angle_embedding
 # ---------------------------------------------------------------------------
-DiffMethod = Literal["adjoint", "parameter-shift", "backprop", "finite-diff"]
-DeviceName = Literal["lightning.qubit", "default.qubit"]
-
-
-def _resolve_device(device_name: DeviceName, n_qubits: int) -> qml.Device:
-    """Resolve and return a PennyLane device."""
-    try:
-        dev = qml.device(device_name, wires=n_qubits)
-        logger.debug("Quantum device initialised: %s (%d qubits)", device_name, n_qubits)
-        return dev
-    except (qml.DeviceError, ImportError) as exc:
-        fallback = "default.qubit"
-        warnings.warn(
-            f"Could not initialise '{device_name}' ({exc}).  Falling back to '{fallback}'.",
-            RuntimeWarning,
-            stacklevel=3,
-        )
-        return qml.device(fallback, wires=n_qubits)
 
 
 def _make_iqp_embedding_circuit(

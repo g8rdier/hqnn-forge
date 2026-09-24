@@ -38,6 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   information spectrum of the quantum weights and the effective dimension of Abbas et al. (2021);
   the effective dimension requires `κ = γn / (2π log n) ≥ e` (`n_data ≥ 74` at `γ = 1`), below
   which the formula changes sign or explodes
+- `lightning.gpu` and `lightning.kokkos` accepted as `device_name`, with a fallback chain
+  through `lightning.qubit` to `default.qubit` and a `RuntimeWarning` per step
 
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from
@@ -55,6 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is unreachable, so a floor that stops working fails a PR instead of a user install
 
 ### Fixed
+- Device fallback raised `AttributeError` on PennyLane 0.45, where `qml.DeviceError` no longer
+  exists; the chain now catches `pennylane.exceptions.DeviceError` and is exercised by a test
 - `disable_quantum_layer` fills the quantum layer's readout width (`n_outputs`) rather than
   `n_qubits`, so an ablated model built with `readout="first"` matches its `Linear(1 → 1)` head
   instead of raising a shape error where the real model works
