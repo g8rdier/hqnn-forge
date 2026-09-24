@@ -199,6 +199,10 @@ and versioning policy this project follows.
 - Jones & Gacon (2020) — *Efficient calculation of gradients in classical simulations of variational quantum algorithms*
 - Kandala et al. (2017) — *Hardware-efficient variational quantum eigensolver for small molecules and quantum magnets*
 - Havlíček et al. (2019) — *Supervised learning with quantum-enhanced feature spaces*
+- Pérez-Salinas et al. (2020) — *Data re-uploading for a universal quantum classifier*
+- Schuld, Sweke & Meyer (2021) — *Effect of data encoding on the expressive power of variational quantum-machine-learning models*
+- Möttönen et al. (2005) — *Transformation of quantum states using uniformly controlled rotations*
+- Schuld & Petruccione (2018) — *Supervised Learning with Quantum Computers*
 - Lin et al. (2017) — *Focal Loss for Dense Object Detection*
 - King & Zeng (2001) — *Logistic Regression in Rare Events Data*
 - Bergholm et al. (2022) — *PennyLane: Automatic differentiation of hybrid quantum-classical computations*
