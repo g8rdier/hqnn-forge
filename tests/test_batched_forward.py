@@ -55,6 +55,11 @@ LAYER_CLASSES = [
     pytest.param(
         partial(DataReuploadingLayer, trainable_input_scaling=True), id="reuploading-scaled"
     ),
+    # Z leaves its first upload unscaled, so scaling row r multiplies upload r + 1.
+    pytest.param(
+        partial(DataReuploadingLayer, rotation="Z", trainable_input_scaling=True),
+        id="reuploading-scaled-z",
+    ),
 ]
 
 
@@ -66,6 +71,13 @@ def _build(
         n_qubits=N_QUBITS, n_layers=N_LAYERS, device_name=device_name, diff_method=diff_method
     )
     restricted_normal_init_(layer.qlayer.weights, n_qubits=N_QUBITS, n_layers=N_LAYERS)
+    scaling = getattr(layer.qlayer, "input_scaling", None)
+    if scaling is not None:
+        # Distinct per-entry scales rather than the ones-initialisation, so each
+        # upload sees differently scaled features.  Row indexing itself is pinned
+        # against reference circuits in test_data_reuploading.py.
+        with torch.no_grad():
+            scaling.copy_(torch.linspace(0.5, 1.5, scaling.numel()).reshape(scaling.shape))
     return layer
 
 

@@ -114,8 +114,9 @@ def _resolve_weights(target: nn.Module) -> tuple[nn.Module, torch.Tensor, int, i
     The trainable tensor is read off the TorchLayer's ``qnode_weights`` mapping
     rather than a fixed attribute name, the same way
     :func:`~hqnn_forge.diagnostics.circuit.circuit_summary` resolves a layer.
-    Every layer the library builds declares exactly one trainable argument; a
-    layer with several is rejected rather than silently measured in part,
+    A layer with several trainable arguments -- such as ``DataReuploadingLayer``
+    with ``trainable_input_scaling=True``, which adds ``input_scaling`` next
+    to ``weights`` -- is rejected rather than silently measured in part,
     because ``total_variance`` is documented as the variance of the whole
     gradient vector.
     """

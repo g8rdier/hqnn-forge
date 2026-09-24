@@ -54,14 +54,18 @@ Design Rationale
   extra uploads: ``(L - 1)·n`` single-qubit gates and ``L - 1`` units of
   depth, which is all that ``adjoint`` and ``backprop`` pay for.
 
-  Under ``parameter-shift`` (and ``finite-diff``) the gradient cost is
-  counted in gate parameters, and every upload rotation is one.  Whenever
-  the inputs need gradients (a classical encoder upstream) or input scaling
-  is trainable, each of the ``L·n`` upload angles is shifted, which costs
-  ``2Ln`` circuit evaluations per sample on top of the ``6Ln`` for
-  ``weights``, against ``2n`` for the angle encoder's single upload: ``L``
-  times as many for the embedding.  Inputs that need no gradient, without
-  input scaling, add nothing.
+  Under ``parameter-shift`` and ``finite-diff`` the gradient cost is
+  counted in trainable gate parameters, and every upload rotation whose
+  angle needs a gradient is one.  When the inputs need gradients (a
+  classical encoder upstream), all ``L·n`` upload angles do; with trainable
+  input scaling alone, only the scaled ones, ``L·n`` or ``(L - 1)·n`` for
+  ``rotation="Z"``; inputs that need no gradient, without input scaling,
+  add nothing.  Per sample, ``parameter-shift`` costs two circuit
+  evaluations per such angle, ``2Ln`` against ``2n`` for the angle
+  encoder's single upload (``L`` times as many for the embedding), on top
+  of ``6Ln`` for ``weights``; ``finite-diff`` (first-order forward
+  difference, PennyLane's default) costs one per parameter plus one
+  unshifted evaluation, ``Ln + 3Ln + 1`` against ``n + 3Ln + 1``.
 
 References
 ----------
@@ -91,6 +95,7 @@ from hqnn_forge.encoding.angle_embedding import (
     apply_variational_layers,
     measure_z,
     readout_wires,
+    validate_circuit_options,
 )
 
 logger = logging.getLogger(__name__)
@@ -238,12 +243,7 @@ def build_data_reuploading_qnode(
         raise ValueError(f"n_qubits must be ≥ 2 for the CNOT entangling ring; got {n_qubits}.")
     if n_layers < 1:
         raise ValueError(f"n_layers must be ≥ 1 (one upload per layer); got {n_layers}.")
-    if rotation not in ("X", "Y", "Z"):
-        # qml.AngleEmbedding only rejects the axis when the circuit first runs.
-        raise ValueError(f"rotation must be 'X', 'Y' or 'Z'; got {rotation!r}.")
-    if entangler not in ("ring", "strongly_entangling"):
-        raise ValueError(f"entangler must be 'ring' or 'strongly_entangling'; got {entangler!r}.")
-    readout_wires(n_qubits, readout)  # validate early
+    validate_circuit_options(n_qubits, entangler, readout, rotation)
     if rotation == "Z" and n_layers < 2:
         raise ValueError(
             'rotation="Z" needs n_layers ≥ 2: the first RZ upload acts on |0⟩ as a '
@@ -319,8 +319,8 @@ class DataReuploadingLayer(nn.Module):
     n_qubits:
         Number of qubits / input features.  Default: 8.
     n_layers:
-        Number of uploads, each followed by a CNOT ring and ``Rot`` block.
-        Default: 2.
+        Number of uploads, each followed by one variational block of
+        ``entangler``.  Default: 2.
     rotation:
         Pauli axis of the embedding rotations.  Default: ``"X"``.
         ``"Z"`` requires ``n_layers ≥ 2``.
@@ -348,6 +348,7 @@ class DataReuploadingLayer(nn.Module):
     n_qubits, n_layers : int
     n_outputs : int
         Width of the output: ``n_qubits`` or 1.
+    rotation : str
     trainable_input_scaling : bool
     entangler, readout : str
     qlayer : pennylane.qnn.TorchLayer
@@ -379,6 +380,7 @@ class DataReuploadingLayer(nn.Module):
 
         self.n_qubits = n_qubits
         self.n_layers = n_layers
+        self.rotation = rotation
         self.trainable_input_scaling = trainable_input_scaling
         self.entangler = entangler
         self.readout = readout
@@ -439,7 +441,9 @@ class DataReuploadingLayer(nn.Module):
     # ------------------------------------------------------------------
     def extra_repr(self) -> str:
         n_params = sum(p.numel() for p in self.parameters())
-        options = ""
+        # rotation is always shown: it sets the input_scaling shape, so two
+        # layers that differ only in it can differ in n_params.
+        options = f", rotation={self.rotation!r}"
         if self.entangler != "ring":
             options += f", entangler={self.entangler!r}"
         if self.readout != "all":

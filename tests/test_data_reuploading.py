@@ -369,6 +369,49 @@ class TestGradientFlow:
         (layer(x) * _loss_weights()).sum().backward()
         assert (layer.qlayer.input_scaling.grad.abs() > 1e-6).all()
 
+    @pytest.mark.parametrize(
+        "device_name, diff_method",
+        [
+            pytest.param("default.qubit", "parameter-shift", id="parameter-shift"),
+            pytest.param("lightning.qubit", "adjoint", id="lightning-adjoint"),
+        ],
+    )
+    def test_z_scaling_matches_backprop_on_every_method(
+        self, device_name: str, diff_method: str
+    ) -> None:
+        """
+        backprop is pinned to the explicit RZ reference circuit above; every
+        other method must agree with it in outputs and in all gradients, so a
+        scaling row mis-indexed on one execution path cannot hide there.
+        """
+        n_layers = 3
+        ref = _layer(n_layers=n_layers, rotation="Z", trainable_input_scaling=True)
+        torch.manual_seed(0)
+        other = DataReuploadingLayer(
+            n_qubits=N_QUBITS,
+            n_layers=n_layers,
+            rotation="Z",
+            device_name=device_name,  # type: ignore[arg-type]
+            diff_method=diff_method,  # type: ignore[arg-type]
+            trainable_input_scaling=True,
+        )
+        scaling = torch.linspace(0.5, 1.5, (n_layers - 1) * N_QUBITS).reshape(n_layers - 1, -1)
+        with torch.no_grad():
+            other.qlayer.weights.copy_(ref.qlayer.weights)
+            ref.qlayer.input_scaling.copy_(scaling)
+            other.qlayer.input_scaling.copy_(scaling)
+        x = _random_batch()
+        outs, grads = [], []
+        for layer in (ref, other):
+            xi = x.clone().requires_grad_(True)
+            out = layer(xi)
+            (out * _loss_weights()).sum().backward()
+            outs.append(out.detach())
+            grads.append((xi.grad, layer.qlayer.weights.grad, layer.qlayer.input_scaling.grad))
+        torch.testing.assert_close(outs[1], outs[0].to(outs[1].dtype), rtol=1e-5, atol=1e-6)
+        for got, want in zip(grads[1], grads[0], strict=True):
+            torch.testing.assert_close(got, want.to(got.dtype), rtol=1e-4, atol=1e-5)
+
     def test_parameter_shift_matches_backprop(self) -> None:
         """Exact gradients agree across methods, including through the uploads."""
         a = _layer(diff_method="backprop", trainable_input_scaling=True)
