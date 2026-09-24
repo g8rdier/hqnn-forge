@@ -32,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first upload, a phase on `|0⟩`, unscaled
 - `apply_variational_layers` takes a `layer_offset`, so a circuit applying the blocks one at
   a time keeps the `"strongly_entangling"` ranges of the whole ansatz
+- `hqnn_forge.kernels.quantum_kernel_matrix`: pairwise state-fidelity kernel
+  `|⟨Φ(x_i)|Φ(x_j)⟩|²` from any encoding layer, for `SVC(kernel="precomputed")`
 
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from

@@ -138,6 +138,23 @@ def validate_circuit_options(
         raise ValueError(f"rotation must be 'X', 'Y' or 'Z'; got {rotation!r}.")
 
 
+def check_inputs(x: torch.Tensor, expected: int, name: str = "n_qubits", hint: str = "") -> None:
+    """
+    Raise ``ValueError`` unless ``x`` has ``expected`` features and is finite.
+
+    The shared check of every encoding layer's ``prepare_inputs``.  A NaN or
+    ±inf angle is simulated without error and gives NaN outputs, so it is
+    refused here, where ``forward`` and :mod:`hqnn_forge.kernels` both see it.
+    ``hint`` is appended to the width message.
+    """
+    if x.shape[-1] != expected:
+        raise ValueError(
+            f"Input feature dimension {x.shape[-1]} does not match {name}={expected}.{hint}"
+        )
+    if not bool(torch.isfinite(x).all()):
+        raise ValueError("Encoding layer inputs contain NaN or ±inf.")
+
+
 def readout_wires(n_qubits: int, readout: Readout = "all") -> list[int]:
     """Wires measured in ⟨Z⟩: every qubit (``"all"``) or qubit 0 only (``"first"``)."""
     if readout == "all":
@@ -534,6 +551,23 @@ class QuantumEncodingLayer(nn.Module):
     # Forward pass
     # ------------------------------------------------------------------
 
+    def prepare_inputs(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Check that ``x`` has ``n_qubits`` finite features; the angles are used as given.
+
+        This is the classical step ``forward`` applies before the QNode.  Every
+        encoding layer has one, so tools which replay the circuit
+        (:mod:`hqnn_forge.kernels`) validate and transform inputs exactly as
+        ``forward`` does.
+        """
+        check_inputs(
+            x,
+            self.n_qubits,
+            hint=f"  Apply PCA to reduce to {self.n_qubits} features before passing "
+            f"to QuantumEncodingLayer.",
+        )
+        return x
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Embed a batch of feature vectors into Pauli-Z expectation values.
@@ -556,12 +590,7 @@ class QuantumEncodingLayer(nn.Module):
         ValueError
             If the last dimension of ``x`` does not equal ``self.n_qubits``.
         """
-        if x.shape[-1] != self.n_qubits:
-            raise ValueError(
-                f"Input feature dimension {x.shape[-1]} does not match "
-                f"n_qubits={self.n_qubits}.  Apply PCA to reduce to {self.n_qubits} "
-                f"features before passing to QuantumEncodingLayer."
-            )
+        x = self.prepare_inputs(x)
 
         # TorchLayer hands the whole batch to the QNode in one call and reshapes
         # the result to (batch, n_qubits).  Whether the batch is executed as one

@@ -74,6 +74,7 @@ from hqnn_forge.encoding.angle_embedding import (
     _expand_batch_dimension,
     _resolve_device,
     apply_variational_layers,
+    check_inputs,
     measure_z,
 )
 
@@ -293,6 +294,11 @@ class AmplitudeEncodingLayer(nn.Module):
         ``2**n_qubits``.
     qlayer : pennylane.qnn.TorchLayer
 
+    Methods
+    -------
+    prepare_inputs(x)
+        The padding and normalisation ``forward`` applies before the QNode.
+
     Examples
     --------
     >>> import torch
@@ -345,27 +351,30 @@ class AmplitudeEncodingLayer(nn.Module):
         self.qlayer = qml.qnn.TorchLayer(qnode, weight_shapes)
 
     # ------------------------------------------------------------------
-    def _prepare_amplitudes(self, x: torch.Tensor) -> torch.Tensor:
-        """Zero-pad ``x`` to ``2**n_qubits`` and L2-normalise each sample."""
-        if x.shape[-1] != self.n_features:
-            raise ValueError(
-                f"Input feature dimension {x.shape[-1]} does not match "
-                f"n_features={self.n_features} (at most 2**n_qubits={self.n_amplitudes} "
-                f"features fit in {self.n_qubits} qubits)."
-            )
+    def prepare_inputs(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Zero-pad ``x`` to ``2**n_qubits`` and L2-normalise each sample.
+
+        This is the classical step ``forward`` applies before the QNode.  Every
+        encoding layer has one, so tools which replay the circuit
+        (:mod:`hqnn_forge.kernels`) validate and transform inputs exactly as
+        ``forward`` does.
+        """
+        check_inputs(
+            x,
+            self.n_features,
+            name="n_features",
+            hint=f"  At most 2**n_qubits={self.n_amplitudes} features fit in "
+            f"{self.n_qubits} qubits.",
+        )
         # Dividing by the largest |x_k| first keeps the norm in [1, √n]: a raw
         # float32 norm overflows to inf from about 1.8e19 and underflows to 0
         # below about 1e-19.  After the division the largest entry is ±1, so
         # any non-zero finite scale is safe and only an exact zero is refused.
         # x/‖x‖ does not depend on the scale, so neither does its gradient,
-        # and the scale can be detached.  amax propagates NaN, so this one
-        # check (and one host sync) covers NaN, ±inf and all-zero.
+        # and the scale can be detached.
         scale = x.detach().abs().amax(dim=-1, keepdim=True)
-        if not bool((torch.isfinite(scale) & (scale > 0)).all()):
-            if not bool(torch.isfinite(x).all()):
-                raise ValueError(
-                    "Amplitude embedding cannot encode a feature vector containing NaN or ±inf."
-                )
+        if not bool((scale > 0).all()):
             raise ValueError(
                 "Amplitude embedding cannot encode an all-zero feature vector: "
                 "it has no direction, so there is no state to prepare."
@@ -401,7 +410,7 @@ class AmplitudeEncodingLayer(nn.Module):
             If ``x`` requires a gradient and ``diff_method`` is not
             ``"backprop"`` (see *Differentiation methods*).
         """
-        amplitudes = self._prepare_amplitudes(x)
+        amplitudes = self.prepare_inputs(x)
         # Whole batch in one call; see QuantumEncodingLayer.forward.
         return self.qlayer(amplitudes)
 
