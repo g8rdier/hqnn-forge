@@ -1,4 +1,4 @@
-# hqnn-forge
+<h1><img src="assets/social-preview.png" alt="hqnn-forge" width="640"></h1>
 
 [![Tests](https://github.com/g8rdier/hqnn-forge/actions/workflows/tests.yml/badge.svg)](https://github.com/g8rdier/hqnn-forge/actions/workflows/tests.yml)
 [![License](https://img.shields.io/github/license/g8rdier/hqnn-forge)](LICENSE)
