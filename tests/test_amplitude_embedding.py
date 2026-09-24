@@ -311,6 +311,47 @@ class TestGradientFlow:
             radial, torch.zeros(BATCH, dtype=torch.float64), atol=1e-9, rtol=0
         )
 
+    def test_backprop_input_gradient_near_zero_amplitude_in_float32(self) -> None:
+        """
+        An amplitude far below its partner is where the non-backprop methods
+        return NaN; backprop differentiates the state vector instead, so its
+        float32 gradient stays finite and agrees with the float64 one.
+        """
+        x = torch.randn(BATCH, N_AMPLITUDES, dtype=torch.float64)
+        x[:, 0] = 1e-6 * x[:, 1]
+        grads = []
+        for dtype in (torch.float32, torch.float64):
+            layer = _layer("backprop", n_layers=2).to(dtype)
+            xi = x.to(dtype).requires_grad_(True)
+            layer(xi).sum().backward()
+            assert xi.grad is not None
+            grads.append(xi.grad.double())
+        assert torch.isfinite(grads[0]).all()
+        torch.testing.assert_close(grads[0], grads[1], rtol=0, atol=1e-4)
+
+    @pytest.mark.parametrize(
+        ("diff_method", "device_name"),
+        [
+            ("adjoint", "default.qubit"),
+            ("parameter-shift", "default.qubit"),
+            ("finite-diff", "default.qubit"),
+            pytest.param("adjoint", "lightning.qubit", marks=requires_lightning),
+        ],
+    )
+    @pytest.mark.parametrize("n_features", [N_AMPLITUDES, 6])
+    def test_input_gradient_refused_without_backprop(
+        self, diff_method: str, device_name: str, n_features: int
+    ) -> None:
+        """
+        Refused from the method alone, even for dense float64 inputs where
+        the gradient would happen to be right: whether a batch contains a
+        zero or small amplitude cannot be known in advance.
+        """
+        layer = _layer(diff_method, device_name, n_features=n_features).double()
+        x = torch.randn(BATCH, n_features, dtype=torch.float64, requires_grad=True)
+        with pytest.raises(RuntimeError, match="cannot differentiate with respect to its inputs"):
+            layer(x)
+
     @pytest.mark.parametrize(
         ("diff_method", "device_name"),
         [
@@ -319,76 +360,45 @@ class TestGradientFlow:
             pytest.param("adjoint", "lightning.qubit", marks=requires_lightning),
         ],
     )
-    def test_input_gradient_without_zero_amplitudes_matches_backprop(
-        self, diff_method: str, device_name: str
-    ) -> None:
+    def test_weight_gradient_matches_backprop(self, diff_method: str, device_name: str) -> None:
         """
-        These methods differentiate the state-prep decomposition rather than
-        the state vector; with no zero amplitudes the input gradient still
-        agrees with backprop.
+        The state-preparation angles do not depend on the weights, so weight
+        gradients stay correct under every method, also with padding and a
+        near-zero amplitude that would break the input gradient.
         """
-        x = torch.randn(BATCH, N_AMPLITUDES, dtype=torch.float64)
+        x = torch.randn(BATCH, 6, dtype=torch.float64)
+        x[:, 0] = 1e-9 * x[:, 1]
         grads = []
         for method, device in (("backprop", "default.qubit"), (diff_method, device_name)):
-            layer = _layer(method, device, n_layers=2).double()
-            xi = x.clone().requires_grad_(True)
-            layer(xi).sum().backward()
-            assert xi.grad is not None
-            grads.append(xi.grad)
+            layer = _layer(method, device, n_layers=2, n_features=6).double()
+            layer(x).sum().backward()
+            assert layer.qlayer.weights.grad is not None
+            grads.append(layer.qlayer.weights.grad)
+        assert torch.isfinite(grads[1]).all()
         # finite-diff is first order in its step, so it gets a looser tolerance.
         atol = 1e-5 if diff_method == "finite-diff" else 1e-7
         torch.testing.assert_close(grads[1], grads[0], rtol=0, atol=atol)
 
-    @pytest.mark.parametrize(
-        ("diff_method", "device_name"),
-        [
-            ("parameter-shift", "default.qubit"),
-            ("finite-diff", "default.qubit"),
-            pytest.param("adjoint", "lightning.qubit", marks=requires_lightning),
-        ],
-    )
-    @pytest.mark.parametrize("zero_source", ["padding", "zero_feature"])
-    def test_input_gradient_with_zero_amplitude_is_refused(
-        self, diff_method: str, device_name: str, zero_source: str
-    ) -> None:
+    def test_near_zero_amplitude_gradient_is_really_nan(self) -> None:
         """
-        A zero amplitude makes PennyLane's input gradient NaN, silently.  The
-        raw QNode confirms that here; the layer refuses instead.
+        Pins the PennyLane behaviour the guard exists for: in float32, an
+        amplitude 1e-5 of its partner (not zero) already gives a NaN input
+        gradient under parameter-shift.  If this starts failing, the guard
+        may be relaxable.
         """
-        if zero_source == "padding":
-            layer = _layer(diff_method, device_name, n_features=6)
-            x = torch.randn(BATCH, 6)
-        else:
-            layer = _layer(diff_method, device_name)
-            x = torch.randn(BATCH, N_AMPLITUDES)
-            x[1, 3] = 0.0
-        with pytest.raises(RuntimeError, match="exactly-zero amplitude"):
-            layer(x.requires_grad_(True))
-
-    def test_zero_amplitude_gradient_is_really_nan(self) -> None:
-        """Pins the PennyLane behaviour the guard exists for; if this starts
-        failing, the guard may no longer be needed."""
-        dev = qml.device("default.qubit", wires=N_QUBITS)
+        dev = qml.device("default.qubit", wires=2)
 
         @qml.qnode(dev, interface="torch", diff_method="parameter-shift")
         def circuit(inputs: torch.Tensor) -> torch.Tensor:
-            qml.AmplitudeEmbedding(inputs, wires=range(N_QUBITS))
+            qml.AmplitudeEmbedding(inputs, wires=range(2))
             qml.RX(0.3, wires=0)
             return qml.expval(qml.PauliZ(0) @ qml.PauliX(1))
 
-        x = torch.randn(N_AMPLITUDES, dtype=torch.float64)
-        x[3] = 0.0
+        x = torch.tensor([1e-5, 1.0, 0.7, -0.4])
         x = (x / x.norm()).requires_grad_(True)
         circuit(x).backward()
         assert x.grad is not None
         assert torch.isnan(x.grad).any()
-
-    def test_input_gradient_refused_under_default_qubit_adjoint(self) -> None:
-        """default.qubit's adjoint returns an all-zero input gradient, even dense."""
-        layer = _layer("adjoint")
-        x = torch.randn(BATCH, N_AMPLITUDES, requires_grad=True)
-        with pytest.raises(RuntimeError, match="all-zero input"):
-            layer(x)
 
     @pytest.mark.parametrize("diff_method", ["adjoint", "parameter-shift", "finite-diff"])
     def test_inference_under_no_grad_is_allowed(self, diff_method: str) -> None:
@@ -407,7 +417,7 @@ class TestGradientFlow:
         x = torch.zeros(N_AMPLITUDES, requires_grad=True)
         with torch.no_grad():
             x[0] = 1.0
-        with pytest.raises(RuntimeError, match="all-zero input"):
+        with pytest.raises(RuntimeError, match="cannot differentiate with respect to its inputs"):
             qnode(x, torch.zeros(1, N_QUBITS, 3))
 
     def test_detached_input_is_fine_under_parameter_shift(self) -> None:
@@ -443,6 +453,17 @@ class TestInputValidation:
         with pytest.raises(ValueError, match="all-zero"):
             layer(x)
 
+    @pytest.mark.parametrize("scale", [1e-13, 1e-40])
+    def test_tiny_non_zero_scale_is_encoded(self, scale: float) -> None:
+        """
+        Only an exact zero has no direction: a tiny scale, down to float32
+        subnormals (1e-40), encodes the same state as the unscaled input.
+        """
+        layer = _layer()
+        x = torch.randn(BATCH, N_AMPLITUDES)
+        with torch.no_grad():
+            torch.testing.assert_close(layer(scale * x), layer(x), rtol=0, atol=1e-5)
+
     @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
     def test_non_finite_sample_raises(self, bad: float) -> None:
         layer = _layer()
@@ -454,6 +475,14 @@ class TestInputValidation:
     def test_n_qubits_lt_2_raises(self) -> None:
         with pytest.raises(ValueError, match="n_qubits must be"):
             build_amplitude_qnode(n_qubits=1, device_name="default.qubit", diff_method="backprop")
+
+    @pytest.mark.parametrize("n_qubits", [-1, 0, 1])
+    def test_layer_validates_n_qubits_first(self, n_qubits: int) -> None:
+        """An invalid n_qubits is reported as such, not as a bad n_features."""
+        with pytest.raises(ValueError, match="n_qubits must be"):
+            AmplitudeEncodingLayer(
+                n_qubits=n_qubits, device_name="default.qubit", diff_method="backprop"
+            )
 
     def test_default_n_features_is_all_amplitudes(self) -> None:
         layer = _layer()

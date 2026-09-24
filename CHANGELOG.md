@@ -24,7 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `HybridBinaryClassifier` (the thesis's 122-parameter SHNN configuration) and
   `ParallelHybridClassifier` (that quantum branch beside the classical MLP branch)
 - `AmplitudeEncodingLayer`: amplitude embedding of up to `2**n_qubits` features per sample,
-  with zero-padding and L2 normalisation in `forward`, ahead of the same entangling ansatz
+  with zero-padding and L2 normalisation in `forward`, ahead of the same entangling ansatz;
+  gradients with respect to the inputs are only supported under `backprop`
 
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from

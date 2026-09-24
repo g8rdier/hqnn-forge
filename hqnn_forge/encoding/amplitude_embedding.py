@@ -31,19 +31,21 @@ Design Rationale
 * **Differentiation.**  Under ``backprop`` on ``default.qubit`` gradients
   flow to both the weights and the inputs through the state vector itself.
   The ``adjoint``, ``parameter-shift`` and ``finite-diff`` methods instead
-  differentiate the rotation-gate decomposition of the state preparation.
-  For a normalised input without zero amplitudes that gives the same input
-  gradient as ``backprop`` (checked to 1e-7 on ``lightning.qubit``), but
-  PennyLane silently returns a wrong input gradient in two cases:
+  differentiate the Möttönen rotation-gate decomposition of the state
+  preparation, whose angles are ``arcsin`` of amplitude ratios.  That
+  derivative is infinite when an amplitude is zero and ill-conditioned when
+  it is merely small next to its partner, so PennyLane silently returns an
+  input gradient that is **NaN** (an exactly-zero amplitude, or in float32
+  one below about 1e-4 of its partner) or **finite but wrong** (near that
+  edge, and for ``finite-diff`` whenever an amplitude is smaller than its
+  step).  ``adjoint`` on ``default.qubit`` returns **zero** for every input.
+  Which inputs are affected depends on the data, so no per-batch check can
+  catch them reliably.
 
-  - **an amplitude that is exactly zero** (right-padding, or a feature that
-    is 0) gives **NaN**: the decomposition is not differentiable there;
-  - **``adjoint`` on ``default.qubit``** gives **zero** for every input: that
-    device does not differentiate through the state preparation.
-
-  The circuit raises ``RuntimeError`` in both cases when the inputs require
-  a gradient, so neither reaches a loss.  The weight gradients are correct
-  under every method.
+  The circuit therefore raises ``RuntimeError`` whenever the inputs require
+  a gradient under any method other than ``backprop``, decided from the
+  method alone.  The weight gradients are correct under every method: the
+  state-preparation angles do not depend on the weights.
 
 * **Strongly-Entangling Ansatz** and **Measurement** are identical to
   :mod:`hqnn_forge.encoding.angle_embedding`: L layers of a CNOT ring
@@ -77,51 +79,38 @@ from hqnn_forge.encoding.angle_embedding import (
 
 logger = logging.getLogger(__name__)
 
-#: Samples whose largest absolute feature is at or below this are treated as
-#: all-zero: they have no direction, so there is no state to prepare.
-ZERO_TOLERANCE = 1e-12
-
-
 # ---------------------------------------------------------------------------
 # Raw QNode function
 # ---------------------------------------------------------------------------
 
 
-def _check_input_gradient(inputs: torch.Tensor, device_name: str, diff_method: str) -> None:
+def _check_input_gradient(inputs: torch.Tensor, diff_method: str) -> None:
     """
-    Raise if PennyLane would silently return a wrong gradient for ``inputs``.
+    Raise if a gradient with respect to ``inputs`` would be computed under a
+    method other than ``backprop``.
 
-    Only relevant when a gradient with respect to ``inputs`` will actually be
-    computed, i.e. ``inputs`` requires grad and autograd is recording, and
-    only for the methods that differentiate the state-preparation
-    decomposition instead of the state vector.  See the module docstring,
-    *Differentiation*, for how the two cases were established.
+    Only relevant when ``inputs`` requires grad and autograd is recording.
+    The rule depends on the method alone, not on the values in ``inputs``:
+    the non-backprop input gradient is NaN or silently wrong for zero and
+    small amplitudes, and which batches contain those cannot be told in
+    advance.  See the module docstring, *Differentiation*.
     """
     if diff_method == "backprop" or not isinstance(inputs, torch.Tensor):
         return
     if not (inputs.requires_grad and torch.is_grad_enabled()):
         return
-    if diff_method == "adjoint" and device_name == "default.qubit":
-        raise RuntimeError(
-            "Amplitude embedding cannot differentiate with respect to its inputs under "
-            "diff_method='adjoint' on default.qubit: PennyLane returns an all-zero input "
-            "gradient there.  Use lightning.qubit, diff_method='backprop', or detach the "
-            "inputs."
-        )
-    if bool((inputs == 0).any()):
-        raise RuntimeError(
-            f"Amplitude embedding cannot differentiate with respect to inputs that contain "
-            f"an exactly-zero amplitude under diff_method={diff_method!r}: PennyLane returns "
-            f"NaN for that gradient.  Zero amplitudes come from right-padding "
-            f"(n_features < 2**n_qubits) or from features that are 0.  Use "
-            f"diff_method='backprop' on default.qubit, or detach the inputs."
-        )
+    raise RuntimeError(
+        f"Amplitude embedding cannot differentiate with respect to its inputs under "
+        f"diff_method={diff_method!r}: that method differentiates the state-preparation "
+        f"decomposition, whose input gradient is NaN or silently wrong whenever an "
+        f"amplitude is zero or small.  Use diff_method='backprop' on default.qubit, or "
+        f"detach the inputs (weight gradients are unaffected)."
+    )
 
 
 def _make_amplitude_embedding_circuit(
     n_qubits: int,
     n_layers: int,
-    device_name: str,
     diff_method: str,
 ) -> Callable[[torch.Tensor, torch.Tensor], list[qml.measurements.ExpectationMP]]:
     """
@@ -133,14 +122,13 @@ def _make_amplitude_embedding_circuit(
 
     where ``inputs`` has shape ``(2**n_qubits,)`` (or ``(batch, 2**n_qubits)``
     when broadcasted) and is already zero-padded and L2-normalised, and
-    ``weights`` has shape ``(n_layers, n_qubits, 3)``.  ``device_name`` and
-    ``diff_method`` are the resolved device and method, used only by the
-    input-gradient check.
+    ``weights`` has shape ``(n_layers, n_qubits, 3)``.  ``diff_method`` is
+    used only by the input-gradient check.
 
     Circuit structure
     -----------------
-    0. :func:`_check_input_gradient` refuses the input-gradient cases that
-       PennyLane gets silently wrong.
+    0. :func:`_check_input_gradient` refuses input gradients under every
+       method other than ``backprop``.
     1. ``AmplitudeEmbedding(inputs)``: prepares ``Σ_k inputs_k |k⟩``.  The
        template does not re-normalise: ``inputs`` must already have unit norm,
        which the template checks.
@@ -155,7 +143,7 @@ def _make_amplitude_embedding_circuit(
         weights: torch.Tensor,
     ) -> list[qml.measurements.ExpectationMP]:
         # ── 0. Refuse input gradients PennyLane would get wrong ──────────
-        _check_input_gradient(inputs, device_name, diff_method)
+        _check_input_gradient(inputs, diff_method)
 
         # ── 1. Amplitude embedding ───────────────────────────────────────
         qml.AmplitudeEmbedding(features=inputs, wires=range(n_qubits))
@@ -186,10 +174,9 @@ def build_amplitude_qnode(
     padding and normalisation of raw feature vectors.
 
     When ``inputs`` requires a gradient under a method other than
-    ``"backprop"``, calling the QNode raises ``RuntimeError`` if any amplitude
-    is exactly zero, or if the method is ``"adjoint"`` on ``default.qubit``
-    (including the fallback when ``pennylane-lightning`` is missing): PennyLane
-    would return NaN or zero for that gradient.  See the module docstring.
+    ``"backprop"``, calling the QNode raises ``RuntimeError``: PennyLane would
+    return NaN, zero or a silently wrong value for that gradient on some
+    inputs.  See the module docstring.
 
     Parameters
     ----------
@@ -209,7 +196,7 @@ def build_amplitude_qnode(
         raise ValueError(f"n_qubits must be ≥ 2 for the CNOT entangling ring; got {n_qubits}.")
 
     device = _resolve_device(device_name, n_qubits)
-    circuit_fn = _make_amplitude_embedding_circuit(n_qubits, n_layers, device.name, diff_method)
+    circuit_fn = _make_amplitude_embedding_circuit(n_qubits, n_layers, diff_method)
 
     qnode = qml.QNode(
         func=circuit_fn,
@@ -251,10 +238,10 @@ class AmplitudeEncodingLayer(nn.Module):
     2. If ``n_features < 2**n_qubits`` the vector is zero-padded on the right
        to ``2**n_qubits`` amplitudes.
     3. The padded vector is L2-normalised, after dividing by its largest
-       absolute feature so the norm cannot overflow.  A sample containing
-       NaN or ±inf, or whose largest absolute feature is at or below
-       ``ZERO_TOLERANCE``, raises ``ValueError``: the zero vector has no
-       direction, so there is no state to prepare.
+       absolute feature so the norm cannot overflow or underflow.  A sample
+       containing NaN or ±inf, or one that is exactly all zeros, raises
+       ``ValueError``: the zero vector has no direction, so there is no
+       state to prepare.  Any non-zero scale, however small, is accepted.
 
     Both steps are differentiable, so the gradient can reach whatever
     produced the features (see *Differentiation methods* for which methods
@@ -272,21 +259,15 @@ class AmplitudeEncodingLayer(nn.Module):
 
     Differentiation methods
     -----------------------
-    Weight gradients are correct under every method.  For the input
-    gradient:
-
-    * ``"backprop"`` on ``default.qubit`` always works, padded or not.
-    * ``"adjoint"`` on ``lightning.qubit``, ``"parameter-shift"`` and
-      ``"finite-diff"`` work as long as no amplitude is exactly zero, i.e.
-      ``n_features == 2**n_qubits`` and no feature is 0.  With a zero
-      amplitude PennyLane returns NaN, so the call raises ``RuntimeError``.
-    * ``"adjoint"`` on ``default.qubit`` returns zero for every input, so the
-      call raises ``RuntimeError`` whenever ``x`` requires a gradient.
+    Weight gradients are correct under every method.  The input gradient is
+    only supported under ``"backprop"`` on ``default.qubit``; every other
+    method raises ``RuntimeError`` when ``x`` requires a gradient, because
+    PennyLane returns NaN or a silently wrong value for zero and small
+    amplitudes (see the module docstring).
 
     The check only applies when a gradient will actually be computed:
     detached inputs, and any input under ``torch.no_grad()``, are fine with
-    every method.  With a classical encoder upstream and padded inputs, use
-    ``backprop``.
+    every method.  With a classical encoder upstream, use ``backprop``.
 
     Parameters
     ----------
@@ -335,6 +316,9 @@ class AmplitudeEncodingLayer(nn.Module):
     ) -> None:
         super().__init__()
 
+        # Validated here, before 2**n_qubits is used to check n_features.
+        if n_qubits < 2:
+            raise ValueError(f"n_qubits must be ≥ 2 for the CNOT entangling ring; got {n_qubits}.")
         n_amplitudes = 2**n_qubits
         if n_features is None:
             n_features = n_amplitudes
@@ -347,7 +331,6 @@ class AmplitudeEncodingLayer(nn.Module):
         self.n_layers = n_layers
         self.n_features = n_features
         self.n_amplitudes = n_amplitudes
-        self.diff_method = diff_method
 
         qnode = build_amplitude_qnode(
             n_qubits=n_qubits,
@@ -371,20 +354,21 @@ class AmplitudeEncodingLayer(nn.Module):
                 f"features fit in {self.n_qubits} qubits)."
             )
         # Dividing by the largest |x_k| first keeps the norm in [1, √n]: a raw
-        # float32 norm overflows to inf from about 1.8e19 and x/inf is all
-        # zeros.  x/‖x‖ does not depend on the scale, so neither does its
-        # gradient, and the scale can be detached.  amax propagates NaN, so
-        # this one check (and one host sync) covers NaN, ±inf and all-zero.
+        # float32 norm overflows to inf from about 1.8e19 and underflows to 0
+        # below about 1e-19.  After the division the largest entry is ±1, so
+        # any non-zero finite scale is safe and only an exact zero is refused.
+        # x/‖x‖ does not depend on the scale, so neither does its gradient,
+        # and the scale can be detached.  amax propagates NaN, so this one
+        # check (and one host sync) covers NaN, ±inf and all-zero.
         scale = x.detach().abs().amax(dim=-1, keepdim=True)
-        if not bool((torch.isfinite(scale) & (scale > ZERO_TOLERANCE)).all()):
+        if not bool((torch.isfinite(scale) & (scale > 0)).all()):
             if not bool(torch.isfinite(x).all()):
                 raise ValueError(
                     "Amplitude embedding cannot encode a feature vector containing NaN or ±inf."
                 )
             raise ValueError(
                 "Amplitude embedding cannot encode an all-zero feature vector: "
-                "it has no direction, so there is no state to prepare.  Every "
-                f"sample needs a feature with absolute value above {ZERO_TOLERANCE}."
+                "it has no direction, so there is no state to prepare."
             )
         x = x / scale
         pad = self.n_amplitudes - self.n_features
@@ -414,8 +398,8 @@ class AmplitudeEncodingLayer(nn.Module):
             If the last dimension of ``x`` is not ``n_features``, or a sample
             is all zeros or contains NaN or ±inf.
         RuntimeError
-            If ``x`` needs a gradient that PennyLane would return as NaN or
-            zero under ``diff_method`` (see *Differentiation methods*).
+            If ``x`` requires a gradient and ``diff_method`` is not
+            ``"backprop"`` (see *Differentiation methods*).
         """
         amplitudes = self._prepare_amplitudes(x)
         # Whole batch in one call; see QuantumEncodingLayer.forward.
