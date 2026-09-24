@@ -326,8 +326,9 @@ class DataReuploadingLayer(nn.Module):
         Pauli axis of the embedding rotations.  Default: ``"X"``.
         ``"Z"`` requires ``n_layers ≥ 2``.
     device_name:
-        PennyLane device.  Falls back to ``default.qubit`` if
-        ``pennylane-lightning`` is unavailable.
+        PennyLane device, one of :data:`DeviceName`.  An unavailable backend
+        falls back along ``lightning.qubit → default.qubit`` with a warning
+        per step.
     diff_method:
         Gradient method.  Default: ``"adjoint"``.
     trainable_input_scaling:

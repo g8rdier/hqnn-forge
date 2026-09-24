@@ -40,12 +40,12 @@ from __future__ import annotations
 import logging
 import warnings
 from collections.abc import Callable
-from typing import Literal
+from typing import Literal, get_args
 
 import pennylane as qml
 import torch
 import torch.nn as nn
-from pennylane.exceptions import DeviceError
+from pennylane.exceptions import AllocationError, DeviceError
 
 logger = logging.getLogger(__name__)
 
@@ -64,10 +64,17 @@ Readout = Literal["all", "first"]
 FALLBACK_CHAIN: tuple[str, ...] = ("lightning.qubit", "default.qubit")
 
 #: What creating a device raises when its plugin or hardware is missing:
-#: ``DeviceError`` for an unknown or unregistered device name, ``ImportError``
-#: / ``OSError`` when a plugin's compiled extension or a CUDA library cannot
-#: be loaded, ``RuntimeError`` when the plugin loads but finds no usable GPU.
-_DEVICE_FAILURES: tuple[type[BaseException], ...] = (DeviceError, ImportError, OSError, RuntimeError)
+#: ``DeviceError`` for a device name no installed plugin registers,
+#: ``ImportError`` / ``OSError`` when a plugin's compiled extension or a CUDA
+#: library cannot be loaded, ``RuntimeError`` when the plugin loads but finds
+#: no usable GPU.  A ``RuntimeError`` about memory is not one of these: see
+#: :func:`_is_out_of_memory`.
+_DEVICE_FAILURES: tuple[type[BaseException], ...] = (
+    DeviceError,
+    ImportError,
+    OSError,
+    RuntimeError,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +196,21 @@ def measure_z(n_qubits: int, readout: Readout = "all") -> list[qml.measurements.
 # ---------------------------------------------------------------------------
 
 
+def _is_out_of_memory(exc: BaseException) -> bool:
+    """
+    Whether a device-creation failure is the state vector not fitting.
+
+    Every backend in the chain allocates the same ``2**n_qubits`` amplitudes,
+    so falling back cannot help and would only move the allocation from GPU
+    memory to host memory, where it can get the process killed instead of
+    raising.  PennyLane raises :class:`AllocationError`; the lightning plugins
+    raise a bare ``RuntimeError`` naming memory.
+    """
+    return isinstance(exc, AllocationError) or (
+        isinstance(exc, RuntimeError) and "memory" in str(exc).lower()
+    )
+
+
 def _resolve_device(device_name: DeviceName, n_qubits: int) -> qml.devices.Device:
     """
     Create *device_name*, falling back along :data:`FALLBACK_CHAIN` when a
@@ -198,6 +220,10 @@ def _resolve_device(device_name: DeviceName, n_qubits: int) -> qml.devices.Devic
     The chain is ``requested → lightning.qubit → default.qubit``; entries at
     or before the requested device are skipped, so ``lightning.qubit`` falls
     straight to ``default.qubit`` and ``default.qubit`` has no fallback.
+
+    A name outside :data:`DeviceName` is refused before anything is tried: a
+    typo such as ``"default.qbit"`` would otherwise fail like a missing plugin
+    and quietly run on another simulator.
 
     Parameters
     ----------
@@ -216,17 +242,25 @@ def _resolve_device(device_name: DeviceName, n_qubits: int) -> qml.devices.Devic
 
     Raises
     ------
-    The last backend's own exception if every step of the chain fails, which
-    can only happen if PennyLane itself is broken (``default.qubit`` has no
-    dependencies).
+    ValueError
+        If *device_name* is not one of :data:`DeviceName`.
+    The backend's own exception if the state vector does not fit in memory
+    (see :func:`_is_out_of_memory`), or if every step of the chain fails,
+    which can only happen if PennyLane itself is broken (``default.qubit``
+    has no dependencies).
     """
+    if device_name not in get_args(DeviceName):
+        raise ValueError(
+            f"device_name must be one of {', '.join(map(repr, get_args(DeviceName)))}; "
+            f"got {device_name!r}."
+        )
     start = FALLBACK_CHAIN.index(device_name) + 1 if device_name in FALLBACK_CHAIN else 0
     candidates = [device_name, *FALLBACK_CHAIN[start:]]
     for attempt, name in enumerate(candidates):
         try:
             dev = qml.device(name, wires=n_qubits)
         except _DEVICE_FAILURES as exc:
-            if attempt == len(candidates) - 1:
+            if attempt == len(candidates) - 1 or _is_out_of_memory(exc):
                 raise
             fallback = candidates[attempt + 1]
             hint = (
@@ -392,8 +426,8 @@ def build_encoding_qnode(
     """
     Build and return a PennyLane QNode for the angle-embedding feature map.
 
-    The QNode is bound to a ``lightning.qubit`` device (or ``default.qubit``
-    on fallback) and configured for the specified differentiation method.
+    The QNode is bound to the device :func:`_resolve_device` returns for
+    *device_name* and configured for the specified differentiation method.
 
     Parameters
     ----------
@@ -407,7 +441,8 @@ def build_encoding_qnode(
         Pauli rotation axis for AngleEmbedding: ``"X"`` (default), ``"Y"``, or ``"Z"``.
     device_name:
         PennyLane device string.  ``"lightning.qubit"`` is strongly preferred for
-        adjoint differentiation.  Falls back to ``"default.qubit"`` automatically.
+        adjoint differentiation.  An unavailable backend falls back along
+        ``lightning.qubit → default.qubit`` with a warning per step.
     diff_method:
         Differentiation strategy:
 
@@ -510,8 +545,9 @@ class QuantumEncodingLayer(nn.Module):
     rotation:
         Pauli axis for AngleEmbedding: ``"X"`` | ``"Y"`` | ``"Z"``.
     device_name:
-        PennyLane device.  Falls back to ``default.qubit`` if
-        ``pennylane-lightning`` is unavailable.
+        PennyLane device, one of :data:`DeviceName`.  An unavailable backend
+        falls back along ``lightning.qubit → default.qubit`` with a warning
+        per step.
     diff_method:
         Gradient method.  Use ``"adjoint"`` with ``lightning.qubit`` for
         exact, efficient gradients during state-vector simulation.

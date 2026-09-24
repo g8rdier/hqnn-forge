@@ -280,8 +280,9 @@ class AmplitudeEncodingLayer(nn.Module):
         Width of the input vectors, ``1 ≤ n_features ≤ 2**n_qubits``.
         Default: ``2**n_qubits`` (no padding).
     device_name:
-        PennyLane device.  Falls back to ``default.qubit`` if
-        ``pennylane-lightning`` is unavailable.
+        PennyLane device, one of :data:`DeviceName`.  An unavailable backend
+        falls back along ``lightning.qubit → default.qubit`` with a warning
+        per step.
     diff_method:
         Gradient method.  See *Differentiation methods* above.
 

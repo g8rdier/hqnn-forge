@@ -14,7 +14,7 @@ import warnings
 import pennylane as qml
 import pytest
 import torch
-from pennylane.exceptions import DeviceError
+from pennylane.exceptions import AllocationError, DeviceError
 
 from hqnn_forge.encoding import QuantumEncodingLayer
 from hqnn_forge.encoding import angle_embedding as ae
@@ -58,10 +58,28 @@ class TestAcceleratedBackends:
             warnings.simplefilter("error", RuntimeWarning)  # no fallback expected
             layer = QuantumEncodingLayer(n_qubits=3, n_layers=1, device_name=name)  # type: ignore[arg-type]
         assert layer.qlayer.qnode.device.name == name
-        out = layer(torch.rand(2, 3))
-        assert out.shape == (2, 3)
-        out.sum().backward()
-        assert layer.qlayer.weights.grad is not None
+        reference = QuantumEncodingLayer(
+            n_qubits=3, n_layers=1, device_name="default.qubit", diff_method="backprop"
+        )
+        reference.load_state_dict(layer.state_dict())
+
+        x = torch.rand(4, 3)
+        out, expected = layer(x), reference(x)
+        assert out.shape == (4, 3)
+        torch.testing.assert_close(out, expected, rtol=1e-5, atol=1e-5, check_dtype=False)
+
+        # A non-uniform upstream gradient, so a permuted batch or output axis
+        # in the backend's adjoint path shows up in weights.grad.
+        upstream = torch.arange(1.0, 13.0).reshape(4, 3)
+        (out * upstream.to(out.dtype)).sum().backward()
+        (expected * upstream.to(expected.dtype)).sum().backward()
+        torch.testing.assert_close(
+            layer.qlayer.weights.grad,
+            reference.qlayer.weights.grad,
+            rtol=1e-5,
+            atol=1e-5,
+            check_dtype=False,
+        )
 
     @pytest.mark.parametrize("name", GPU_BACKENDS)
     def test_backend_names_are_accepted_by_the_type_alias(self, name: str) -> None:
@@ -117,15 +135,56 @@ class TestFallbackChain:
         with pytest.raises(DeviceError):
             ae._resolve_device("default.qubit", 2)
 
-    def test_unknown_device_name_warns_and_falls_back(self) -> None:
+    @pytest.mark.parametrize("name", ["default.qbit", "default.mixed", "no.such.device"])
+    def test_name_outside_device_name_is_refused(self, name: str) -> None:
+        """A typo must not fail like a missing plugin and run on another simulator."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)  # refused, not fallen back
+            with pytest.raises(ValueError, match="device_name must be one of"):
+                ae._resolve_device(name, 2)  # type: ignore[arg-type]
+
+    def test_unregistered_plugin_falls_back_without_attribute_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """
         The branch that was unreachable on PennyLane 0.45 (qml.DeviceError no
-        longer exists, see #154): a name no plugin provides must warn and
-        fall back, not raise AttributeError.
+        longer exists, see #154): the ``DeviceError`` PennyLane raises for a
+        name no installed plugin registers must warn and fall back.
         """
-        with pytest.warns(RuntimeWarning, match="no.such.device"):
-            dev = ae._resolve_device("no.such.device", 2)  # type: ignore[arg-type]
+        real = qml.device
+
+        def device(name: str, *args, **kwargs):
+            # What PennyLane itself raises for a name no plugin registers.
+            return real("no.such.device" if name == "lightning.gpu" else name, *args, **kwargs)
+
+        monkeypatch.setattr(ae.qml, "device", device)
+        with pytest.warns(RuntimeWarning, match="DeviceError.*Falling back"):
+            dev = ae._resolve_device("lightning.gpu", 2)
         assert dev.name in ("lightning.qubit", "default.qubit")
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            AllocationError("state vector too large"),
+            RuntimeError("[cudaMalloc] out of memory"),
+        ],
+    )
+    def test_out_of_memory_is_raised_not_retried_on_the_host(
+        self, monkeypatch: pytest.MonkeyPatch, error: BaseException
+    ) -> None:
+        """Every backend needs the same 2**n state; falling back cannot fit it."""
+        tried: list[str] = []
+
+        def device(name: str, *args, **kwargs):
+            tried.append(name)
+            raise error
+
+        monkeypatch.setattr(ae.qml, "device", device)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            with pytest.raises(type(error), match=str(error).split()[-1]):
+                ae._resolve_device("lightning.gpu", 30)
+        assert tried == ["lightning.gpu"]
 
     def test_no_warning_when_the_requested_device_works(self) -> None:
         with warnings.catch_warnings():
@@ -143,7 +202,7 @@ class TestFallbackChain:
         with pytest.warns(RuntimeWarning):
             iqp = IQPEncodingLayer(
                 n_qubits=2, n_layers=1, device_name="lightning.gpu", diff_method="backprop"
-            )  # type: ignore[arg-type]
+            )
         assert iqp.qlayer.qnode.device.name == "default.qubit"
         with pytest.warns(RuntimeWarning):
             model = HybridBinaryClassifier(

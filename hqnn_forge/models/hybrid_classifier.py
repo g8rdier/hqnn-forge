@@ -119,10 +119,10 @@ class HybridBinaryClassifier(BinaryClassifierBase):
     dropout_p:
         Dropout probability applied after the quantum layer.  Default: 0.0.
     device_name:
-        PennyLane device string, type-checked as ``"lightning.qubit"`` or
-        ``"default.qubit"``.  Default: ``"lightning.qubit"``.  Any other device name
-        still runs — it is handed to ``qml.device``, which falls back to
-        ``"default.qubit"`` with a warning if the device cannot be initialised.
+        PennyLane device string, one of ``"lightning.gpu"``, ``"lightning.kokkos"``,
+        ``"lightning.qubit"`` or ``"default.qubit"``; any other name raises
+        ``ValueError``.  Default: ``"lightning.qubit"``.  A backend that cannot be
+        initialised falls back along ``lightning.qubit → default.qubit`` with a warning.
     diff_method:
         Gradient method: ``"adjoint"``, ``"parameter-shift"``, ``"backprop"`` or
         ``"finite-diff"``.  Default: ``"adjoint"``.
