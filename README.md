@@ -18,7 +18,7 @@
 | **Custom angle encoding** | 8-qubit angle-embedding feature map with strongly-entangled VQC ansatz |
 | **Imbalance-robust losses** | Focal Loss & inverse-frequency weighted BCE |
 | **Pure-NumPy pre-processing** | PCA + standardisation without scikit-learn runtime dependency |
-| **Two hybrid topologies** | Serial `HybridBinaryClassifier` and parallel `ParallelHybridClassifier` (classical MLP branch ‖ quantum branch), with angle or IQP encoding |
+| **Three hybrid topologies** | Serial `HybridBinaryClassifier`, parallel `ParallelHybridClassifier` (classical MLP branch ‖ quantum branch) and multiclass `MulticlassHybridClassifier` (softmax or one-vs-rest heads on a shared quantum layer), with angle or IQP encoding |
 
 ---
 
@@ -78,8 +78,9 @@ See `examples/quick_start.py` for a full training loop on a synthetic imbalanced
 
 ## Architecture
 
-Two hybrid topologies share the same building blocks. Both return a raw logit of shape
-`(batch, 1)`: apply `torch.sigmoid` for a probability, or pass it straight to `FocalLoss`.
+Three hybrid topologies share the same building blocks. The two binary ones return a raw
+logit of shape `(batch, 1)`: apply `torch.sigmoid` for a probability, or pass it straight to
+`FocalLoss`. The multiclass one returns `(batch, n_classes)` logits.
 
 ### `HybridBinaryClassifier` (serial)
 
@@ -127,6 +128,22 @@ Linear → ReLU → Linear → ReLU            │
 The parallel model asks whether added classical capacity can substitute for, or extend, what
 the quantum layer contributes: compare `count_parameters()` across the two at equal `n_qubits`
 and `n_layers`.
+
+### `MulticlassHybridClassifier` (multiclass)
+
+The serial trunk with `n_classes` heads, `Linear(n_qubits → n_classes)`, all reading the same
+quantum layer, so the quantum parameter count does not depend on `n_classes`. Its forward pass
+returns raw logits `(batch, n_classes)`.
+
+- `strategy="softmax"` (default): `predict_proba` is the softmax over classes; train with
+  `nn.CrossEntropyLoss`.
+- `strategy="one_vs_rest"`: each head is one class against the rest, and `predict_proba` is the
+  per-class sigmoid normalised to sum to one; train with `nn.BCEWithLogitsLoss` on
+  `model.one_hot(y)`.
+
+`predict` returns the argmax of the logits as `torch.long` labels. It does not follow the
+binary `predict(x, threshold)` contract of `BinaryClassifierBase`, and it does not yet support
+`embedding_rotation`, `entangler`, `readout` or `encoder_activation` (#226).
 
 Options shared by both models:
 
