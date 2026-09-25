@@ -118,7 +118,8 @@ class MulticlassHybridClassifier(nn.Module):
         Prepend ``Linear(n_input_features → n_qubits) + Tanh``.  Default: True.
         If ``False``, input must already lie in (-π, π); it is not rescaled.
     dropout_p:
-        Dropout probability applied after the quantum layer.  Default: 0.0.
+        Dropout probability applied after the quantum layer, in ``[0, 1)``.
+        Default: 0.0.
     device_name:
         PennyLane device string.  Default: ``"lightning.qubit"``.
     diff_method:
@@ -196,6 +197,8 @@ class MulticlassHybridClassifier(nn.Module):
                 f"init_strategy must be 'restricted', 'block_local' or 'normal'; "
                 f"got {init_strategy!r}."
             )
+        if not 0.0 <= dropout_p < 1.0:
+            raise ValueError(f"dropout_p must be in [0, 1); got {dropout_p}.")
         if init_std <= 0.0:
             raise ValueError(f"init_std must be > 0; got {init_std}.")
         if init_strategy != "normal" and init_std != _DEFAULT_INIT_STD:
@@ -332,9 +335,10 @@ class MulticlassHybridClassifier(nn.Module):
         This is the argmax of :meth:`predict_proba` in exact arithmetic, since
         both normalisations are monotone per row, but not always in floating
         point: under ``"one_vs_rest"`` large positive logits saturate the
-        sigmoid, so e.g. logits ``[17, 20, 30]`` give probabilities that tie at
-        ``1/3`` in float32 while ``predict`` still returns class 2.  Use this
-        method, not ``predict_proba(x).argmax(-1)``, for labels.
+        sigmoid, so e.g. logits ``[17, 20, 30]`` give float32 probabilities in
+        which classes 1 and 2 tie, and ``predict_proba(x).argmax(-1)`` returns
+        class 1 while ``predict`` returns class 2.  Use this method, not
+        ``predict_proba(x).argmax(-1)``, for labels.
         """
         with eval_mode(self):
             logits = self.forward(x)
@@ -347,7 +351,12 @@ class MulticlassHybridClassifier(nn.Module):
         in the dtype of the class heads, the target format of
         ``nn.BCEWithLogitsLoss`` for the one-vs-rest strategy.  Matching the
         heads' dtype keeps the loss of a ``model.double()`` in float64.
+
+        Float labels are accepted only if integer-valued; anything else (e.g.
+        smoothed targets) raises instead of being truncated.
         """
+        if y.is_floating_point() and not torch.equal(y, y.round()):
+            raise ValueError("one_hot expects integer class labels; got non-integer values.")
         one_hot = nn.functional.one_hot(y.long(), num_classes=self.n_classes)
         return one_hot.to(self.head.weight.dtype)
 

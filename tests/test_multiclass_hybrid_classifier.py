@@ -103,6 +103,16 @@ class TestOutputs:
         expected = torch.tensor([[1.0, 0, 0], [0, 0, 1.0], [0, 1.0, 0]])
         assert torch.equal(model.one_hot(y), expected)
 
+    def test_one_hot_accepts_integer_valued_floats(self) -> None:
+        model = _model()
+        assert torch.equal(
+            model.one_hot(torch.tensor([0.0, 2.0])), model.one_hot(torch.tensor([0, 2]))
+        )
+
+    def test_one_hot_rejects_non_integer_labels(self) -> None:
+        with pytest.raises(ValueError, match="integer class labels"):
+            _model().one_hot(torch.tensor([0.9, 1.6]))
+
     def test_one_hot_follows_the_model_dtype(self) -> None:
         model = _model(strategy="one_vs_rest").double()
         X, y = _three_class_dataset(n_per_class=2)
@@ -112,20 +122,24 @@ class TestOutputs:
         assert loss.dtype == torch.float64
 
     @pytest.mark.parametrize("method", ["predict_proba", "predict"])
-    def test_prediction_runs_in_eval_mode_and_restores_it(self, method: str) -> None:
+    def test_prediction_runs_in_eval_mode_and_restores_it(
+        self, method: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         model = _model(dropout_p=0.5)
         model.train()
-        x = torch.randn(BATCH, N_FEATURES)
-        # With dropout active, the forward pass is stochastic from call to call.
-        torch.manual_seed(1)
-        assert not torch.equal(model(x), model(x))
-        predict = getattr(model, method)
-        with torch.no_grad():
-            expected = getattr(model.eval(), method)(x)
-        model.train()
-        for _ in range(3):
-            assert torch.equal(predict(x), expected)  # dropout off inside
-        assert model.training and model.dropout.training
+        # Record every submodule's mode inside the forward pass, not a
+        # function of its output: argmax labels can survive active dropout.
+        modes_inside: list[list[bool]] = []
+        forward = model.forward
+
+        def recording_forward(x: torch.Tensor) -> torch.Tensor:
+            modes_inside.append([m.training for m in model.modules()])
+            return forward(x)
+
+        monkeypatch.setattr(model, "forward", recording_forward)
+        getattr(model, method)(torch.randn(BATCH, N_FEATURES))
+        assert modes_inside and not any(modes_inside[0])
+        assert all(m.training for m in model.modules())
 
 
 class TestOneVsRestSaturation:
@@ -157,7 +171,13 @@ class TestOneVsRestSaturation:
 
     def test_predict_uses_the_logits_when_probabilities_saturate(self) -> None:
         model = self._with_logits(torch.tensor([17.0, 20.0, 30.0]))
-        assert torch.equal(model.predict(torch.randn(2, N_FEATURES)), torch.tensor([2, 2]))
+        x = torch.randn(2, N_FEATURES)
+        # In float32 classes 1 and 2 tie in predict_proba, so its argmax
+        # returns 1; predict works on the logits and returns 2.
+        probs = model.predict_proba(x)
+        assert torch.equal(probs[:, 1], probs[:, 2])
+        assert torch.equal(probs.argmax(dim=-1), torch.tensor([1, 1]))
+        assert torch.equal(model.predict(x), torch.tensor([2, 2]))
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +350,11 @@ class TestOptions:
     def test_rejects_init_std_it_would_ignore(self) -> None:
         with pytest.raises(ValueError, match="init_std applies"):
             _model(init_std=0.3)
+
+    @pytest.mark.parametrize("dropout_p", [-0.3, 1.0, 1.5])
+    def test_rejects_dropout_outside_unit_interval(self, dropout_p: float) -> None:
+        with pytest.raises(ValueError, match="dropout_p"):
+            _model(dropout_p=dropout_p)
 
     def test_rejects_non_positive_init_std(self) -> None:
         with pytest.raises(ValueError, match="init_std must be > 0"):

@@ -5,7 +5,8 @@ Full hybrid quantum-classical architectures.
 
 Exported symbols
 ----------------
-BinaryClassifierBase      nn.Module base: predict_proba / predict / count_parameters shared by all.
+BinaryClassifierBase      nn.Module base: predict_proba / predict / count_parameters shared by
+                          the binary classifiers (MulticlassHybridClassifier has its own).
 HybridBinaryClassifier    Linear encoder → QuantumEncodingLayer → Linear head.
 ParallelHybridClassifier  classical MLP branch ‖ QuantumEncodingLayer branch → Linear head.
 MulticlassHybridClassifier  Linear encoder → QuantumEncodingLayer → n_classes heads (softmax / OvR).
