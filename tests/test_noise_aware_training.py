@@ -15,7 +15,7 @@ import pennylane as qml
 import pytest
 import torch
 
-from hqnn_forge.diagnostics import gradient_variance
+from hqnn_forge.diagnostics import effective_dimension, gradient_variance
 from hqnn_forge.encoding import QuantumEncodingLayer
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
@@ -267,6 +267,35 @@ class TestInteractions:
         b = gradient_variance(clean, n_samples=4, generator=torch.Generator().manual_seed(0))
         torch.testing.assert_close(a.per_parameter, b.per_parameter, rtol=0, atol=0)
         assert noisy.training
+
+    def test_gradient_variance_under_the_wrapper_sees_the_noise(self) -> None:
+        """End noise scales every gradient by 1 - 4p/3, so the variance by its square."""
+        noisy, clean = _pair(noise_level=0.3)
+        noisy.train()
+        with apply_depolarizing_noise(noisy, 0.3, position="end"):
+            a = gradient_variance(noisy, n_samples=4, generator=torch.Generator().manual_seed(0))
+        b = gradient_variance(clean, n_samples=4, generator=torch.Generator().manual_seed(0))
+        torch.testing.assert_close(
+            a.per_parameter, (1 - 4 * 0.3 / 3) ** 2 * b.per_parameter, rtol=1e-4, atol=1e-10
+        )
+
+    def test_effective_dimension_measures_the_noiseless_circuit(self) -> None:
+        """Agrees with gradient_variance: a train-mode noisy model is measured noiselessly."""
+        torch.manual_seed(0)
+        noisy = HybridBinaryClassifier(4, N_QUBITS, 1, noise_level=0.3, **CPU)
+        torch.manual_seed(0)
+        clean = HybridBinaryClassifier(4, N_QUBITS, 1, **CPU)
+        clean.load_state_dict(noisy.state_dict())
+        X = torch.randn(80, 4, generator=torch.Generator().manual_seed(2))
+        assert noisy.training
+        kwargs = {"n_theta_samples": 2}
+        a = effective_dimension(noisy, X, generator=torch.Generator().manual_seed(0), **kwargs)
+        b = effective_dimension(clean, X, generator=torch.Generator().manual_seed(0), **kwargs)
+        assert a.effective_dimension == b.effective_dimension
+        assert noisy.training
+        with apply_depolarizing_noise(noisy, 0.3):
+            c = effective_dimension(noisy, X, generator=torch.Generator().manual_seed(0), **kwargs)
+        assert c.effective_dimension != b.effective_dimension
 
     @pytest.mark.parametrize("cls", MODELS)
     def test_classifier_trains_and_sweeps(self, cls: type) -> None:

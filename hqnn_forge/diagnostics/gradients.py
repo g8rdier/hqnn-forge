@@ -38,7 +38,10 @@ samples, ``default.qubit``):
 
 The layer is run in eval mode, so a layer built with ``noise_level > 0``
 is measured on its noiseless circuit, not the train-mode ``default.mixed``
-one; its mode and weights are restored when the estimate finishes.
+one; its mode and weights are restored when the estimate finishes.  To
+measure a noise-induced plateau, run the estimate inside
+:func:`hqnn_forge.noise.apply_depolarizing_noise`.  The Fisher diagnostics
+follow the same rule.
 """
 
 from __future__ import annotations
