@@ -139,6 +139,7 @@ class TestPresentation:
         expected = [
             ("qubits", 3),
             ("trainable params", 18),
+            ("inert params", 3),
             ("depth", 9),
             ("gates", 15),
             ("two-qubit gates", 6),

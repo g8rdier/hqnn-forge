@@ -31,6 +31,7 @@ from typing import Any
 import pennylane as qml
 import torch
 import torch.nn as nn
+from pennylane.measurements import MidMeasureMP
 
 #: Gate names a circuit is decomposed to before its resources are counted.
 #: Every gate the library's circuits emit is in here, so the count is of the
@@ -66,6 +67,14 @@ class CircuitSummary:
         PennyLane device the layer's QNode is bound to, after any fallback.
     diff_method:
         Differentiation method the QNode is configured with.
+    n_inert_params:
+        Trainable parameters that cannot affect any measurement for **any**
+        input or weight values, found structurally by
+        :func:`count_inert_parameters`.  The typical case is the ``ω`` of a
+        ``Rot`` that is the last non-diagonal gate before a ``⟨Z⟩`` readout:
+        ``Rot = RZ(ω)·RY(θ)·RZ(φ)`` and the final ``RZ`` commutes with ``Z``.
+        The count is of gate-parameter slots; see :attr:`n_effective_params`
+        for how it relates to ``n_trainable_params``.
     """
 
     layer_type: str
@@ -77,6 +86,22 @@ class CircuitSummary:
     gate_counts: Mapping[str, int] = field(default_factory=dict)
     device_name: str = ""
     diff_method: str = ""
+    n_inert_params: int = 0
+
+    @property
+    def n_effective_params(self) -> int:
+        """
+        ``n_trainable_params - n_inert_params``: the trainable parameters that
+        can move the output.
+
+        ``n_trainable_params`` counts weight-tensor entries and
+        ``n_inert_params`` gate-parameter slots, so the difference is only
+        meaningful when every weight entry feeds exactly one gate parameter.
+        That holds for every encoding layer in this library, where each
+        ``Rot`` angle is one weight entry; a layer that reuses an entry in
+        several gates, or computes an angle from several entries, breaks it.
+        """
+        return self.n_trainable_params - self.n_inert_params
 
     def to_dict(self) -> dict[str, Any]:
         """Plain-dict form, for logging frameworks and JSON."""
@@ -87,20 +112,23 @@ class CircuitSummary:
         return d
 
     def __str__(self) -> str:
-        labels = ("qubits", "trainable params", "depth", "gates", "two-qubit gates")
+        rows = (
+            ("qubits", self.n_qubits),
+            ("trainable params", self.n_trainable_params),
+            ("inert params", self.n_inert_params),
+            ("depth", self.depth),
+            ("gates", self.n_gates),
+            ("two-qubit gates", self.n_two_qubit_gates),
+        )
         # Gate names are indented two columns further, so they get two less padding
         width = max(
-            max(len(label) for label in labels),
+            max(len(label) for label, _ in rows),
             max((len(name) + 2 for name in self.gate_counts), default=0),
         )
         lines = [
             f"Circuit summary: {self.layer_type} on {self.device_name} ({self.diff_method})",
-            f"  {'qubits':<{width}} : {self.n_qubits}",
-            f"  {'trainable params':<{width}} : {self.n_trainable_params}",
-            f"  {'depth':<{width}} : {self.depth}",
-            f"  {'gates':<{width}} : {self.n_gates}",
-            f"  {'two-qubit gates':<{width}} : {self.n_two_qubit_gates}",
         ]
+        lines += [f"  {label:<{width}} : {value}" for label, value in rows]
         lines += [f"    {name:<{width - 2}} : {count}" for name, count in self.gate_counts.items()]
         return "\n".join(lines)
 
@@ -137,15 +165,129 @@ def _resolve_layer(target: nn.Module) -> tuple[nn.Module, qml.qnn.TorchLayer, in
 def _logical_tape(
     qlayer: qml.qnn.TorchLayer, n_qubits: int, inputs: torch.Tensor | None = None
 ) -> qml.tape.QuantumScript:
-    """The tape the layer executes for one sample, decomposed to LOGICAL_GATE_SET."""
+    """
+    The tape the layer executes for one sample, decomposed to LOGICAL_GATE_SET.
+
+    The weight tensors keep their ``requires_grad`` flag, so the gate
+    parameters that come from trainable weights can be told apart from the
+    (non-trainable) inputs by :func:`count_inert_parameters`.
+    """
     if inputs is None:
         inputs = torch.zeros(n_qubits, dtype=torch.float64)
-    weights = {name: param.detach() for name, param in qlayer.qnode_weights.items()}
+    weights = dict(qlayer.qnode_weights.items())
     # level="top": the circuit as written, before the QNode's own transforms
     # (batch expansion) and before the device rewrites gates it cannot run.
     tape = qml.workflow.construct_tape(qlayer.qnode, level="top")(inputs, **weights)
     (decomposed,), _ = qml.transforms.decompose(tape, gate_set=LOGICAL_GATE_SET)
     return decomposed
+
+
+# ---------------------------------------------------------------------------
+# Inert parameters: what can never reach a measurement
+# ---------------------------------------------------------------------------
+
+# Backward-propagated support of the measured observables on each wire:
+# nothing measured touches the wire / only Z-type (diagonal) content / may
+# carry X or Y.  Only the last one anticommutes with a Z rotation.
+_NONE, _Z, _XY = 0, 1, 2
+
+# Gates diagonal in the computational basis: they commute with every Z-string.
+_DIAGONAL = frozenset(
+    {"RZ", "PhaseShift", "MultiRZ", "IsingZZ", "CZ", "PauliZ", "S", "T", "Identity"}
+)
+
+
+def _requires_grad(value: Any) -> bool:
+    try:
+        return bool(qml.math.requires_grad(value))
+    except Exception:  # noqa: BLE001 - plain floats and the like
+        return False
+
+
+def count_inert_parameters(tape: qml.tape.QuantumScript) -> int:
+    """
+    Number of trainable gate parameters that cannot affect any measurement of
+    ``tape``, for any input or weight values.
+
+    The measured observables are propagated backwards through the circuit in
+    the Heisenberg picture, keeping per wire only whether the observable's
+    content there is nothing, diagonal (``Z``-type) or possibly ``X``/``Y``:
+    CNOT moves ``Z`` content from target to control and ``X``/``Y`` content
+    from control to target; a diagonal gate leaves ``Z`` content alone, and a
+    diagonal multi-qubit gate (``CZ``, ``MultiRZ``, ``IsingZZ``) spreads
+    ``Z`` content to all its wires once one of them carries ``X``/``Y``; any
+    other gate turns the content on its wires into ``X``/``Y``.  A trainable
+    parameter is inert when its gate acts on wires with no content at all,
+    or when the gate is diagonal (``RZ``, ``PhaseShift``, ``MultiRZ``,
+    ``CZ``, ``IsingZZ``, ...) or the final ``RZ(ω)`` of a ``Rot`` and every
+    wire it touches carries only diagonal content: the gate then commutes
+    with everything measured.
+
+    The propagation over-approximates the ``X``/``Y`` content, so the count
+    is a lower bound on the parameters that are dead for structural reasons:
+    everything it counts has an exactly zero gradient for every input, and
+    parameters that are dead only for particular inputs or weights (say, a
+    rotation of ``|0⟩`` about ``Z``) are not counted.
+
+    Only ``expval`` of ``PauliZ`` products is treated as diagonal; any other
+    measurement marks its wires as ``X``/``Y`` content, and a measurement
+    without wires (``state``, ``probs`` over all wires) marks every wire.
+    A mid-circuit measurement counts as a measurement of arbitrary content on
+    its wire, since its outcome may drive a conditional gate or be returned.
+    Gates that are neither diagonal nor ``CNOT`` nor ``Rot`` are treated as
+    fully mixing, which keeps the count a lower bound for any gate.
+    """
+    support: dict[Any, int] = dict.fromkeys(tape.wires, _NONE)
+    for measurement in tape.measurements:
+        obs = getattr(measurement, "obs", None)
+        wires = list(measurement.wires) if len(measurement.wires) else list(tape.wires)
+        diagonal = obs is not None and all(
+            getattr(term, "name", "") == "PauliZ"
+            for term in (obs.operands if hasattr(obs, "operands") else [obs])
+        )
+        for wire in wires:
+            support[wire] = max(support[wire], _Z if diagonal else _XY)
+
+    inert = 0
+    for op in reversed(tape.operations):
+        wires = list(op.wires)
+        if isinstance(op, MidMeasureMP):
+            for w in wires:
+                support[w] = _XY
+            continue
+        n_trainable = sum(1 for value in op.data if _requires_grad(value))
+        if all(support[w] == _NONE for w in wires):
+            inert += n_trainable  # nothing measured downstream ever sees this gate
+            continue
+        if op.name in _DIAGONAL:
+            if all(support[w] != _XY for w in wires):
+                inert += n_trainable  # commutes with every observable it meets
+            elif len(wires) > 1:
+                # X on one wire of a diagonal multi-qubit gate spreads Z to the others
+                for w in wires:
+                    support[w] = max(support[w], _Z)
+        elif op.name == "CNOT":
+            control, target = wires
+            new_control, new_target = support[control], support[target]
+            if support[target] != _NONE:
+                new_control = max(new_control, _Z)  # Z_t → Z_c Z_t, Y_t → Z_c Y_t
+            if support[control] == _XY:
+                new_target = _XY  # X_c → X_c X_t
+            support[control], support[target] = new_control, new_target
+        elif op.name == "Rot":
+            (wire,) = wires
+            # Rot = RZ(ω)·RY(θ)·RZ(φ), ω applied last: it commutes with a
+            # diagonal observable, so ω is inert whenever the wire carries no
+            # X/Y content.  RY(θ) then mixes Z into X/Y for the earlier gates.
+            if support[wire] != _XY and _requires_grad(op.data[2]):
+                inert += 1
+            support[wire] = _XY
+        else:
+            # Any other gate (RX, RY, Hadamard, ...): content on its wires may
+            # become X/Y, and a multi-qubit gate may spread it across its wires.
+            for w in wires:
+                support[w] = _XY
+    return inert
 
 
 # ---------------------------------------------------------------------------
@@ -167,9 +309,10 @@ def circuit_summary(target: nn.Module) -> CircuitSummary:
     Returns
     -------
     CircuitSummary
-        Depth, gate counts and parameter count of the logical circuit.  The
-        result does not depend on the device: the same layer configuration
-        gives the same summary on ``default.qubit`` and ``lightning.qubit``.
+        Depth, gate counts, parameter count and inert-parameter count of the
+        logical circuit.  The result does not depend on the device: the same
+        layer configuration gives the same summary on ``default.qubit`` and
+        ``lightning.qubit``.
 
     Examples
     --------
@@ -187,6 +330,7 @@ def circuit_summary(target: nn.Module) -> CircuitSummary:
     tape = _logical_tape(qlayer, n_qubits)
     resources = tape.specs["resources"]
     qnode = qlayer.qnode
+    n_inert = count_inert_parameters(tape)
     return CircuitSummary(
         layer_type=type(layer).__name__,
         n_qubits=n_qubits,
@@ -199,6 +343,7 @@ def circuit_summary(target: nn.Module) -> CircuitSummary:
         gate_counts=dict(sorted(resources.gate_types.items())),
         device_name=str(qnode.device.name),
         diff_method=str(qnode.diff_method),
+        n_inert_params=n_inert,
     )
 
 

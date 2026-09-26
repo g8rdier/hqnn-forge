@@ -1,0 +1,235 @@
+"""
+tests/test_inert_parameters.py
+==============================
+hqnn_forge.diagnostics.count_inert_parameters: the structural count of
+trainable parameters that can never reach a measurement, checked against
+autograd (an inert parameter has an exactly zero gradient for every input and
+weight draw) and against hand-built tapes with a known answer.
+"""
+
+from __future__ import annotations
+
+import math
+from typing import Any, TypedDict
+
+import pennylane as qml
+import pytest
+import torch
+
+from hqnn_forge.diagnostics import circuit_summary, count_inert_parameters
+from hqnn_forge.diagnostics.circuit import _logical_tape
+from hqnn_forge.encoding import QuantumEncodingLayer
+from hqnn_forge.encoding.angle_embedding import DeviceName, DiffMethod, Entangler, Readout
+from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
+from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
+
+
+class _DeviceKwargs(TypedDict):
+    device_name: DeviceName
+    diff_method: DiffMethod
+
+
+CPU: _DeviceKwargs = {"device_name": "default.qubit", "diff_method": "backprop"}
+
+
+ZERO = 1e-6  # float32 backprop leaves ~1e-8 on dead entries; live ones are ~1e-2
+
+
+def _zero_gradient_entries(
+    layer: QuantumEncodingLayer | IQPEncodingLayer, n_draws: int = 4
+) -> int:
+    """
+    Weight entries whose gradient is zero (below ``ZERO``) for every one of
+    ``n_draws`` random (input, weight) draws: the autograd view of "inert".
+    """
+    torch.manual_seed(0)
+    weights: torch.Tensor = layer.qlayer.qnode_weights["weights"]
+    always_zero = torch.ones_like(weights, dtype=torch.bool)
+    for _ in range(n_draws):
+        with torch.no_grad():
+            weights.uniform_(0, 2 * math.pi)
+        x = torch.rand(3, layer.n_qubits) * 2 * math.pi - math.pi
+        weights.grad = None
+        out = layer(x)
+        (out * torch.rand(3, out.shape[1])).sum().backward()
+        assert weights.grad is not None
+        always_zero &= weights.grad.abs() < ZERO
+    return int(always_zero.sum())
+
+
+class TestAgainstAutograd:
+    @pytest.mark.parametrize("n_layers", [1, 2, 3])
+    def test_ring_last_layer_omega(self, n_layers: int) -> None:
+        """Exactly n_qubits inert parameters: the ω of each last-layer Rot."""
+        layer = QuantumEncodingLayer(n_qubits=3, n_layers=n_layers, **CPU)
+        summary = circuit_summary(layer)
+        assert summary.n_inert_params == 3
+        assert summary.n_effective_params == 9 * n_layers - 3
+        # At two or more layers the structural count is the whole story.
+        if n_layers >= 2:
+            assert _zero_gradient_entries(layer) == 3
+
+    def test_structural_count_is_a_lower_bound_at_one_layer(self) -> None:
+        """
+        With one layer and RX embedding more entries are dead for the actual
+        inputs (the φ of some Rots, #150), which the structural count does
+        not claim; autograd finds at least as many zeros.
+        """
+        layer = QuantumEncodingLayer(n_qubits=3, n_layers=1, **CPU)
+        assert _zero_gradient_entries(layer) >= circuit_summary(layer).n_inert_params == 3
+
+    def test_iqp_layer(self) -> None:
+        layer = IQPEncodingLayer(n_qubits=3, n_layers=2, **CPU)
+        assert circuit_summary(layer).n_inert_params == 3
+        assert _zero_gradient_entries(layer) == 3
+
+    @pytest.mark.parametrize("cls", [HybridBinaryClassifier, ParallelHybridClassifier])
+    def test_default_eight_qubit_models_carry_eight_dead_weights(self, cls: type) -> None:
+        model = cls(n_input_features=8, n_qubits=8, n_layers=2, **CPU)
+        summary = circuit_summary(model)
+        assert summary.n_trainable_params == 48
+        assert summary.n_inert_params == 8
+        assert summary.n_effective_params == 40
+        assert any(
+            line.strip().startswith("inert params") and line.rstrip().endswith(": 8")
+            for line in str(summary).splitlines()
+        )
+
+    @pytest.mark.parametrize(("entangler", "expected"), [("ring", 12), ("strongly_entangling", 8)])
+    def test_first_readout(self, entangler: Entangler, expected: int) -> None:
+        """
+        With only ⟨Z_0⟩ measured, the last layer's Rot on wires 1..n-1 is
+        dead as a whole, far beyond the n_qubits ω of readout="all".  For the
+        strongly entangling ansatz autograd finds more: the Z_0 content
+        cancels through the range-2 CNOTs, which the per-wire propagation
+        cannot see, so the structural count stays a lower bound.
+        """
+        layer = QuantumEncodingLayer(
+            n_qubits=4, n_layers=2, entangler=entangler, readout="first", **CPU
+        )
+        assert circuit_summary(layer).n_inert_params == expected
+        zeros = _zero_gradient_entries(layer)
+        if entangler == "ring":
+            assert zeros == expected
+        else:
+            assert zeros >= expected
+
+    @pytest.mark.parametrize("entangler", ["ring", "strongly_entangling"])
+    @pytest.mark.parametrize("readout", ["all", "first"])
+    def test_one_gate_slot_per_weight_entry(self, entangler: Entangler, readout: Readout) -> None:
+        """
+        n_effective_params subtracts gate-parameter slots from weight entries;
+        that is only sound while the two line up one to one, as they do here.
+        """
+        layer = QuantumEncodingLayer(
+            n_qubits=3, n_layers=2, entangler=entangler, readout=readout, **CPU
+        )
+        tape = _logical_tape(layer.qlayer, layer.n_qubits)
+        slots = sum(1 for op in tape.operations for v in op.data if qml.math.requires_grad(v))
+        assert slots == circuit_summary(layer).n_trainable_params
+
+    def test_inert_omegas_have_zero_gradient_through_the_classifier(self) -> None:
+        torch.manual_seed(0)
+        model = HybridBinaryClassifier(n_input_features=5, n_qubits=3, n_layers=2, **CPU)
+        x = torch.randn(4, 5)
+        model(x).sum().backward()
+        grad = model.quantum_layer.qlayer.weights.grad
+        assert grad is not None
+        assert grad[-1, :, 2].abs().max().item() < ZERO
+        assert (grad[-1, :, :2].abs() > ZERO).all()
+
+
+def _tape(ops_fn, measurements) -> qml.tape.QuantumScript:
+    with qml.queuing.AnnotatedQueue() as q:
+        ops_fn()
+        for m in measurements:
+            qml.apply(m)
+    return qml.tape.QuantumScript.from_queue(q)
+
+
+def _p(value: float) -> torch.Tensor:
+    return torch.tensor(value, requires_grad=True)
+
+
+class TestHandBuiltTapes:
+    def test_rz_before_z_readout_is_inert_but_rx_is_not(self) -> None:
+        tape = _tape(lambda: (qml.RZ(_p(0.3), 0), qml.RX(_p(0.4), 0)), [qml.expval(qml.PauliZ(0))])
+        # RZ is applied first, RX after it: the RZ acts on Z content already
+        # turned into X/Y by the later RX, so it is live; only a trailing RZ would be inert.
+        assert count_inert_parameters(tape) == 0
+        tape = _tape(lambda: (qml.RX(_p(0.4), 0), qml.RZ(_p(0.3), 0)), [qml.expval(qml.PauliZ(0))])
+        assert count_inert_parameters(tape) == 1
+
+    def test_gate_on_an_unmeasured_wire_is_inert(self) -> None:
+        tape = _tape(
+            lambda: (qml.RX(_p(0.1), 1), qml.Rot(_p(0.1), _p(0.2), _p(0.3), 1)),
+            [qml.expval(qml.PauliZ(0))],
+        )
+        assert count_inert_parameters(tape) == 4
+
+    def test_cnot_moves_z_content_to_the_control_and_xy_to_the_target(self) -> None:
+        # Z_1 is measured; CNOT(0,1) makes it Z_0 Z_1, so an RX on wire 0
+        # before the CNOT is live, while a trailing RZ on wire 0 stays inert.
+        tape = _tape(
+            lambda: (qml.RX(_p(0.1), 0), qml.CNOT([0, 1]), qml.RZ(_p(0.2), 0)),
+            [qml.expval(qml.PauliZ(1))],
+        )
+        assert count_inert_parameters(tape) == 1
+        # X/Y content on the control spreads to the target (Y_0 → Y_0 X_1), so
+        # an RZ on the target before the CNOT is live once the control has
+        # been rotated out of the Z basis after it: ⟨Z_0⟩ then contains
+        # sin(b)·⟨Y_0 (cos(a) X_1 + sin(a) Y_1)⟩, which depends on a.
+        tape = _tape(
+            lambda: (qml.RZ(_p(0.1), 1), qml.CNOT([0, 1]), qml.RX(_p(0.2), 0)),
+            [qml.expval(qml.PauliZ(0))],
+        )
+        assert count_inert_parameters(tape) == 0
+        # Without the RX the control keeps Z content only and the RZ is inert.
+        tape = _tape(
+            lambda: (qml.RZ(_p(0.1), 1), qml.CNOT([0, 1])),
+            [qml.expval(qml.PauliZ(0))],
+        )
+        assert count_inert_parameters(tape) == 1
+        tape = _tape(
+            lambda: (qml.RZ(_p(0.1), 1), qml.CNOT([0, 1]), qml.RX(_p(0.2), 1)),
+            [qml.expval(qml.PauliZ(1))],
+        )
+        assert count_inert_parameters(tape) == 0  # X_1 → X_1 through the CNOT: the RZ is live
+
+    def test_non_z_measurement_disables_the_shortcut(self) -> None:
+        tape = _tape(lambda: (qml.RZ(_p(0.3), 0),), [qml.expval(qml.PauliX(0))])
+        assert count_inert_parameters(tape) == 0
+        tape = _tape(lambda: (qml.RZ(_p(0.3), 0),), [qml.probs(wires=[0])])
+        assert count_inert_parameters(tape) == 0
+
+    def test_non_trainable_parameters_are_not_counted(self) -> None:
+        tape = _tape(lambda: (qml.RZ(0.3, 0),), [qml.expval(qml.PauliZ(0))])
+        assert count_inert_parameters(tape) == 0
+
+    def test_mid_circuit_measurement_feeding_a_conditional_is_live(self) -> None:
+        """
+        RX(a) on wire 1 reaches ⟨Z_0⟩ only through the measurement of wire 1
+        and the X it conditions on wire 0; the gradient is nonzero, so the
+        parameter must not be counted.  A gate on a wire nothing measures
+        stays inert.
+        """
+
+        def ops() -> None:
+            qml.RX(_p(0.7), 1)
+            qml.RX(_p(0.2), 2)
+            m = qml.measure(1)
+            qml.cond(m, qml.PauliX)(0)
+
+        tape = _tape(ops, [qml.expval(qml.PauliZ(0))])
+        assert count_inert_parameters(tape) == 1
+
+        @qml.qnode(qml.device("default.qubit"), interface="torch", diff_method="backprop")
+        def circuit(a: torch.Tensor) -> Any:
+            qml.RX(a, 1)
+            m = qml.measure(1)
+            qml.cond(m, qml.PauliX)(0)
+            return qml.expval(qml.PauliZ(0))
+
+        a = _p(0.7)
+        circuit(a).backward()
+        assert a.grad is not None and abs(a.grad.item()) > 0.1
