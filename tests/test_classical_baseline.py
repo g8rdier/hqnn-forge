@@ -1,0 +1,161 @@
+"""
+tests/test_classical_baseline.py
+================================
+``ClassicalBaseline`` and ``classical_baseline(model)`` (#178): the classical
+control of an ablation study, matched in parameter count to the hybrid model.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import pytest
+import torch
+import torch.nn as nn
+
+from hqnn_forge.models import (
+    ClassicalBaseline,
+    HybridBinaryClassifier,
+    MulticlassHybridClassifier,
+    ParallelHybridClassifier,
+)
+from hqnn_forge.models.classical_baseline import mlp_parameter_count
+from hqnn_forge.training import train_model
+from hqnn_forge.utils import classical_baseline, load_checkpoint, save_checkpoint
+
+CPU: dict[str, Any] = dict(device_name="default.qubit", diff_method="backprop")
+
+
+def _hybrid(cls: type, **kwargs: Any) -> Any:
+    return cls(**{"n_input_features": 30, "n_qubits": 8, "n_layers": 2, **CPU, **kwargs})
+
+
+def _step(control: ClassicalBaseline) -> int:
+    """Parameters one more unit of hidden width adds to the control."""
+    dims = control.get_config()["hidden_dims"]
+    n_in = control.get_config()["n_input_features"]
+    wider = [d + 1 for d in dims]
+    return mlp_parameter_count(n_in, wider) - mlp_parameter_count(n_in, dims)
+
+
+class TestClassicalBaseline:
+    def test_parameter_count_formula(self) -> None:
+        model = ClassicalBaseline(7, [5, 3])
+        assert (
+            model.count_parameters()
+            == mlp_parameter_count(7, [5, 3])
+            == 7 * 5 + 5 + 5 * 3 + 3 + 3 + 1
+        )
+
+    def test_forward_is_one_logit_per_sample(self) -> None:
+        assert ClassicalBaseline(4, [6]).forward(torch.randn(5, 4)).shape == (5, 1)
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            (dict(hidden_dims=[]), "at least one"),
+            (dict(hidden_dims=[0]), "at least one"),
+            (dict(hidden_dims=[3], activation="gelu"), "activation"),
+            (dict(hidden_dims=[3], dropout_p=1.0), "dropout_p"),
+        ],
+    )
+    def test_invalid_arguments(self, kwargs: dict, match: str) -> None:
+        with pytest.raises(ValueError, match=match):
+            ClassicalBaseline(4, **kwargs)
+
+    def test_checkpoint_round_trip(self, tmp_path: Path) -> None:
+        model = ClassicalBaseline(4, [6, 2], activation="tanh", dropout_p=0.1).eval()
+        save_checkpoint(model, tmp_path / "c.pt")
+        loaded = load_checkpoint(tmp_path / "c.pt")
+        x = torch.randn(3, 4)
+        with torch.no_grad():
+            torch.testing.assert_close(loaded(x), model(x), rtol=0, atol=0)
+
+
+@pytest.mark.parametrize(
+    "cls", [HybridBinaryClassifier, ParallelHybridClassifier], ids=["serial", "parallel"]
+)
+class TestBuilder:
+    def test_has_no_quantum_layer(self, cls: type) -> None:
+        control = classical_baseline(_hybrid(cls))
+        assert isinstance(control, ClassicalBaseline)
+        assert not hasattr(control, "quantum_layer")
+        assert all(
+            type(m).__module__.startswith("torch.nn")
+            for m in control.modules()
+            if m is not control
+        )
+
+    @pytest.mark.parametrize(
+        "sizes",
+        [dict(), dict(n_input_features=5, n_qubits=3, n_layers=1), dict(n_layers=6)],
+        ids=["default", "small", "deep"],
+    )
+    def test_count_within_half_a_width_step(self, cls: type, sizes: dict) -> None:
+        """The documented tolerance: no integer width gets closer."""
+        hybrid = _hybrid(cls, **sizes)
+        control = classical_baseline(hybrid)
+        gap = abs(control.count_parameters() - hybrid.count_parameters())
+        assert gap <= _step(control) / 2
+
+    def test_no_neighbouring_width_is_closer(self, cls: type) -> None:
+        hybrid = _hybrid(cls)
+        control = classical_baseline(hybrid)
+        n_in, dims = 30, control.get_config()["hidden_dims"]
+        target = hybrid.count_parameters()
+        gap = abs(control.count_parameters() - target)
+        for delta in (-1, 1):
+            other = [d + delta for d in dims]
+            assert gap <= abs(mlp_parameter_count(n_in, other) - target)
+
+    def test_carries_input_width_and_dropout(self, cls: type) -> None:
+        control = classical_baseline(_hybrid(cls, n_input_features=11, dropout_p=0.2))
+        assert control.get_config()["n_input_features"] == 11
+        assert control.get_config()["dropout_p"] == 0.2
+
+    def test_it_trains(self, cls: type) -> None:
+        g = torch.Generator().manual_seed(0)
+        x = torch.randn(200, 30, generator=g)
+        y = (x[:, 0] - x[:, 1] > 0).float()
+        torch.manual_seed(0)
+        control = classical_baseline(_hybrid(cls))
+        history = train_model(
+            control,
+            nn.BCEWithLogitsLoss(),
+            torch.optim.Adam(control.parameters(), lr=0.01),
+            x,
+            y,
+            max_epochs=30,
+            batch_size=32,
+        )
+        assert history.epochs[-1].train_loss < 0.5 * history.epochs[0].train_loss
+        assert (control.predict(x) == y.long()).float().mean() > 0.9
+
+
+class TestShapes:
+    def test_serial_is_one_tanh_hidden_layer(self) -> None:
+        control = classical_baseline(_hybrid(HybridBinaryClassifier))
+        assert control.get_config() == {
+            "n_input_features": 30,
+            "hidden_dims": [9],
+            "activation": "tanh",
+            "dropout_p": 0.0,
+        }
+
+    def test_parallel_is_the_widened_branch(self) -> None:
+        control = classical_baseline(_hybrid(ParallelHybridClassifier))
+        assert control.get_config()["hidden_dims"] == [20, 20]
+        assert control.get_config()["activation"] == "relu"
+
+    def test_published_shnn(self) -> None:
+        hybrid = HybridBinaryClassifier.published_shnn(**CPU)
+        assert hybrid.count_parameters() == 122
+        assert classical_baseline(hybrid).count_parameters() == 121
+
+    def test_other_models_are_refused(self) -> None:
+        multiclass = MulticlassHybridClassifier(
+            n_input_features=4, n_qubits=2, n_layers=1, n_classes=3, **CPU
+        )
+        with pytest.raises(TypeError, match="classical_baseline"):
+            classical_baseline(multiclass)

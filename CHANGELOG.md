@@ -58,6 +58,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   appears in `to_dict()` and the printed summary; templates are decomposed before counting
   and broadcast tapes are rejected
 
+- `ClassicalBaseline` (a plain MLP with the classifiers' interface) and
+  `hqnn_forge.utils.classical_baseline(model)`, which builds the untrained classical control
+  of a hybrid model with its trainable parameter count matched to the hybrid's, every rotation
+  angle counted as one parameter
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from
   `checkpoint._LEGACY_DEFAULTS` — the behaviour from before each argument existed — with a

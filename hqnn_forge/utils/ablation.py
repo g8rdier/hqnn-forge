@@ -42,20 +42,126 @@ predictor scoring 0 MCC by construction.  That number restates the topology and
 measures nothing.  A classical baseline for the serial model has to be a
 separately trained classical model, not this context manager.
 
-For a fair ablation study on the parallel topology, also train a model *from
-scratch* with the layer disabled: a head trained alongside the circuit has
-adapted to its outputs, so ablating after training measures dependence, not the
-best achievable classical performance.  (Training a serial model from scratch
-inside the block trains its head's bias and nothing else.)
+For either topology, the classical control a reviewer asks for is a model of
+comparable capacity trained *from scratch*: a head trained alongside the
+circuit has adapted to its outputs, so ablating after training measures
+dependence, not the best achievable classical performance.  (Training a serial
+model from scratch inside the block trains its head's bias and nothing else.)
+:func:`classical_baseline` builds that control.
+
+Matched capacity
+----------------
+:func:`classical_baseline` returns an untrained
+:class:`~hqnn_forge.models.ClassicalBaseline` whose trainable parameter count
+is the closest it can get to the hybrid model's ``count_parameters()``, with
+every rotation angle of the circuit counted as one parameter.  That is the
+convention of ``count_parameters`` and of the MCC/kParam efficiency figures the
+hybrid models are reported with, so the control is matched on the budget the
+results are compared on.  It does not claim an angle is worth a ``Linear``
+weight; it holds the count fixed so that the comparison is about what the
+parameters are, not how many there are.
+
+The architecture keeps the hybrid's classical shape and replaces the circuit's
+capacity with width:
+
+* ``HybridBinaryClassifier`` → ``Linear(n_in → h) → tanh → Linear(h → 1)``,
+  the serial model with its encoder, circuit and head replaced by one hidden
+  layer, ``h`` chosen to match.
+* ``ParallelHybridClassifier`` → its classical branch plus a head,
+  ``Linear(n_in → w) → ReLU → Linear(w → w) → ReLU → Linear(w → 1)``, the
+  branch widened from ``classical_hidden_dim`` to the ``w`` that matches.
+
+Widths are integers, so the match is to within half the parameters one more
+unit adds: ``(n_in + 2) / 2`` for the serial control, ``(2w + n_in + 4) / 2``
+for the parallel one.  At 30 features, 8 qubits and 2 layers that bound is
+5.2% of the serial model's 305 parameters (the control has 289) and 3.4% of
+the parallel model's 1089 (the control has 1061); the published SHNN's 122
+get a 121-parameter control.  ``dropout_p`` is carried over.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
+
+if TYPE_CHECKING:
+    # Type-only: hqnn_forge.models imports hqnn_forge.utils.
+    from hqnn_forge.models import ClassicalBaseline
+
+
+def classical_baseline(model: nn.Module) -> ClassicalBaseline:
+    """
+    Untrained classical control for ``model``, matched in parameter count.
+
+    See "Matched capacity" above for the architecture and the matching rule.
+    Train it on the same data with the same recipe as the hybrid model; its
+    score is the classical reference the hybrid's has to beat.
+
+    Parameters
+    ----------
+    model:
+        A ``HybridBinaryClassifier`` or ``ParallelHybridClassifier``.
+
+    Returns
+    -------
+    ClassicalBaseline
+        With ``count_parameters()`` within half a width step of
+        ``model.count_parameters()``, and ``model``'s ``n_input_features`` and
+        ``dropout_p``.
+
+    Raises
+    ------
+    TypeError
+        If ``model`` is not one of the two binary hybrid classifiers.
+    """
+    # Imported here: hqnn_forge.models imports hqnn_forge.utils.
+    from hqnn_forge.models import (
+        ClassicalBaseline,
+        HybridBinaryClassifier,
+        ParallelHybridClassifier,
+    )
+    from hqnn_forge.models.classical_baseline import mlp_parameter_count
+
+    if isinstance(model, ParallelHybridClassifier):
+
+        def shape(width: int) -> list[int]:
+            return [width, width]
+
+        activation = "relu"
+    elif isinstance(model, HybridBinaryClassifier):
+
+        def shape(width: int) -> list[int]:
+            return [width]
+
+        activation = "tanh"
+    else:
+        raise TypeError(
+            f"classical_baseline expects a HybridBinaryClassifier or "
+            f"ParallelHybridClassifier; got {type(model).__name__}."
+        )
+
+    config = model.get_config()
+    n_in = config["n_input_features"]
+    target = model.count_parameters()
+
+    def count(width: int) -> int:
+        return mlp_parameter_count(n_in, shape(width))
+
+    # count is increasing in width: step up to the first width at or past the
+    # target, then keep whichever of it and the one below is closer (the
+    # smaller on a tie, so the control is never the larger model by choice).
+    width = 1
+    while count(width) < target:
+        width += 1
+    if width > 1 and target - count(width - 1) <= count(width) - target:
+        width -= 1
+    return ClassicalBaseline(
+        n_in, shape(width), activation=activation, dropout_p=config["dropout_p"]
+    )
 
 
 @contextmanager

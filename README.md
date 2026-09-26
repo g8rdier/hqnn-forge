@@ -171,6 +171,18 @@ Options shared by both models:
 - `dropout_p` on the features entering the head, and `predict_proba` / `predict`, which always
   run in eval mode.
 
+### Classical control
+
+`hqnn_forge.utils.classical_baseline(model)` builds the classical model a hybrid result should
+be compared with: an untrained `ClassicalBaseline` MLP, to be trained from scratch on the same
+data. Its trainable parameter count is matched to `model.count_parameters()`, which counts every
+rotation angle as one parameter, the same convention as the MCC/kParam figures, so the two
+models are compared at the same parameter budget. The serial model's control is one hidden
+layer in place of encoder, circuit and head; the parallel model's is its classical branch plus a
+head, widened to the matching width. The published SHNN's 122 parameters get a 121-parameter
+control. Switching a trained model's circuit off with `disable_quantum_layer` measures something
+else, how much that model depends on the circuit.
+
 ---
 
 ## Folder Structure
