@@ -58,24 +58,10 @@ import pennylane as qml
 import torch
 from torch import nn
 
+from hqnn_forge._resolve import resolve_encoding_layer
+
 Position = Literal["all", "end"]
 MAX_P = 0.75
-
-
-def _resolve_qlayer(target: nn.Module) -> tuple[qml.qnn.TorchLayer, int]:
-    layer = getattr(target, "quantum_layer", target)
-    qlayer = getattr(layer, "qlayer", None)
-    n_qubits = getattr(layer, "n_qubits", None)
-    if (
-        not isinstance(layer, nn.Module)
-        or not isinstance(qlayer, qml.qnn.TorchLayer)
-        or not isinstance(n_qubits, int)
-    ):
-        raise TypeError(
-            f"apply_depolarizing_noise expects an encoding layer or a hybrid classifier "
-            f"with a quantum_layer attribute; got {type(target).__name__}."
-        )
-    return qlayer, n_qubits
 
 
 def validate_noise(
@@ -185,7 +171,7 @@ def apply_depolarizing_noise(
     fine-tune under noise.
     """
     validate_noise(p, position)
-    qlayer, n_qubits = _resolve_qlayer(model)
+    _, qlayer, n_qubits = resolve_encoding_layer(model, "apply_depolarizing_noise")
     # Two separate markers.  _hqnn_noise_depth counts open blocks of any p and
     # is what tells run_with_training_noise to skip a layer's train-mode
     # channel.  _hqnn_noise_original is set only while a p > 0 block has

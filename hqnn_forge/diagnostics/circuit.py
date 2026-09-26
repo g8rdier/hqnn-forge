@@ -43,6 +43,8 @@ import pennylane as qml
 import torch
 import torch.nn as nn
 
+from hqnn_forge._resolve import resolve_encoding_layer
+
 #: Gate names a circuit is decomposed to before its resources are counted.
 #: Every gate the library's circuits emit is in here, so the count is of the
 #: circuit as written; a template such as ``AngleEmbedding`` is expanded.
@@ -161,30 +163,6 @@ class CircuitSummary:
 # ---------------------------------------------------------------------------
 # Resolving what to inspect
 # ---------------------------------------------------------------------------
-
-
-def _resolve_layer(target: nn.Module) -> tuple[nn.Module, qml.qnn.TorchLayer, int]:
-    """
-    Return ``(layer, qlayer, n_qubits)`` for the encoding layer inside *target*.
-
-    Accepts an encoding layer directly (anything with a ``qlayer`` TorchLayer
-    and an integer ``n_qubits``), or a hybrid classifier exposing
-    ``quantum_layer``.
-    """
-    layer = getattr(target, "quantum_layer", target)
-    qlayer = getattr(layer, "qlayer", None)
-    n_qubits = getattr(layer, "n_qubits", None)
-    if (
-        not isinstance(layer, nn.Module)
-        or not isinstance(qlayer, qml.qnn.TorchLayer)
-        or not isinstance(n_qubits, int)
-    ):
-        raise TypeError(
-            f"circuit_summary expects an encoding layer (QuantumEncodingLayer, "
-            f"IQPEncodingLayer) or a hybrid classifier with a quantum_layer attribute; "
-            f"got {type(target).__name__}."
-        )
-    return layer, qlayer, n_qubits
 
 
 def _written_tape(
@@ -430,7 +408,7 @@ def circuit_summary(target: nn.Module) -> CircuitSummary:
       qubits           : 4
       ...
     """
-    layer, qlayer, n_qubits = _resolve_layer(target)
+    layer, qlayer, n_qubits = resolve_encoding_layer(target, "circuit_summary")
     written = _written_tape(qlayer, n_qubits)
     tape = _decompose_logical(written)
     resources = tape.specs["resources"]
@@ -478,6 +456,6 @@ def draw_circuit(target: nn.Module, inputs: torch.Tensor | None = None, decimals
     Only the printed angles depend on ``inputs``; the gates and the wiring do
     not, which is why :func:`circuit_summary` does not take one.
     """
-    _, qlayer, n_qubits = _resolve_layer(target)
+    _, qlayer, n_qubits = resolve_encoding_layer(target, "draw_circuit")
     tape = _logical_tape(qlayer, n_qubits, inputs)
     return qml.drawer.tape_text(tape, decimals=decimals)

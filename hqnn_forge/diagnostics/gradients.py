@@ -59,10 +59,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-import pennylane as qml
 import torch
 import torch.nn as nn
 
+from hqnn_forge._resolve import resolve_encoding_layer
 from hqnn_forge.initializers import block_local_init_, restricted_normal_init_
 from hqnn_forge.initializers.restricted_variance import _not_restricting_ignored
 from hqnn_forge.utils.modes import eval_mode
@@ -151,19 +151,7 @@ def _resolve_tensors(
     layer with more than one tensor is refused with ``NotImplementedError``
     before the angle tensor is looked for.
     """
-    layer = getattr(target, "quantum_layer", target)
-    qlayer = getattr(layer, "qlayer", None)
-    n_qubits = getattr(layer, "n_qubits", None)
-    if (
-        not isinstance(layer, nn.Module)
-        or not isinstance(qlayer, qml.qnn.TorchLayer)
-        or not isinstance(n_qubits, int)
-    ):
-        raise TypeError(
-            f"{caller} expects an encoding layer (QuantumEncodingLayer, "
-            f"IQPEncodingLayer) or a hybrid classifier with a quantum_layer attribute; "
-            f"got {type(target).__name__}."
-        )
+    layer, qlayer, n_qubits = resolve_encoding_layer(target, caller)
     tensors = dict(qlayer.qnode_weights.items())
     if single and len(tensors) != 1:
         raise NotImplementedError(
