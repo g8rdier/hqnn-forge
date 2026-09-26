@@ -140,6 +140,53 @@ class TestMeasuredInitClaims:
         assert 0.6 < decay["restricted"] / decay["uniform"] < 1.6, decay
 
 
+@pytest.fixture(scope="module")
+def entangler_sweep() -> dict[tuple[str, str, int], float]:
+    """
+    Total gradient variance per (entangler, init, n_qubits), 4 and 8 qubits,
+    2 layers, inputs over (-π, π), 150 draws, seed 0.
+    """
+    out: dict[tuple[str, str, int], float] = {}
+    for entangler in ("ring", "brickwork"):
+
+        def build(q: int, l: int, entangler: str = entangler) -> QuantumEncodingLayer:
+            return QuantumEncodingLayer(n_qubits=q, n_layers=l, entangler=entangler, **CPU)
+
+        for init in ("uniform", "restricted"):
+            for r in gradient_variance_sweep(
+                build, (4, 8), n_samples=150, init=init, generator=_gen()
+            ):
+                out[entangler, init, r.n_qubits] = r.total_variance
+    return out
+
+
+class TestBrickworkDecay:
+    """
+    The brickwork measurements in hqnn_forge.initializers.restricted_variance
+    (#161).  Over five seeds at 300 draws, total variance from 4 to 8 qubits
+    fell 4.1–5.4x for the ring and 0.90–1.02x for brickwork, and brickwork's
+    restricted/uniform ratio at 8 qubits was 0.77–0.83.  At the 150 draws
+    used here, over six seeds: 4.1–5.5x, 0.88–1.08x and 0.70–0.95.
+    """
+
+    @staticmethod
+    def _decay(sweep: dict, entangler: str, init: str = "uniform") -> float:
+        return sweep[entangler, init, 4] / sweep[entangler, init, 8]
+
+    def test_brickwork_decays_slower_than_the_ring(self, entangler_sweep: dict) -> None:
+        ring, brickwork = (self._decay(entangler_sweep, e) for e in ("ring", "brickwork"))
+        assert ring > 3.0, ring
+        assert brickwork < 1.5, brickwork
+        assert ring > 2.5 * brickwork, (ring, brickwork)
+
+    def test_restricted_init_adds_nothing_on_brickwork(self, entangler_sweep: dict) -> None:
+        ratio = (
+            entangler_sweep["brickwork", "restricted", 8]
+            / entangler_sweep["brickwork", "uniform", 8]
+        )
+        assert 0.5 < ratio < 1.15, ratio
+
+
 class TestPhysics:
     def test_uniform_init_variance_decays_with_qubits(self) -> None:
         small = gradient_variance(_layer(2), n_samples=100, generator=_gen())

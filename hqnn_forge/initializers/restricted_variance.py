@@ -16,9 +16,11 @@ Two published results bound that decay.  Cerezo et al. (2021) show that for
 *local* cost functions and shallow circuits (depth O(log n)) the decay is
 only polynomial.  A single-qubit ⟨Z_i⟩ readout is a local observable, but
 whether it is a local *cost* in their sense depends on how far the circuit
-spreads it; for this library's default circuit it is not (measured below).  Zhang et al. (2022) show that drawing the
-parameters from N(0, σ²) with σ² = O(1/L) instead of uniformly bounds the
-gradient norm below by a polynomial in n and L, for deep circuits too.
+spreads it; for this library's default circuit it is not, and for
+``entangler="brickwork"`` at shallow depth it is (both measured below).
+Zhang et al. (2022) show that drawing the parameters from N(0, σ²) with
+σ² = O(1/L) instead of uniformly bounds the gradient norm below by a
+polynomial in n and L, for deep circuits too.
 
 The two initialisers here are **this library's own heuristics**; neither
 formula is taken from a paper:
@@ -98,9 +100,40 @@ So:
 The initialisers are kept as the default because they are harmless and
 cheap, and because the ``scale`` argument gives a one-parameter handle on
 the initial angle spread.  They should not be relied on for trainability at
-larger qubit counts; a locality-preserving entangler is the lever for that
-(issue #161).  ``tests/test_gradient_variance.py`` pins the statements above
-so a change that alters them is noticed.
+larger qubit counts; a locality-preserving entangler is the lever for that.
+
+``entangler="brickwork"`` is that entangler: nearest-neighbour CNOT pairs,
+even then odd, with no wrap-around, so each layer widens the backward light
+cone of a readout by at most two qubits on each side.  The weights ⟨Z_0⟩
+depends on sit on qubit {0} after one layer, {0, 1} after two and
+{0, …, 3} after three.  Measured under the same protocol, now as the **total** gradient
+variance (summed over all weights) at inputs ±π, because the weights outside
+the light cone of ⟨Z_0⟩ have exactly zero gradient and would dilute a
+per-weight mean by 1/n on their own:
+
+    total variance       n=4     n=6     n=8     n=4 → n=8
+    ring, uniform        0.367   0.154   0.0795  4.6x  (5-seed range 4.1–5.4x)
+    brickwork, uniform   0.412   0.407   0.433   0.95x (5-seed range 0.90–1.02x)
+
+The ring loses about 2x per two qubits in total (the 3x above is per weight,
+over a weight count that grows with n).  Brickwork loses nothing over the
+measured range: at 2 layers its ⟨Z_0⟩ light cone is 2 qubits wide whatever
+``n_qubits`` is, so adding qubits only adds weights with zero gradient.  The
+restricted init's ratio to uniform init for brickwork is:
+
+    inputs uniform in   n=4    n=6    n=8
+    {0}                 0.97   0.88   0.82     (5-seed range at n=8: 0.76–0.88)
+    ±π                  1.00   0.93   0.80     (5-seed range at n=8: 0.77–0.83)
+
+so on a circuit that keeps its readouts local the restricted init adds no
+variance at 4 qubits and costs some at 6 and 8, near zero input as well.  The escape
+from the decay is the entangler's, not the initialiser's.  It lasts while
+the light cone is narrower than the register: ⟨Z_0⟩'s covers every qubit
+from about ``n_layers = n_qubits / 2 + 1``, a middle qubit's from about
+``n_qubits / 4 + 1``, and past that brickwork's readouts are global too.
+
+``tests/test_gradient_variance.py`` pins the statements above so a change
+that alters them is noticed.
 
 Functions
 ---------

@@ -154,9 +154,11 @@ Options shared by both models:
   `hqnn_forge.initializers`.
 - `embedding_rotation="X"` (default), `"Y"` or `"Z"`: the Pauli axis of the angle embedding
   (angle encoding only).
-- `entangler="ring"` (default: CNOT ring then per-qubit `Rot`) or `"strongly_entangling"`
+- `entangler="ring"` (default: CNOT ring then per-qubit `Rot`), `"strongly_entangling"`
   (`qml.StronglyEntanglingLayers`: `Rot` first, then a CNOT ring whose range grows with the
-  layer index).
+  layer index) or `"brickwork"` (nearest-neighbour CNOT pairs without wrap-around, so each
+  ⟨Z_i⟩ readout depends on a few neighbouring qubits at shallow depth rather than on all of
+  them).
 - `readout="all"` (default: ⟨Z_i⟩ on every qubit) or `"first"` (⟨Z_0⟩ only, so the head reads
   a single number).
 - `encoder_activation="tanh"` (default: `tanh(·)·π`, in (-π, π)) or `"sigmoid"`
