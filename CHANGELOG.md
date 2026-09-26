@@ -52,8 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   training channel, and `gradient_variance` measures the layer in eval mode, so neither sees
   the train-mode noise
 - `CircuitSummary.n_inert_params` / `count_inert_parameters`: trainable gate parameters that
-  can never reach a measurement, found structurally; the last layer's `Rot` ω angles under a
-  `⟨Z⟩` readout are `n_qubits` such parameters in every default model
+  can never reach a measurement, found structurally and counted as a lower bound; with
+  `readout="all"` they are the `n_qubits` last-layer `Rot` ω angles, with `readout="first"`
+  many more (12 of 24 for the ring ansatz at 4 qubits and 2 layers)
 
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from
