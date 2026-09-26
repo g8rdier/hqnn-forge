@@ -108,6 +108,7 @@ from hqnn_forge.models.hybrid_classifier import (
     _DEFAULT_INIT_STD,
     _PUBLISHED_SHNN,
 )
+from hqnn_forge.noise import Position
 
 
 class ParallelHybridClassifier(BinaryClassifierBase):
@@ -174,7 +175,9 @@ class ParallelHybridClassifier(BinaryClassifierBase):
     noise_level:
         Training-time depolarizing probability for the quantum layer, in
         ``[0, 0.75]``.  Default: ``0.0`` (noiseless).  Applied in train mode
-        only; see :mod:`hqnn_forge.noise`.
+        only, on ``default.mixed`` with backprop, whose memory grows as
+        ``batch × 4^n_qubits`` per operation: practical up to about 6 qubits.
+        See :mod:`hqnn_forge.noise`.
     noise_position:
         ``"all"`` (default) or ``"end"``; where the channel is inserted.
 
@@ -215,7 +218,7 @@ class ParallelHybridClassifier(BinaryClassifierBase):
         encoder_activation: str = "tanh",
         init_std: float = 0.1,
         noise_level: float = 0.0,
-        noise_position: str = "all",
+        noise_position: Position = "all",
     ) -> None:
         super().__init__()
         self._config = dict(

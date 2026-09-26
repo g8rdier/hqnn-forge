@@ -145,9 +145,10 @@ class TestTrainingNoise:
             )
         assert noisy.qlayer.qnode is original
 
-    def test_extra_repr_mentions_the_noise(self) -> None:
-        assert "noise_level=0.1" in _layer(noise_level=0.1).extra_repr()
-        assert "noise_level" not in _layer().extra_repr()
+    @pytest.mark.parametrize("cls", LAYERS)
+    def test_extra_repr_mentions_the_noise(self, cls: type) -> None:
+        assert "noise_level=0.1" in _layer(cls, noise_level=0.1).extra_repr()
+        assert "noise_level" not in _layer(cls).extra_repr()
 
 
 # ---------------------------------------------------------------------------

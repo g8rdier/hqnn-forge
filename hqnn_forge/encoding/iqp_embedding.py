@@ -46,7 +46,7 @@ from hqnn_forge.encoding.angle_embedding import (
     readout_wires,
     validate_circuit_options,
 )
-from hqnn_forge.noise import run_with_training_noise
+from hqnn_forge.noise import Position, run_with_training_noise
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +151,7 @@ class IQPEncodingLayer(nn.Module):
         entangler: Entangler = "ring",
         readout: Readout = "all",
         noise_level: float = 0.0,
-        noise_position: str = "all",
+        noise_position: Position = "all",
     ) -> None:
         super().__init__()
 
@@ -205,9 +205,10 @@ class IQPEncodingLayer(nn.Module):
         return self.qlayer(x)
 
     def extra_repr(self) -> str:
+        noise = f", noise_level={self.noise_level}" if self.noise_level else ""
         return (
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "
             f"n_repeats={self.n_repeats}, "
-            f"n_params={self.n_layers * self.n_qubits * 3}"
+            f"n_params={self.n_layers * self.n_qubits * 3}{noise}"
         )

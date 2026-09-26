@@ -47,7 +47,12 @@ import torch
 import torch.nn as nn
 from pennylane.exceptions import AllocationError, DeviceError
 
-from hqnn_forge.noise import run_with_training_noise, training_noise_qnode, validate_noise
+from hqnn_forge.noise import (
+    Position,
+    run_with_training_noise,
+    training_noise_qnode,
+    validate_noise,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -565,8 +570,9 @@ class QuantumEncodingLayer(nn.Module):
         ``noise_level > 0`` the train-mode forward pass runs the circuit on
         ``default.mixed`` with a ``DepolarizingChannel`` inserted, so
         gradients are computed through the noisy circuit (noise-aware
-        training); eval mode is always noiseless, like dropout.  See
-        :mod:`hqnn_forge.noise`.
+        training); eval mode is always noiseless, like dropout.  Backprop
+        keeps a ``batch × 4^n`` density matrix per operation, so this is
+        practical up to about 6 qubits.  See :mod:`hqnn_forge.noise`.
     noise_position:
         ``"all"`` (after every gate, default) or ``"end"`` (before
         measurement), as in :func:`hqnn_forge.noise.apply_depolarizing_noise`.
@@ -609,7 +615,7 @@ class QuantumEncodingLayer(nn.Module):
         entangler: Entangler = "ring",
         readout: Readout = "all",
         noise_level: float = 0.0,
-        noise_position: str = "all",
+        noise_position: Position = "all",
     ) -> None:
         super().__init__()
 
@@ -723,7 +729,7 @@ class QuantumEncodingLayer(nn.Module):
 
 
 def _build_training_noise(
-    qnode: qml.QNode, n_qubits: int, noise_level: float, noise_position: str
+    qnode: qml.QNode, n_qubits: int, noise_level: float, noise_position: Position
 ) -> qml.QNode | None:
     """
     The train-mode QNode for ``noise_level > 0``, or ``None`` for the
@@ -733,7 +739,7 @@ def _build_training_noise(
     validate_noise(noise_level, noise_position)
     if noise_level == 0.0:
         return None
-    return training_noise_qnode(qnode, n_qubits, noise_level, noise_position)  # type: ignore[arg-type]
+    return training_noise_qnode(qnode, n_qubits, noise_level, noise_position)
 
 
 # ---------------------------------------------------------------------------

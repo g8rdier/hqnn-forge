@@ -40,7 +40,11 @@ take precedence over the training-time channel if both are active at once.
 ``noise_level=0`` (the default) leaves the layer exactly as before.
 
 Mixed-state simulation costs ``O(4^n)`` memory and is differentiated with
-backprop; it is intended for the library's qubit counts (≤ ~10).
+backprop.  Evaluation stores little, but training keeps a ``batch × 4^n``
+complex density matrix for every gate and every inserted channel for the
+backward pass: at 8 qubits, batch 64 and ``position="all"`` that is several GB
+per step, against kilobytes on the adjoint path.  Training-time noise is
+practical up to about 6 qubits; see #229 for a trajectory-sampling alternative.
 """
 
 from __future__ import annotations
@@ -97,7 +101,9 @@ def training_noise_qnode(
     circuit function on ``default.mixed`` with ``DepolarizingChannel(p)``
     inserted at ``position``, differentiated with backprop.  The layer's own
     ``device_name`` and ``diff_method`` apply to its noiseless path only;
-    mixed-state simulation costs ``O(4^n)`` memory.
+    mixed-state simulation costs ``O(4^n)`` memory per sample, and training
+    through it keeps one such state per operation for backprop (see the module
+    docstring).
 
     Raises
     ------

@@ -76,6 +76,7 @@ from hqnn_forge.initializers.restricted_variance import (
     restricted_normal_init_,
 )
 from hqnn_forge.models.base import BinaryClassifierBase
+from hqnn_forge.noise import Position
 
 #: Constructor arguments of the SHNN published in the thesis (see
 #: ``HybridBinaryClassifier.published_shnn``).
@@ -157,7 +158,9 @@ class HybridBinaryClassifier(BinaryClassifierBase):
     noise_level:
         Training-time depolarizing probability for the quantum layer, in
         ``[0, 0.75]``.  Default: ``0.0`` (noiseless).  Applied in train mode
-        only; see :mod:`hqnn_forge.noise`.
+        only, on ``default.mixed`` with backprop, whose memory grows as
+        ``batch × 4^n_qubits`` per operation: practical up to about 6 qubits.
+        See :mod:`hqnn_forge.noise`.
     noise_position:
         ``"all"`` (default) or ``"end"``; where the channel is inserted.
 
@@ -196,7 +199,7 @@ class HybridBinaryClassifier(BinaryClassifierBase):
         encoder_activation: str = "tanh",
         init_std: float = 0.1,
         noise_level: float = 0.0,
-        noise_position: str = "all",
+        noise_position: Position = "all",
     ) -> None:
         super().__init__()
         self._config = dict(
