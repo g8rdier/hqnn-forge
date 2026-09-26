@@ -268,6 +268,66 @@ class TestBrickwork:
             assert grad is not None and grad.abs().sum().item() > 0, model_cls.__name__
 
 
+class TestOneLayerReadoutFeatures:
+    """
+    Which features each readout sees after one layer (#150), as derived in
+    step 2 of ``_make_angle_embedding_circuit``: under the default ring and
+    RX embedding ⟨Z_0⟩ = c_0(w)·cos x_1⋯cos x_{n-1} and, for 0 < i < n-1,
+    ⟨Z_i⟩ = c_i(w)·cos x_0⋯cos x_i.
+    """
+
+    N = 5
+
+    def _one_layer(self, entangler: str = "ring", rotation: str = "X", n_layers: int = 1):
+        return QuantumEncodingLayer(
+            n_qubits=self.N,
+            n_layers=n_layers,
+            entangler=entangler,  # type: ignore[arg-type]
+            rotation=rotation,  # type: ignore[arg-type]
+            **CPU,  # type: ignore[arg-type]
+        )
+
+    def test_ring_readouts_are_the_derived_cosine_products(self) -> None:
+        """Each ratio to its cosine product is a constant c_i(w), whatever the input."""
+        layer = self._one_layer()
+        torch.manual_seed(0)
+        with torch.no_grad():
+            layer.qlayer.weights.uniform_(0, 2 * math.pi)
+        torch.manual_seed(1)
+        # |x| < 1.2 keeps every cosine away from zero, so the ratios are well defined
+        x = (torch.rand(6, self.N, dtype=torch.float64) * 2 - 1) * 1.2
+        with torch.no_grad():
+            out = layer(x.float()).double()
+        cos = torch.cos(x)
+        products = [cos[:, 1:].prod(dim=1)] + [cos[:, : i + 1].prod(dim=1) for i in range(1, 4)]
+        for i, product in enumerate(products):
+            ratio = out[:, i] / product
+            torch.testing.assert_close(
+                ratio, ratio[:1].expand_as(ratio), rtol=1e-4, atol=1e-5, msg=f"readout {i}"
+            )
+            assert ratio[0].abs() > 1e-2, f"readout {i}: c_i(w) vanished, the check is vacuous"
+
+    def test_ring_with_rx_is_blind_to_feature_zero(self) -> None:
+        assert _z0_harmonic_in_x0(self._one_layer()) < 1e-6
+
+    def test_ring_with_ry_is_not(self) -> None:
+        """⟨X⟩ = sin x under RY, so the X terms the Rot mixes in survive."""
+        assert _z0_harmonic_in_x0(self._one_layer(rotation="Y")) > 1e-2
+
+    @pytest.mark.parametrize("rotation", ["X", "Y"])
+    def test_strongly_entangling_is_blind_under_either_rotation(self, rotation: str) -> None:
+        layer = self._one_layer("strongly_entangling", rotation)
+        assert _z0_harmonic_in_x0(layer) < 1e-6
+
+    @pytest.mark.parametrize("entangler", ["ring", "strongly_entangling"])
+    def test_two_layers_see_feature_zero(self, entangler: str) -> None:
+        assert _z0_harmonic_in_x0(self._one_layer(entangler, n_layers=2)) > 1e-3
+
+    @pytest.mark.parametrize("rotation", ["X", "Y"])
+    def test_brickwork_sees_it_at_one_layer(self, rotation: str) -> None:
+        assert _z0_harmonic_in_x0(self._one_layer("brickwork", rotation)) > 1e-2
+
+
 class TestReadout:
     @pytest.mark.parametrize("cls", [QuantumEncodingLayer, IQPEncodingLayer])
     def test_first_is_column_zero_of_all(self, cls: type) -> None:

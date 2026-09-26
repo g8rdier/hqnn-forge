@@ -372,6 +372,25 @@ def _make_angle_embedding_circuit(
        not enjoy the local-cost gradient bounds of Cerezo et al. (2021); see
        `hqnn_forge.initializers` for what is measured instead.
 
+       The same conjugation decides which *features* a readout sees.  After
+       one layer with the default ``rotation="X"``, the X and Y terms the
+       ``Rot`` mixes in land on operators with an ``X`` on some wire, whose
+       expectation in the RX-embedded product state is 0, so only the Z
+       image survives:
+
+           ⟨Z_0⟩ = c_0(w) · cos x_1 ⋯ cos x_{n-1}      (no x_0)
+           ⟨Z_i⟩ = c_i(w) · cos x_0 ⋯ cos x_i          (0 < i < n-1)
+
+       Readout 0 is blind to its own feature, and carries a product of n-1
+       cosines, which is small for inputs spread over (-π, π).  With
+       ``rotation="Y"`` the X terms survive (⟨X⟩ = sin x) and ⟨Z_0⟩ does see
+       x_0; with ``entangler="strongly_entangling"`` the image of Z_0 leaves
+       wire 0 before its ``Rot`` is reached, so ⟨Z_0⟩ ignores x_0 under either
+       rotation.  From two layers on every readout sees every feature.  Use
+       ``n_layers >= 2``, or ``entangler="brickwork"``, whose CNOT(0, 1) has
+       wire 0 as control and so keeps Z_0 on its own wire, when a single
+       readout must see every feature (#150).
+
     3. **Per-qubit SU(2) rotation block**:
        ``qml.Rot(φ, θ, ω, wires=i)`` applies Rz(ω)·Ry(θ)·Rz(φ), covering the
        full Bloch sphere.  This is the most expressive single-qubit gate.
@@ -613,6 +632,9 @@ class QuantumEncodingLayer(nn.Module):
         Number of qubits / input feature dimensions.  Default: 8.
     n_layers:
         Number of entangling + rotation blocks in the VQC ansatz.  Default: 2.
+        At 1, ⟨Z_0⟩ does not depend on feature 0 under the default ring
+        with ``rotation="X"``, nor under ``"strongly_entangling"`` with any
+        rotation; see step 2 of :func:`_make_angle_embedding_circuit`.
     rotation:
         Pauli axis for AngleEmbedding: ``"X"`` | ``"Y"`` | ``"Z"``.
     device_name:

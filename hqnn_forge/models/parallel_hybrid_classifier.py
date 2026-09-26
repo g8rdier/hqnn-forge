@@ -127,7 +127,13 @@ class ParallelHybridClassifier(BinaryClassifierBase):
     n_qubits:
         Number of qubits in the quantum branch.  Default: 8.
     n_layers:
-        VQC ansatz layers.  Default: 2.
+        VQC ansatz layers.  Default: 2.  At 1, with angle encoding, ⟨Z_0⟩
+        ignores the first encoded angle under the default ring and RX
+        embedding and under ``entangler="strongly_entangling"`` with any
+        embedding rotation, so ``readout="first"`` reads only
+        ``n_qubits - 1`` of the angles.  Use 2 or more layers, or
+        ``entangler="brickwork"``; see
+        :func:`hqnn_forge.encoding.angle_embedding._make_angle_embedding_circuit`.
     classical_hidden_dim:
         Width of the classical MLP branch.  Default: 16.
     use_classical_encoder:
