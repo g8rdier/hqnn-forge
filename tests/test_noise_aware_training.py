@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 
+import pennylane as qml
 import pytest
 import torch
 
@@ -29,6 +30,19 @@ N_QUBITS = 3
 CPU = {"device_name": "default.qubit", "diff_method": "backprop"}
 LAYERS = [QuantumEncodingLayer, IQPEncodingLayer]
 MODELS = [HybridBinaryClassifier, ParallelHybridClassifier]
+
+
+def _lightning_available() -> bool:
+    try:
+        qml.device("lightning.qubit", wires=1)
+    except Exception:  # noqa: BLE001 - any failure means "not installed"
+        return False
+    return True
+
+
+requires_lightning = pytest.mark.skipif(
+    not _lightning_available(), reason="pennylane-lightning not installed"
+)
 
 
 def _layer(cls: type = QuantumEncodingLayer, **kwargs: object) -> torch.nn.Module:
@@ -149,6 +163,39 @@ class TestTrainingNoise:
     def test_extra_repr_mentions_the_noise(self, cls: type) -> None:
         assert "noise_level=0.1" in _layer(cls, noise_level=0.1).extra_repr()
         assert "noise_level" not in _layer(cls).extra_repr()
+
+    @requires_lightning
+    @pytest.mark.parametrize("cls", LAYERS)
+    def test_default_lightning_adjoint_layer_damps_output_and_gradient(
+        self, cls: type, x: torch.Tensor
+    ) -> None:
+        """
+        The library default: the noiseless QNode is lightning.qubit + adjoint,
+        wrapped for batching, and the train-mode one is rebuilt from its
+        circuit function.  End noise must still scale output and gradient by
+        exactly 1 - 4p/3 relative to the noiseless layer.
+        """
+        p = 0.2
+        torch.manual_seed(0)
+        noisy = cls(n_qubits=N_QUBITS, n_layers=2, noise_level=p, noise_position="end")
+        clean = cls(n_qubits=N_QUBITS, n_layers=2)
+        with torch.no_grad():
+            clean.qlayer.weights.copy_(noisy.qlayer.weights)
+        noisy.train()
+        clean.train()
+        out_noisy, out_clean = noisy(x), clean(x)
+        torch.testing.assert_close(out_noisy, (1 - 4 * p / 3) * out_clean, rtol=1e-5, atol=1e-6)
+        out_noisy.sum().backward()
+        out_clean.sum().backward()
+        torch.testing.assert_close(
+            noisy.qlayer.weights.grad,
+            (1 - 4 * p / 3) * clean.qlayer.weights.grad,
+            rtol=1e-4,
+            atol=1e-6,
+        )
+        noisy.eval()
+        with torch.no_grad():
+            torch.testing.assert_close(noisy(x), clean(x), rtol=1e-6, atol=1e-7)
 
 
 # ---------------------------------------------------------------------------
