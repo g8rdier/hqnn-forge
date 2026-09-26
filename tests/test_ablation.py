@@ -22,7 +22,10 @@ def _model(cls: type, **kw: object) -> nn.Module:
     return cls(n_input_features=N_FEATURES, n_qubits=N_QUBITS, n_layers=2, **CPU, **kw)
 
 
-MODELS = [pytest.param(HybridBinaryClassifier, id="serial"), pytest.param(ParallelHybridClassifier, id="parallel")]
+MODELS = [
+    pytest.param(HybridBinaryClassifier, id="serial"),
+    pytest.param(ParallelHybridClassifier, id="parallel"),
+]
 
 
 @pytest.fixture
@@ -50,7 +53,9 @@ class TestAblation:
             assert p.grad is None
         assert model.head.weight.grad is not None
 
-    def test_circuit_is_not_executed(self, cls: type, x: torch.Tensor, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_circuit_is_not_executed(
+        self, cls: type, x: torch.Tensor, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         model = _model(cls)
 
         def boom(*_: object, **__: object) -> None:
@@ -123,6 +128,15 @@ class TestExactReplacement:
             assert layer is model.quantum_layer
             torch.testing.assert_close(layer(torch.randn(2, N_QUBITS)), torch.zeros(2, N_QUBITS))
 
+    def test_readout_first_is_filled_to_the_readout_width(self, x: torch.Tensor) -> None:
+        # With readout="first" the layer emits one number, not n_qubits of them,
+        # and the head is built for that width: filling n_qubits wide would make
+        # the ablated forward fail where the real one works.
+        model = _model(HybridBinaryClassifier, entangler="strongly_entangling", readout="first")
+        with torch.no_grad(), disable_quantum_layer(model, fill=0.25) as layer:
+            assert layer(torch.randn(5, N_QUBITS)).shape == (5, 1)
+            torch.testing.assert_close(model(x), model.head(torch.full((5, 1), 0.25)))
+
     def test_training_inside_updates_only_live_parameters(self, x: torch.Tensor) -> None:
         model = _model(ParallelHybridClassifier)
         quantum_before = model.quantum_layer.qlayer.weights.detach().clone()
@@ -133,7 +147,9 @@ class TestExactReplacement:
                 opt.zero_grad()
                 model(x).pow(2).mean().backward()
                 opt.step()
-        torch.testing.assert_close(model.quantum_layer.qlayer.weights.detach(), quantum_before, rtol=0, atol=0)
+        torch.testing.assert_close(
+            model.quantum_layer.qlayer.weights.detach(), quantum_before, rtol=0, atol=0
+        )
         for before, p in zip(encoder_before, model.classical_encoder.parameters()):
             torch.testing.assert_close(p.detach(), before, rtol=0, atol=0)
 

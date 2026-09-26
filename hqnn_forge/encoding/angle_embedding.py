@@ -19,6 +19,9 @@ Design Rationale
   on a `lightning.qubit` device.  Adjoint diff computes exact gradients in a
   single forward + backward pass and scales as O(p) in the number of parameters p,
   making it strictly superior to the parameter-shift rule for state-vector sims.
+  The GPU-accelerated ``lightning.gpu`` and ``lightning.kokkos`` devices support
+  the same method; ``_resolve_device`` falls back through ``lightning.qubit`` to
+  ``default.qubit`` when a backend is not installed or has no usable hardware.
 
 * **Barren Plateau Avoidance** — weights are *not* initialised here; callers should
   use `hqnn_forge.initializers.restricted_normal_init_` on the returned layer.
@@ -37,11 +40,12 @@ from __future__ import annotations
 import logging
 import warnings
 from collections.abc import Callable
-from typing import Literal
+from typing import Literal, get_args
 
 import pennylane as qml
 import torch
 import torch.nn as nn
+from pennylane.exceptions import AllocationError, DeviceError
 
 from hqnn_forge.noise import run_with_training_noise, training_noise_qnode, validate_noise
 
@@ -51,55 +55,247 @@ logger = logging.getLogger(__name__)
 # Type aliases
 # ---------------------------------------------------------------------------
 RotationAxis = Literal["X", "Y", "Z"]
-DiffMethod   = Literal["adjoint", "parameter-shift", "backprop", "finite-diff"]
-DeviceName   = Literal["lightning.qubit", "default.qubit"]
+DiffMethod = Literal["adjoint", "parameter-shift", "backprop", "finite-diff"]
+DeviceName = Literal["lightning.gpu", "lightning.kokkos", "lightning.qubit", "default.qubit"]
+Entangler = Literal["ring", "strongly_entangling"]
+Readout = Literal["all", "first"]
+
+#: Devices tried, in order, after the requested one fails.  Each is a strict
+#: subset of the previous one's requirements: ``lightning.qubit`` needs only
+#: the ``pennylane-lightning`` wheel, ``default.qubit`` ships with PennyLane.
+FALLBACK_CHAIN: tuple[str, ...] = ("lightning.qubit", "default.qubit")
+
+#: What creating a device raises when its plugin or hardware is missing:
+#: ``DeviceError`` for a device name no installed plugin registers,
+#: ``ImportError`` / ``OSError`` when a plugin's compiled extension or a CUDA
+#: library cannot be loaded, ``RuntimeError`` when the plugin loads but finds
+#: no usable GPU.  A ``RuntimeError`` about memory is not one of these: see
+#: :func:`_is_out_of_memory`.
+_DEVICE_FAILURES: tuple[type[BaseException], ...] = (
+    DeviceError,
+    ImportError,
+    OSError,
+    RuntimeError,
+)
 
 
 # ---------------------------------------------------------------------------
-# Device factory — graceful fallback from lightning.qubit to default.qubit
+# Variational block and readout, shared by every encoding circuit
 # ---------------------------------------------------------------------------
 
-def _resolve_device(device_name: DeviceName, n_qubits: int) -> qml.Device:
+
+def apply_variational_layers(
+    weights: torch.Tensor,
+    n_qubits: int,
+    n_layers: int,
+    entangler: Entangler = "ring",
+    layer_offset: int = 0,
+) -> None:
     """
-    Attempt to create *device_name*; fall back to ``default.qubit`` when
-    ``pennylane-lightning`` is not installed, emitting a warning in that case.
+    Apply the ``n_layers`` variational blocks to the current circuit.
+
+    ``entangler`` selects the block:
+
+    * ``"ring"`` (the library's default): CNOT ring ``CNOT(i → i+1 mod n)``,
+      then ``Rot(φ, θ, ω)`` on every qubit.
+    * ``"strongly_entangling"``: ``qml.StronglyEntanglingLayers``, i.e.
+      ``Rot`` on every qubit **then** a CNOT ring whose range grows with the
+      layer index, ``r = ℓ mod (n-1) + 1``.  This is the block the published
+      SHNN uses (Schuld et al. 2020, PennyLane template).
+
+    Both take ``weights`` of shape ``(n_layers, n_qubits, 3)`` and use
+    ``n_layers · n_qubits`` ``Rot`` and CNOT gates; they differ in gate order
+    and, from the second layer on, in which qubits the CNOTs connect.
+
+    ``layer_offset`` is the index of the first block within the whole ansatz,
+    for circuits that interleave other gates between blocks and so apply them
+    a few at a time: the ``"strongly_entangling"`` range of block ``ℓ`` is
+    ``(layer_offset + ℓ) mod (n-1) + 1``, so applying the blocks one by one
+    with offsets ``0 … L-1`` gives the same ranges as applying all ``L`` at
+    once.  The ``"ring"`` block does not depend on the layer index.
+    """
+    if entangler == "strongly_entangling":
+        # A single wire has no CNOT partner: leave the ranges to the template,
+        # which uses 0 there instead of dividing by n - 1 = 0.
+        ranges = (
+            [(layer_offset + layer) % (n_qubits - 1) + 1 for layer in range(n_layers)]
+            if n_qubits > 1
+            else None
+        )
+        qml.StronglyEntanglingLayers(weights, wires=range(n_qubits), ranges=ranges)
+        return
+    if entangler != "ring":
+        raise ValueError(f"entangler must be 'ring' or 'strongly_entangling'; got {entangler!r}.")
+    for layer in range(n_layers):
+        # CNOT entangling ring (cyclic: last qubit → first qubit)
+        for qubit in range(n_qubits):
+            qml.CNOT(wires=[qubit, (qubit + 1) % n_qubits])
+        # Per-qubit SU(2) rotation block
+        for qubit in range(n_qubits):
+            qml.Rot(
+                weights[layer, qubit, 0],  # φ
+                weights[layer, qubit, 1],  # θ
+                weights[layer, qubit, 2],  # ω
+                wires=qubit,
+            )
+
+
+def validate_circuit_options(
+    n_qubits: int,
+    entangler: Entangler,
+    readout: Readout,
+    rotation: RotationAxis | None = None,
+) -> None:
+    """
+    Raise ``ValueError`` for an ``entangler``, ``readout`` or (if given)
+    ``rotation`` outside the allowed values.
+
+    The encoding builders call this eagerly: ``qml.AngleEmbedding`` only
+    rejects the axis when the circuit first runs, which is a forward pass away
+    from the constructor that was given it -- and past get_config and a
+    checkpoint.
+    """
+    readout_wires(n_qubits, readout)
+    if entangler not in ("ring", "strongly_entangling"):
+        raise ValueError(f"entangler must be 'ring' or 'strongly_entangling'; got {entangler!r}.")
+    if rotation is not None and rotation not in ("X", "Y", "Z"):
+        raise ValueError(f"rotation must be 'X', 'Y' or 'Z'; got {rotation!r}.")
+
+
+def check_inputs(x: torch.Tensor, expected: int, name: str = "n_qubits", hint: str = "") -> None:
+    """
+    Raise ``ValueError`` unless ``x`` has ``expected`` features and is finite.
+
+    The shared check of every encoding layer's ``prepare_inputs``.  A NaN or
+    ±inf angle is simulated without error and gives NaN outputs, so it is
+    refused here, where ``forward`` and :mod:`hqnn_forge.kernels` both see it.
+    ``hint`` is appended to the width message.
+    """
+    if x.shape[-1] != expected:
+        raise ValueError(
+            f"Input feature dimension {x.shape[-1]} does not match {name}={expected}.{hint}"
+        )
+    if not bool(torch.isfinite(x).all()):
+        raise ValueError("Encoding layer inputs contain NaN or ±inf.")
+
+
+def readout_wires(n_qubits: int, readout: Readout = "all") -> list[int]:
+    """Wires measured in ⟨Z⟩: every qubit (``"all"``) or qubit 0 only (``"first"``)."""
+    if readout == "all":
+        return list(range(n_qubits))
+    if readout == "first":
+        return [0]
+    raise ValueError(f"readout must be 'all' or 'first'; got {readout!r}.")
+
+
+def measure_z(n_qubits: int, readout: Readout = "all") -> list[qml.measurements.ExpectationMP]:
+    """``[⟨Z_i⟩ for i in readout_wires(...)]``: the circuit's return value."""
+    return [qml.expval(qml.PauliZ(i)) for i in readout_wires(n_qubits, readout)]
+
+
+# ---------------------------------------------------------------------------
+# Device factory — graceful fallback down to default.qubit
+# ---------------------------------------------------------------------------
+
+
+def _is_out_of_memory(exc: BaseException) -> bool:
+    """
+    Whether a device-creation failure is the state vector not fitting.
+
+    Every backend in the chain allocates the same ``2**n_qubits`` amplitudes,
+    so falling back cannot help and would only move the allocation from GPU
+    memory to host memory, where it can get the process killed instead of
+    raising.  PennyLane raises :class:`AllocationError`; the lightning plugins
+    raise a bare ``RuntimeError`` naming memory.
+    """
+    return isinstance(exc, AllocationError) or (
+        isinstance(exc, RuntimeError) and "memory" in str(exc).lower()
+    )
+
+
+def _resolve_device(device_name: DeviceName, n_qubits: int) -> qml.devices.Device:
+    """
+    Create *device_name*, falling back along :data:`FALLBACK_CHAIN` when a
+    backend is not installed or has no usable hardware, with one
+    ``RuntimeWarning`` per failed step.
+
+    The chain is ``requested → lightning.qubit → default.qubit``; entries at
+    or before the requested device are skipped, so ``lightning.qubit`` falls
+    straight to ``default.qubit`` and ``default.qubit`` has no fallback.
+
+    A name outside :data:`DeviceName` is refused before anything is tried: a
+    typo such as ``"default.qbit"`` would otherwise fail like a missing plugin
+    and quietly run on another simulator.
 
     Parameters
     ----------
     device_name:
-        Preferred PennyLane device string, e.g. ``"lightning.qubit"``.
+        Preferred PennyLane device string.  ``"lightning.gpu"`` (cuQuantum,
+        NVIDIA) and ``"lightning.kokkos"`` (Kokkos: OpenMP on the PyPI wheel,
+        CUDA/HIP when built from source) are the accelerated backends; see
+        the README for their prerequisites.
     n_qubits:
         Number of qubits to allocate.
 
     Returns
     -------
-    qml.Device
+    qml.devices.Device
         An initialised PennyLane device ready for QNode attachment.
+
+    Raises
+    ------
+    ValueError
+        If *device_name* is not one of :data:`DeviceName`.
+    The backend's own exception if the state vector does not fit in memory
+    (see :func:`_is_out_of_memory`), or if every step of the chain fails,
+    which can only happen if PennyLane itself is broken (``default.qubit``
+    has no dependencies).
     """
-    try:
-        dev = qml.device(device_name, wires=n_qubits)
-        logger.debug("Quantum device initialised: %s (%d qubits)", device_name, n_qubits)
-        return dev
-    except (qml.DeviceError, ImportError) as exc:
-        fallback = "default.qubit"
-        warnings.warn(
-            f"Could not initialise '{device_name}' ({exc}).  "
-            f"Falling back to '{fallback}'.  Install pennylane-lightning for "
-            f"adjoint differentiation support and significantly faster simulation.",
-            RuntimeWarning,
-            stacklevel=3,
+    if device_name not in get_args(DeviceName):
+        raise ValueError(
+            f"device_name must be one of {', '.join(map(repr, get_args(DeviceName)))}; "
+            f"got {device_name!r}."
         )
-        return qml.device(fallback, wires=n_qubits)
+    start = FALLBACK_CHAIN.index(device_name) + 1 if device_name in FALLBACK_CHAIN else 0
+    candidates = [device_name, *FALLBACK_CHAIN[start:]]
+    for attempt, name in enumerate(candidates):
+        try:
+            dev = qml.device(name, wires=n_qubits)
+        except _DEVICE_FAILURES as exc:
+            if attempt == len(candidates) - 1 or _is_out_of_memory(exc):
+                raise
+            fallback = candidates[attempt + 1]
+            hint = (
+                "  Install pennylane-lightning for adjoint differentiation support and "
+                "significantly faster simulation."
+                if fallback == "default.qubit"
+                else ""
+            )
+            warnings.warn(
+                f"Could not initialise '{name}' ({type(exc).__name__}: {exc}).  "
+                f"Falling back to '{fallback}'.{hint}",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            continue
+        if attempt:
+            logger.info("Quantum device fell back from %s to %s", device_name, name)
+        logger.debug("Quantum device initialised: %s (%d qubits)", name, n_qubits)
+        return dev
+    raise AssertionError("unreachable: the fallback chain always ends in a raise or a return")
 
 
 # ---------------------------------------------------------------------------
 # Raw QNode function
 # ---------------------------------------------------------------------------
 
+
 def _make_angle_embedding_circuit(
     n_qubits: int,
     n_layers: int,
     rotation: RotationAxis,
+    entangler: Entangler = "ring",
+    readout: Readout = "all",
 ) -> Callable[[torch.Tensor, torch.Tensor], list[qml.measurements.ExpectationMP]]:
     """
     Factory returning the *bare quantum function* (not yet a QNode) that
@@ -144,12 +340,21 @@ def _make_angle_embedding_circuit(
         Number of variational layers L.  Depth = O(n_qubits * n_layers).
     rotation:
         Pauli axis used by AngleEmbedding: ``"X"`` | ``"Y"`` | ``"Z"``.
+    entangler:
+        ``"ring"`` (steps 2 and 3 above) or ``"strongly_entangling"``
+        (``qml.StronglyEntanglingLayers``: Rot first, then a CNOT ring of
+        range ``ℓ mod (n-1) + 1``).  See :func:`apply_variational_layers`.
+    readout:
+        ``"all"`` (step 4 above) or ``"first"`` (``[⟨Z_0⟩]`` only, as in the
+        published SHNN).
 
     Returns
     -------
     callable
         A plain Python function suitable for ``@qml.qnode`` decoration.
     """
+    validate_circuit_options(n_qubits, entangler, readout, rotation)
+
     def circuit(
         inputs: torch.Tensor,
         weights: torch.Tensor,
@@ -161,23 +366,11 @@ def _make_angle_embedding_circuit(
             rotation=rotation,
         )
 
-        # ── 2 & 3. Strongly entangling layers ────────────────────────────
-        for layer in range(n_layers):
-            # 2a. CNOT entangling ring  (cyclic: last qubit → first qubit)
-            for qubit in range(n_qubits):
-                qml.CNOT(wires=[qubit, (qubit + 1) % n_qubits])
+        # ── 2 & 3. Variational layers ────────────────────────────────────
+        apply_variational_layers(weights, n_qubits, n_layers, entangler)
 
-            # 2b. Per-qubit SU(2) rotation block
-            for qubit in range(n_qubits):
-                qml.Rot(
-                    weights[layer, qubit, 0],  # φ
-                    weights[layer, qubit, 1],  # θ
-                    weights[layer, qubit, 2],  # ω
-                    wires=qubit,
-                )
-
-        # ── 3. Measurement: Pauli-Z expectation on every qubit ────────────
-        return [qml.expval(qml.PauliZ(i)) for i in range(n_qubits)]
+        # ── 4. Measurement: Pauli-Z expectation on the readout wires ─────
+        return measure_z(n_qubits, readout)
 
     return circuit
 
@@ -185,6 +378,7 @@ def _make_angle_embedding_circuit(
 # ---------------------------------------------------------------------------
 # Batching
 # ---------------------------------------------------------------------------
+
 
 def _expand_batch_dimension(qnode: qml.QNode, diff_method: str) -> qml.QNode:
     """
@@ -221,18 +415,21 @@ def _expand_batch_dimension(qnode: qml.QNode, diff_method: str) -> qml.QNode:
 # Public QNode factory
 # ---------------------------------------------------------------------------
 
+
 def build_encoding_qnode(
     n_qubits: int = 8,
     n_layers: int = 2,
     rotation: RotationAxis = "X",
     device_name: DeviceName = "lightning.qubit",
     diff_method: DiffMethod = "adjoint",
+    entangler: Entangler = "ring",
+    readout: Readout = "all",
 ) -> qml.QNode:
     """
     Build and return a PennyLane QNode for the angle-embedding feature map.
 
-    The QNode is bound to a ``lightning.qubit`` device (or ``default.qubit``
-    on fallback) and configured for the specified differentiation method.
+    The QNode is bound to the device :func:`_resolve_device` returns for
+    *device_name* and configured for the specified differentiation method.
 
     Parameters
     ----------
@@ -246,7 +443,8 @@ def build_encoding_qnode(
         Pauli rotation axis for AngleEmbedding: ``"X"`` (default), ``"Y"``, or ``"Z"``.
     device_name:
         PennyLane device string.  ``"lightning.qubit"`` is strongly preferred for
-        adjoint differentiation.  Falls back to ``"default.qubit"`` automatically.
+        adjoint differentiation.  An unavailable backend falls back along
+        ``lightning.qubit → default.qubit`` with a warning per step.
     diff_method:
         Differentiation strategy:
 
@@ -254,18 +452,26 @@ def build_encoding_qnode(
         - ``"parameter-shift"`` — exact, hardware-compatible, O(p) circuit evals.
         - ``"backprop"``        — auto-diff through simulator; requires default.qubit.
         - ``"finite-diff"``     — approximate; avoid for training.
+    entangler:
+        ``"ring"`` (default) or ``"strongly_entangling"``; see
+        :func:`apply_variational_layers`.
+    readout:
+        ``"all"`` (default): ⟨Z_i⟩ on every qubit.  ``"first"``: ⟨Z_0⟩ only.
 
     Returns
     -------
     qml.QNode
         A callable QNode with signature
         ``(inputs: Tensor, weights: Tensor) -> Tensor``
-        where outputs are ⟨Z_i⟩ expectation values, shape ``(n_qubits,)``.
+        where outputs are ⟨Z_i⟩ expectation values, shape ``(n_qubits,)``
+        (or ``(1,)`` with ``readout="first"``).
 
     Raises
     ------
     ValueError
-        If ``n_qubits < 2`` (minimum for a meaningful entangling ring).
+        If ``n_qubits < 2`` (minimum for a meaningful entangling ring), or if
+        ``rotation``, ``entangler`` or ``readout`` is not one of the values
+        above -- all checked here, before the circuit first runs.
 
     Examples
     --------
@@ -275,12 +481,10 @@ def build_encoding_qnode(
     >>> result = qnode(x, w)  # list of 8 expectation values
     """
     if n_qubits < 2:
-        raise ValueError(
-            f"n_qubits must be ≥ 2 for the CNOT entangling ring; got {n_qubits}."
-        )
+        raise ValueError(f"n_qubits must be ≥ 2 for the CNOT entangling ring; got {n_qubits}.")
 
     device = _resolve_device(device_name, n_qubits)
-    circuit_fn = _make_angle_embedding_circuit(n_qubits, n_layers, rotation)
+    circuit_fn = _make_angle_embedding_circuit(n_qubits, n_layers, rotation, entangler, readout)
 
     qnode = qml.QNode(
         func=circuit_fn,
@@ -291,12 +495,15 @@ def build_encoding_qnode(
     qnode = _expand_batch_dimension(qnode, diff_method)
 
     logger.info(
-        "QNode built | device=%s | qubits=%d | layers=%d | diff=%s | rotation=%s",
+        "QNode built | device=%s | qubits=%d | layers=%d | diff=%s | rotation=%s | "
+        "entangler=%s | readout=%s",
         device.name,
         n_qubits,
         n_layers,
         diff_method,
         rotation,
+        entangler,
+        readout,
     )
     return qnode
 
@@ -304,6 +511,7 @@ def build_encoding_qnode(
 # ---------------------------------------------------------------------------
 # PyTorch nn.Module wrapper
 # ---------------------------------------------------------------------------
+
 
 class QuantumEncodingLayer(nn.Module):
     """
@@ -339,11 +547,18 @@ class QuantumEncodingLayer(nn.Module):
     rotation:
         Pauli axis for AngleEmbedding: ``"X"`` | ``"Y"`` | ``"Z"``.
     device_name:
-        PennyLane device.  Falls back to ``default.qubit`` if
-        ``pennylane-lightning`` is unavailable.
+        PennyLane device, one of :data:`DeviceName`.  An unavailable backend
+        falls back along ``lightning.qubit → default.qubit`` with a warning
+        per step.
     diff_method:
         Gradient method.  Use ``"adjoint"`` with ``lightning.qubit`` for
         exact, efficient gradients during state-vector simulation.
+    entangler:
+        ``"ring"`` (default) or ``"strongly_entangling"``; see
+        :func:`apply_variational_layers`.  Same parameter count either way.
+    readout:
+        ``"all"`` (default): the layer returns ``(batch, n_qubits)``.
+        ``"first"``: ⟨Z_0⟩ only, ``(batch, 1)``, the published SHNN readout.
     noise_level:
         Depolarizing probability applied to the circuit in **train mode**,
         in ``[0, 0.75]``; ``0`` (default) is the plain noiseless layer.  With
@@ -360,6 +575,10 @@ class QuantumEncodingLayer(nn.Module):
     ----------
     n_qubits : int
     n_layers : int
+    n_outputs : int
+        Width of the output: ``n_qubits`` or 1.
+    entangler : str
+    readout : str
     noise_level : float
     noise_position : str
     qlayer : pennylane.qnn.TorchLayer
@@ -387,6 +606,8 @@ class QuantumEncodingLayer(nn.Module):
         rotation: RotationAxis = "X",
         device_name: DeviceName = "lightning.qubit",
         diff_method: DiffMethod = "adjoint",
+        entangler: Entangler = "ring",
+        readout: Readout = "all",
         noise_level: float = 0.0,
         noise_position: str = "all",
     ) -> None:
@@ -394,6 +615,9 @@ class QuantumEncodingLayer(nn.Module):
 
         self.n_qubits = n_qubits
         self.n_layers = n_layers
+        self.entangler = entangler
+        self.readout = readout
+        self.n_outputs = len(readout_wires(n_qubits, readout))
         self.noise_level = noise_level
         self.noise_position = noise_position
 
@@ -404,6 +628,8 @@ class QuantumEncodingLayer(nn.Module):
             rotation=rotation,
             device_name=device_name,
             diff_method=diff_method,
+            entangler=entangler,
+            readout=readout,
         )
 
         # Declare the trainable weight tensor shape for TorchLayer ─────────
@@ -427,6 +653,23 @@ class QuantumEncodingLayer(nn.Module):
     # Forward pass
     # ------------------------------------------------------------------
 
+    def prepare_inputs(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Check that ``x`` has ``n_qubits`` finite features; the angles are used as given.
+
+        This is the classical step ``forward`` applies before the QNode.  Every
+        encoding layer has one, so tools which replay the circuit
+        (:mod:`hqnn_forge.kernels`) validate and transform inputs exactly as
+        ``forward`` does.
+        """
+        check_inputs(
+            x,
+            self.n_qubits,
+            hint=f"  Apply PCA to reduce to {self.n_qubits} features before passing "
+            f"to QuantumEncodingLayer.",
+        )
+        return x
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Embed a batch of feature vectors into Pauli-Z expectation values.
@@ -441,20 +684,15 @@ class QuantumEncodingLayer(nn.Module):
         Returns
         -------
         torch.Tensor
-            Quantum expectation values of shape ``(batch_size, n_qubits)``,
-            with each element ∈ [-1, 1].
+            Quantum expectation values of shape ``(batch_size, n_outputs)``
+            (``n_qubits``, or 1 with ``readout="first"``), each ∈ [-1, 1].
 
         Raises
         ------
         ValueError
             If the last dimension of ``x`` does not equal ``self.n_qubits``.
         """
-        if x.shape[-1] != self.n_qubits:
-            raise ValueError(
-                f"Input feature dimension {x.shape[-1]} does not match "
-                f"n_qubits={self.n_qubits}.  Apply PCA to reduce to {self.n_qubits} "
-                f"features before passing to QuantumEncodingLayer."
-            )
+        x = self.prepare_inputs(x)
 
         # TorchLayer hands the whole batch to the QNode in one call and reshapes
         # the result to (batch, n_qubits).  Whether the batch is executed as one
@@ -470,11 +708,17 @@ class QuantumEncodingLayer(nn.Module):
     # ------------------------------------------------------------------
 
     def extra_repr(self) -> str:
-        noise = f", noise_level={self.noise_level}" if self.noise_level else ""
+        options = ""
+        if self.entangler != "ring":
+            options += f", entangler={self.entangler!r}"
+        if self.readout != "all":
+            options += f", readout={self.readout!r}"
+        if self.noise_level:
+            options += f", noise_level={self.noise_level}"
         return (
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "
-            f"n_params={self.n_layers * self.n_qubits * 3}{noise}"
+            f"n_params={self.n_layers * self.n_qubits * 3}{options}"
         )
 
 

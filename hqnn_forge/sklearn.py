@@ -166,7 +166,9 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         if self.model == "serial":
             return HybridBinaryClassifier(**common)
         if self.model == "parallel":
-            return ParallelHybridClassifier(classical_hidden_dim=self.classical_hidden_dim, **common)
+            return ParallelHybridClassifier(
+                classical_hidden_dim=self.classical_hidden_dim, **common
+            )
         raise ValueError(f"model must be 'serial' or 'parallel'; got {self.model!r}.")
 
     def _loss(self) -> torch.nn.Module:
@@ -199,7 +201,10 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
             return
         # bool is a subclass of int, and threshold=True would silently mean 1.0.
         if isinstance(threshold, bool) or not isinstance(threshold, numbers.Real):
-            raise ValueError(f"threshold must be 'optimal' or a real number; got {threshold!r}.")
+            # ValueError, as for any other threshold outside 'optimal' or [0, 1]
+            raise ValueError(  # noqa: TRY004
+                f"threshold must be 'optimal' or a real number; got {threshold!r}."
+            )
         if not 0.0 <= float(threshold) <= 1.0:
             raise ValueError(
                 f"threshold must lie in [0, 1], the range of a probability; got {threshold!r}."
@@ -216,7 +221,9 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
                 f"classes: {classes.tolist()}."
             )
         if not 0.0 <= self.validation_fraction < 1.0:
-            raise ValueError(f"validation_fraction must lie in [0, 1); got {self.validation_fraction}.")
+            raise ValueError(
+                f"validation_fraction must lie in [0, 1); got {self.validation_fraction}."
+            )
         self._check_threshold(self.threshold)
         y01 = (y_arr == classes[1]).astype(np.int64)
 
@@ -231,7 +238,8 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         if self.validation_fraction > 0:
             tr, va = self._stratified_holdout(y01, self.validation_fraction, rng)
             val: tuple[torch.Tensor, torch.Tensor] | tuple[None, None] = (
-                X_t[va], torch.from_numpy(y01[va]).float()
+                X_t[va],
+                torch.from_numpy(y01[va]).float(),
             )
         else:
             tr = np.arange(y01.size)

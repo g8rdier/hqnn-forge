@@ -22,6 +22,12 @@ A ``torch.save`` file containing a plain dict::
         "state_dict": {...},
     }
 
+``format_version`` describes that layout only, not the constructors: a config
+that predates an argument the constructors have since gained is filled from
+``_LEGACY_DEFAULTS`` -- the behaviour from before that argument existed -- and
+loads with a ``RuntimeWarning`` naming what was filled.  A config missing
+anything else is still refused.
+
 Only primitives and tensors are stored, so the file loads with
 ``torch.load(weights_only=True)``: loading a checkpoint never executes code
 from it, and only classes in ``hqnn_forge.models`` can be rebuilt.
@@ -31,6 +37,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import warnings
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -41,6 +48,11 @@ if TYPE_CHECKING:
     # Type-only: importing this at runtime would be circular, since
     # hqnn_forge.models imports hqnn_forge.utils.
     from hqnn_forge.models.base import BinaryClassifierBase
+    from hqnn_forge.models.multiclass_hybrid_classifier import MulticlassHybridClassifier
+
+    #: Every class the registry can hold: each records its constructor
+    #: arguments and exposes them through ``get_config()``.
+    Classifier = BinaryClassifierBase | MulticlassHybridClassifier
 
 #: Bumped whenever the dict layout above changes incompatibly.
 FORMAT_VERSION: int = 1
@@ -53,6 +65,24 @@ FORMAT_VERSION: int = 1
 #: ``allow_architecture_override=True``.
 WEIGHT_SAFE_ARGS: frozenset[str] = frozenset({"device_name", "diff_method", "dropout_p"})
 
+#: Constructor arguments the classifiers have gained since checkpoints were
+#: first written, mapped to the behaviour that predates each one.  A config
+#: missing one of these is a checkpoint older than the argument, and
+#: ``load_checkpoint`` fills it from here -- with a warning, never silently.
+#: The values are written out rather than read from the signature on purpose:
+#: they must stay the *old* behaviour even if the constructor default changes,
+#: and every addition to this table is then a deliberate line in a diff.  A
+#: config missing anything else is a broken checkpoint and still raises.
+_LEGACY_DEFAULTS: dict[str, Any] = {
+    "embedding_rotation": "X",  # added with the published-SHNN options; before
+    "entangler": "ring",  # them the circuit was RX + CNOT ring + Rot,
+    "readout": "all",  # read out on every qubit, with a tanh encoder
+    "encoder_activation": "tanh",
+    "init_std": 0.1,  # inert unless init_strategy="normal"
+    "noise_level": 0.0,  # training-time depolarizing noise: none
+    "noise_position": "all",
+}
+
 #: Set by ``load_checkpoint`` on a model it rebuilt under a forced
 #: architecture override, and refused by ``save_checkpoint``.  Without it, one
 #: forced load followed by a save yields a checkpoint that needs no override to
@@ -62,15 +92,17 @@ _FORCED_OVERRIDES_ATTR = "_forced_overrides"
 PathLike = str | os.PathLike[str]
 
 
-def _registry() -> dict[str, type[BinaryClassifierBase]]:
+def _registry() -> dict[str, type[Classifier]]:
     # Imported lazily: hqnn_forge.models imports hqnn_forge.utils, so a
     # module-level import here would be circular.
     from hqnn_forge import models
 
-    return {name: getattr(models, name) for name in models.__all__ if name != "BinaryClassifierBase"}
+    return {
+        name: getattr(models, name) for name in models.__all__ if name != "BinaryClassifierBase"
+    }
 
 
-def save_checkpoint(model: BinaryClassifierBase, path: PathLike) -> None:
+def save_checkpoint(model: Classifier, path: PathLike) -> None:
     """
     Write ``model``'s class, constructor arguments and weights to ``path``.
 
@@ -125,7 +157,7 @@ def load_checkpoint(
     allow_version_mismatch: bool = False,
     allow_architecture_override: bool = False,
     **overrides: Any,
-) -> BinaryClassifierBase:
+) -> Classifier:
     """
     Rebuild a classifier saved with :func:`save_checkpoint`.
 
@@ -163,7 +195,7 @@ def load_checkpoint(
 
     Returns
     -------
-    BinaryClassifierBase
+    BinaryClassifierBase or MulticlassHybridClassifier
         The rebuilt model with the saved weights, in eval mode.
 
     Raises
@@ -172,8 +204,17 @@ def load_checkpoint(
         If the file is not a checkpoint or is incomplete, on an unknown format
         version, a library version mismatch (unless allowed), an unknown class,
         an override outside :data:`WEIGHT_SAFE_ARGS` without
-        ``allow_architecture_override``, or a config with missing or unexpected
-        constructor fields.
+        ``allow_architecture_override``, or a config with unexpected fields or
+        with missing ones outside :data:`_LEGACY_DEFAULTS`.
+
+    Warns
+    -----
+    RuntimeWarning
+        If the stored config is missing constructor arguments added after it
+        was written.  They are filled from :data:`_LEGACY_DEFAULTS`, the
+        behaviour from before each argument existed, and named in the warning,
+        so a checkpoint from before an option was introduced still rebuilds the
+        model it holds.
     RuntimeError
         If the stored weights do not fit the rebuilt architecture.
     """
@@ -202,9 +243,7 @@ def load_checkpoint(
         )
 
     if "state_dict" not in payload:
-        raise ValueError(
-            f"{os.fspath(path)!r} has no 'state_dict'; the checkpoint is incomplete."
-        )
+        raise ValueError(f"{os.fspath(path)!r} has no 'state_dict'; the checkpoint is incomplete.")
 
     saved_version = payload.get("hqnn_forge_version")
     if saved_version != hqnn_forge.__version__ and not allow_version_mismatch:
@@ -224,9 +263,7 @@ def load_checkpoint(
     expected = _init_parameter_names(cls)
     unknown_overrides = sorted(set(overrides) - expected)
     if unknown_overrides:
-        raise ValueError(
-            f"unknown constructor arguments for {class_name}: {unknown_overrides}."
-        )
+        raise ValueError(f"unknown constructor arguments for {class_name}: {unknown_overrides}.")
 
     architecture_overrides = sorted(set(overrides) - WEIGHT_SAFE_ARGS)
     if architecture_overrides and not allow_architecture_override:
@@ -244,6 +281,26 @@ def load_checkpoint(
 
     missing = sorted(expected - set(config))
     unexpected = sorted(set(config) - expected)
+
+    # A checkpoint written before the constructor gained an argument does not
+    # carry it.  Filling it from _LEGACY_DEFAULTS rebuilds the model that was
+    # saved, since those values are what the circuit did before the argument
+    # existed -- but loudly, so a reload of an old checkpoint is never a silent
+    # change of architecture.  Anything missing that is not in the table is a
+    # broken config and still raises below.
+    back_filled = {name: _LEGACY_DEFAULTS[name] for name in missing if name in _LEGACY_DEFAULTS}
+    if back_filled:
+        config.update(back_filled)
+        missing = [name for name in missing if name not in back_filled]
+        warnings.warn(
+            f"checkpoint predates {sorted(back_filled)} on {class_name}; "
+            f"rebuilding it with {back_filled}, the behaviour from before those "
+            f"arguments existed, so it is the model that was saved.  Re-save it "
+            f"to pin them in the config.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
     if missing or unexpected:
         details = []
         if missing:
@@ -275,9 +332,12 @@ def _init_parameter_names(cls: type) -> set[str]:
     """
     Keyword names of ``cls.__init__``.
 
-    A checkpoint must carry every one of them, not only those without a
-    default: get_config records them all, and a default that changed between
-    versions would otherwise silently change the rebuilt model.
+    A checkpoint is expected to carry every one of them, not only those
+    without a default: get_config records them all, and a default that changed
+    between versions would otherwise silently change the rebuilt model.  A
+    checkpoint older than an argument is the one exception, and
+    :func:`load_checkpoint` fills those from :data:`_LEGACY_DEFAULTS` with a
+    warning rather than in silence.
     """
     return {
         name

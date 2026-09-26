@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <rect width="1280" height="640" fill="#0B1120"/>
+  <!-- Source for social-preview.png (1280x640, GitHub social preview size).
+       The wordmark uses the Noto Sans font; re-render with
+       rsvg-convert -w 1280 -h 640 social-preview.svg -o social-preview.png -->
+
+  <!-- Mark: an h/q monogram whose shared bowl is a Bloch sphere.
+       h = stem + shoulder + left side of the bowl; q = bowl + descender.
+       The shoulder meets the bowl tangentially at 120° (upper left). -->
+  <g transform="translate(-30,0)" fill="none" stroke="#38BDF8" stroke-linecap="round" stroke-linejoin="round">
+    <!-- h stem -->
+    <line x1="240" y1="170" x2="240" y2="400" stroke-width="22"/>
+    <!-- h shoulder -->
+    <path d="M240 322 C 240 276, 300 272, 340 250.7" stroke-width="22"/>
+    <!-- bowl = Bloch sphere -->
+    <circle cx="380" cy="320" r="80" stroke-width="22"/>
+    <!-- q descender -->
+    <line x1="460" y1="320" x2="460" y2="480" stroke-width="22"/>
+    <!-- equator: back half dotted, front half solid -->
+    <path d="M310 320 A70 20 0 0 1 450 320" stroke-opacity="0.4" stroke-width="4" stroke-dasharray="1 9"/>
+    <path d="M310 320 A70 20 0 0 0 450 320" stroke-opacity="0.8" stroke-width="4"/>
+    <!-- state vector -->
+    <line x1="380" y1="320" x2="424" y2="276" stroke="#F8FAFC" stroke-width="7"/>
+    <circle cx="380" cy="320" r="7" fill="#F8FAFC" stroke="none"/>
+    <circle cx="426" cy="274" r="12" fill="#F59E0B" stroke="none"/>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="501" y="356" font-family="Noto Sans" font-weight="600" font-size="110" letter-spacing="-2" fill="#F8FAFC">hqnn-forge</text>
+</svg>

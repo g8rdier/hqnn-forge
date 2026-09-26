@@ -1,4 +1,4 @@
-# hqnn-forge
+<h1><img src="assets/social-preview.png" alt="hqnn-forge" width="640"></h1>
 
 [![Tests](https://github.com/g8rdier/hqnn-forge/actions/workflows/tests.yml/badge.svg)](https://github.com/g8rdier/hqnn-forge/actions/workflows/tests.yml)
 [![License](https://img.shields.io/github/license/g8rdier/hqnn-forge)](LICENSE)
@@ -18,7 +18,7 @@
 | **Custom angle encoding** | 8-qubit angle-embedding feature map with strongly-entangled VQC ansatz |
 | **Imbalance-robust losses** | Focal Loss & inverse-frequency weighted BCE |
 | **Pure-NumPy pre-processing** | PCA + standardisation without scikit-learn runtime dependency |
-| **Two hybrid topologies** | Serial `HybridBinaryClassifier` and parallel `ParallelHybridClassifier` (classical MLP branch ‖ quantum branch), with angle or IQP encoding |
+| **Three hybrid topologies** | Serial `HybridBinaryClassifier`, parallel `ParallelHybridClassifier` (classical MLP branch ‖ quantum branch) and multiclass `MulticlassHybridClassifier` (softmax or one-vs-rest heads on a shared quantum layer), with angle or IQP encoding |
 
 ---
 
@@ -35,6 +35,23 @@ installs. To add it to an existing install:
 pip install -e ".[lightning]"
 ```
 
+### Device backends
+
+Every encoding layer and classifier takes a `device_name`. If the requested backend is not
+installed or finds no usable hardware, the library falls back one step at a time, with a
+`RuntimeWarning` at each step, along `requested → lightning.qubit → default.qubit`.
+
+| `device_name` | What it is | Prerequisites |
+|---|---|---|
+| `default.qubit` | PennyLane's reference state-vector simulator (Python/NumPy) | None; always available |
+| `lightning.qubit` | C++ state-vector simulator, CPU; adjoint differentiation | `pip install -e ".[lightning]"` (`pennylane-lightning`) |
+| `lightning.gpu` | State-vector simulator on NVIDIA GPUs via cuQuantum (cuStateVec) | `pip install pennylane-lightning-gpu`; Linux, an NVIDIA GPU with compute capability ≥ 7.0, a CUDA 12 driver. The wheel pulls in `custatevec-cu12` |
+| `lightning.kokkos` | State-vector simulator on Kokkos; OpenMP-parallel CPU on the PyPI wheel, CUDA or HIP GPUs when built from source | `pip install pennylane-lightning-kokkos` for the CPU build; see the [PennyLane-Lightning docs](https://docs.pennylane.ai/projects/lightning/) for a GPU build |
+
+The GPU backends pay off at larger qubit counts or batch sizes; at the 8 qubits the library
+targets, `lightning.qubit` is usually the fastest option. Both accelerated devices support the
+same `diff_method="adjoint"` as `lightning.qubit`.
+
 ---
 
 ## Quick Start
@@ -42,16 +59,16 @@ pip install -e ".[lightning]"
 ```python
 import torch
 from hqnn_forge.models import HybridBinaryClassifier
-from hqnn_forge.utils  import FocalLoss
+from hqnn_forge.utils import FocalLoss
 
 model = HybridBinaryClassifier(n_input_features=8, n_qubits=8, n_layers=2)
 loss_fn = FocalLoss(alpha=0.25, gamma=2.0)
 
-x = torch.randn(16, 8)          # batch of 16 samples, 8 PCA features
+x = torch.randn(16, 8)  # batch of 16 samples, 8 PCA features
 y = torch.randint(0, 2, (16,)).float()
 
 logits = model(x)
-loss   = loss_fn(logits.squeeze(), y)
+loss = loss_fn(logits.squeeze(), y)
 loss.backward()
 ```
 
@@ -61,8 +78,9 @@ See `examples/quick_start.py` for a full training loop on a synthetic imbalanced
 
 ## Architecture
 
-Two hybrid topologies share the same building blocks. Both return a raw logit of shape
-`(batch, 1)`: apply `torch.sigmoid` for a probability, or pass it straight to `FocalLoss`.
+Three hybrid topologies share the same building blocks. The two binary ones return a raw
+logit of shape `(batch, 1)`: apply `torch.sigmoid` for a probability, or pass it straight to
+`FocalLoss`. The multiclass one returns `(batch, n_classes)` logits.
 
 ### `HybridBinaryClassifier` (serial)
 
@@ -76,6 +94,8 @@ Classical encoder   Linear(n_input_features → n_qubits) + Tanh, scaled by π i
 Quantum layer       AngleEmbedding RX(x_i) on qubit i   (or IQP embedding)
      │              n_layers × [ CNOT ring → per-qubit Rot(φ, θ, ω) ]
      │              → ⟨Z_i⟩ for every qubit, shape (batch, n_qubits)
+     │              (the defaults; see the options below for the axis,
+     │               the entangler and the ⟨Z_0⟩-only readout)
      ▼
 Classical head      Linear(n_qubits → 1)
      │
@@ -109,12 +129,42 @@ The parallel model asks whether added classical capacity can substitute for, or 
 the quantum layer contributes: compare `count_parameters()` across the two at equal `n_qubits`
 and `n_layers`.
 
+### `MulticlassHybridClassifier` (multiclass)
+
+The serial trunk with `n_classes` heads, `Linear(n_qubits → n_classes)`, all reading the same
+quantum layer, so the quantum parameter count does not depend on `n_classes`. Its forward pass
+returns raw logits `(batch, n_classes)`.
+
+- `strategy="softmax"` (default): `predict_proba` is the softmax over classes; train with
+  `nn.CrossEntropyLoss`.
+- `strategy="one_vs_rest"`: each head is one class against the rest, and `predict_proba` is the
+  per-class sigmoid normalised to sum to one; train with `nn.BCEWithLogitsLoss` on
+  `model.one_hot(y)`.
+
+`predict` returns the argmax of the logits as `torch.long` labels. It does not follow the
+binary `predict(x, threshold)` contract of `BinaryClassifierBase`, and it does not yet support
+`embedding_rotation`, `entangler`, `readout` or `encoder_activation` (#226).
+
 Options shared by both models:
 
 - `encoding_type="angle"` (default) or `"iqp"` (Havlíček-style feature map with pairwise
   `x_i x_j` phases).
-- `init_strategy="restricted"` (one σ for the whole circuit) or `"block_local"` (σ narrowing
-  with layer depth); see `hqnn_forge.initializers`.
+- `init_strategy="restricted"` (one σ for the whole circuit), `"block_local"` (σ narrowing
+  with layer depth) or `"normal"` (plain `N(0, init_std²)`, `init_std=0.1` by default); see
+  `hqnn_forge.initializers`.
+- `embedding_rotation="X"` (default), `"Y"` or `"Z"`: the Pauli axis of the angle embedding
+  (angle encoding only).
+- `entangler="ring"` (default: CNOT ring then per-qubit `Rot`) or `"strongly_entangling"`
+  (`qml.StronglyEntanglingLayers`: `Rot` first, then a CNOT ring whose range grows with the
+  layer index).
+- `readout="all"` (default: ⟨Z_i⟩ on every qubit) or `"first"` (⟨Z_0⟩ only, so the head reads
+  a single number).
+- `encoder_activation="tanh"` (default: `tanh(·)·π`, in (-π, π)) or `"sigmoid"`
+  (`π·sigmoid(·)`, in (0, π)).
+- `published_shnn()` on either class builds the configuration published in the thesis and in
+  `hqnn-fraud-detection-benchmark`: 8 qubits, 2 layers, RY embedding, strongly-entangling
+  ansatz, ⟨Z_0⟩ readout, sigmoid encoder, `N(0, 0.1²)` init — 122 trainable parameters for the
+  serial model. Keyword arguments override it.
 - `use_classical_encoder=False` to feed features already scaled into (-π, π), for example from
   `PCANormalizer(scale_to_pi=True)`, straight into the circuit. `n_input_features` must then
   equal `n_qubits`.
@@ -133,7 +183,35 @@ hqnn_forge/
 ├── preprocessing/   Classical PCA + normalisation (no sklearn runtime dep)
 ├── models/          Full hybrid architectures
 ├── diagnostics/     Circuit depth, gate and parameter counts
-└── utils/           Imbalance-robust losses and helpers
+├── utils/           Imbalance-robust losses and helpers
+└── kernels.py       Quantum kernel matrices from the encoding layers (QSVM)
+```
+
+---
+
+## Development Setup
+
+```bash
+pip install -e ".[lightning,dev]"
+uvx pre-commit install
+```
+
+The `dev` extra brings `ruff`, `mypy` and `pytest`. `uvx pre-commit install` registers the hooks
+in `.pre-commit-config.yaml`, which run `ruff check --fix` and `ruff format` on every commit with
+the settings from `pyproject.toml`. The hooks call ruff through `uv run`, so they need
+[uv](https://docs.astral.sh/uv/getting-started/installation/) on the `PATH` and use the ruff
+version pinned in `uv.lock`, the same one CI uses. To run them over the whole tree at any time:
+
+```bash
+uvx pre-commit run --all-files
+```
+
+The hooks cover the two ruff steps of the CI lint job, including the Python code blocks in
+Markdown files. The lint job also type-checks the package, which the hooks do not; run it
+before pushing changes to `hqnn_forge/`:
+
+```bash
+uv run --frozen --extra dev mypy hqnn_forge
 ```
 
 ---
@@ -156,6 +234,10 @@ and versioning policy this project follows.
 - Jones & Gacon (2020) — *Efficient calculation of gradients in classical simulations of variational quantum algorithms*
 - Kandala et al. (2017) — *Hardware-efficient variational quantum eigensolver for small molecules and quantum magnets*
 - Havlíček et al. (2019) — *Supervised learning with quantum-enhanced feature spaces*
+- Pérez-Salinas et al. (2020) — *Data re-uploading for a universal quantum classifier*
+- Schuld, Sweke & Meyer (2021) — *Effect of data encoding on the expressive power of variational quantum-machine-learning models*
+- Möttönen et al. (2005) — *Transformation of quantum states using uniformly controlled rotations*
+- Schuld & Petruccione (2018) — *Supervised Learning with Quantum Computers*
 - Lin et al. (2017) — *Focal Loss for Dense Object Detection*
 - King & Zeng (2001) — *Logistic Regression in Rare Events Data*
 - Bergholm et al. (2022) — *PennyLane: Automatic differentiation of hybrid quantum-classical computations*

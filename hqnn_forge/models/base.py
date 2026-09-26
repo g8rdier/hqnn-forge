@@ -106,7 +106,8 @@ class BinaryClassifierBase(nn.Module):
     def count_parameters(self, trainable_only: bool = True) -> int:
         """Return total parameter count (quantum + classical)."""
         params = (
-            self.parameters() if not trainable_only
+            self.parameters()
+            if not trainable_only
             else (p for p in self.parameters() if p.requires_grad)
         )
         return sum(p.numel() for p in params)

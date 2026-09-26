@@ -70,9 +70,10 @@ use_classical_encoder:
     lie in (-π, π) (e.g. ``PCANormalizer(scale_to_pi=True)``); the quantum
     branch then passes it to the circuit unscaled.
 device_name:
-    PennyLane device string, type-checked as ``"lightning.qubit"`` or ``"default.qubit"``.
-    Any other device name still runs — it is handed to ``qml.device``, which falls back
-    to ``"default.qubit"`` with a warning if the device cannot be initialised.
+    PennyLane device string, one of ``"lightning.gpu"``, ``"lightning.kokkos"``,
+    ``"lightning.qubit"`` or ``"default.qubit"``; any other name raises ``ValueError``.
+    A backend that cannot be initialised falls back along
+    ``lightning.qubit → default.qubit`` with a warning.
 diff_method:
     Gradient computation method: ``"adjoint"``, ``"parameter-shift"``, ``"backprop"``
     or ``"finite-diff"``.
@@ -88,13 +89,25 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from hqnn_forge.encoding.angle_embedding import DeviceName, DiffMethod, QuantumEncodingLayer
+from hqnn_forge.encoding.angle_embedding import (
+    DeviceName,
+    DiffMethod,
+    Entangler,
+    QuantumEncodingLayer,
+    Readout,
+    RotationAxis,
+)
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.initializers.restricted_variance import (
-    restricted_normal_init_,
     block_local_init_,
+    restricted_normal_init_,
 )
 from hqnn_forge.models.base import BinaryClassifierBase
+from hqnn_forge.models.hybrid_classifier import (
+    _DEFAULT_ENCODER_ACTIVATION,
+    _DEFAULT_INIT_STD,
+    _PUBLISHED_SHNN,
+)
 
 
 class ParallelHybridClassifier(BinaryClassifierBase):
@@ -123,17 +136,41 @@ class ParallelHybridClassifier(BinaryClassifierBase):
     dropout_p:
         Dropout probability applied to the fused branch outputs.  Default: 0.0.
     device_name:
-        PennyLane device string, type-checked as ``"lightning.qubit"`` or
-        ``"default.qubit"``.  Default: ``"lightning.qubit"``.  Any other device name
-        still runs — it is handed to ``qml.device``, which falls back to
-        ``"default.qubit"`` with a warning if the device cannot be initialised.
+        PennyLane device string, one of ``"lightning.gpu"``, ``"lightning.kokkos"``,
+        ``"lightning.qubit"`` or ``"default.qubit"``; any other name raises
+        ``ValueError``.  Default: ``"lightning.qubit"``.  A backend that cannot be
+        initialised falls back along ``lightning.qubit → default.qubit`` with a warning.
     diff_method:
         Gradient method: ``"adjoint"``, ``"parameter-shift"``, ``"backprop"`` or
         ``"finite-diff"``.  Default: ``"adjoint"``.
     init_strategy:
-        ``"restricted"`` or ``"block_local"``.  Default: ``"restricted"``.
+        ``"restricted"`` (default), ``"block_local"``, or ``"normal"``
+        (``N(0, init_std²)``, the published SHNN's init).
     encoding_type:
         Type of quantum embedding to use: ``"angle"`` or ``"iqp"``. Default: ``"angle"``.
+    embedding_rotation:
+        Pauli axis of the angle embedding, ``"X"`` (default), ``"Y"`` or ``"Z"``.
+        Angle encoding only.
+    entangler:
+        ``"ring"`` (default: CNOT ring then ``Rot``) or ``"strongly_entangling"``
+        (``qml.StronglyEntanglingLayers``: ``Rot`` then a CNOT ring of growing
+        range).  See :func:`hqnn_forge.encoding.angle_embedding.apply_variational_layers`.
+    readout:
+        ``"all"`` (default): the head reads every ⟨Z_i⟩.  ``"first"``: ⟨Z_0⟩
+        only, so the head is ``Linear(1 → 1)``.
+    encoder_activation:
+        ``"tanh"`` (default): encoder output ``tanh(·)·π`` in (-π, π).
+        ``"sigmoid"``: ``π·sigmoid(·)`` in (0, π).  Requires
+        ``use_classical_encoder=True``; there is no activation without an
+        encoder, so a non-default value raises rather than being ignored.
+    init_std:
+        Standard deviation for ``init_strategy="normal"``.  Default: 0.1.
+        Raises under the other strategies, which derive their own sigma.
+
+    The published SHNN (thesis / ``hqnn-fraud-detection-benchmark``) is
+    ``embedding_rotation="Y"``, ``entangler="strongly_entangling"``,
+    ``readout="first"``, ``encoder_activation="sigmoid"``,
+    ``init_strategy="normal"``; see :meth:`published_shnn`.
     noise_level:
         Training-time depolarizing probability for the quantum layer, in
         ``[0, 0.75]``.  Default: ``0.0`` (noiseless).  Applied in train mode
@@ -172,6 +209,11 @@ class ParallelHybridClassifier(BinaryClassifierBase):
         diff_method: DiffMethod = "adjoint",
         init_strategy: str = "restricted",
         encoding_type: str = "angle",
+        embedding_rotation: RotationAxis = "X",
+        entangler: Entangler = "ring",
+        readout: Readout = "all",
+        encoder_activation: str = "tanh",
+        init_std: float = 0.1,
         noise_level: float = 0.0,
         noise_position: str = "all",
     ) -> None:
@@ -187,16 +229,41 @@ class ParallelHybridClassifier(BinaryClassifierBase):
             diff_method=diff_method,
             init_strategy=init_strategy,
             encoding_type=encoding_type,
+            embedding_rotation=embedding_rotation,
+            entangler=entangler,
+            readout=readout,
+            encoder_activation=encoder_activation,
+            init_std=init_std,
             noise_level=noise_level,
             noise_position=noise_position,
         )
 
-        self.n_input_features     = n_input_features
-        self.n_qubits             = n_qubits
-        self.n_layers             = n_layers
+        if encoder_activation not in ("tanh", "sigmoid"):
+            raise ValueError(
+                f"encoder_activation must be 'tanh' or 'sigmoid'; got {encoder_activation!r}."
+            )
+        if init_strategy not in ("restricted", "block_local", "normal"):
+            raise ValueError(
+                f"init_strategy must be 'restricted', 'block_local' or 'normal'; "
+                f"got {init_strategy!r}."
+            )
+        if init_std <= 0.0:
+            raise ValueError(f"init_std must be > 0; got {init_std}.")
+        if init_strategy != "normal" and init_std != _DEFAULT_INIT_STD:
+            raise ValueError(
+                f"init_std applies to init_strategy='normal' only; "
+                f"'{init_strategy}' derives its own sigma from the circuit size, so "
+                f"init_std={init_std} would be recorded in the config and ignored."
+            )
+
+        self.n_input_features = n_input_features
+        self.n_qubits = n_qubits
+        self.n_layers = n_layers
         self.classical_hidden_dim = classical_hidden_dim
-        self.init_strategy        = init_strategy
+        self.init_strategy = init_strategy
         self.use_classical_encoder = use_classical_encoder
+        self.encoder_activation = encoder_activation
+        self.init_std = init_std
 
         # ── Classical branch (MLP) ────────────────────────────────────────
         self.classical_branch = nn.Sequential(
@@ -210,13 +277,19 @@ class ParallelHybridClassifier(BinaryClassifierBase):
         if use_classical_encoder:
             self.classical_encoder: nn.Module = nn.Sequential(
                 nn.Linear(n_input_features, n_qubits),
-                nn.Tanh(),
+                nn.Tanh() if encoder_activation == "tanh" else nn.Sigmoid(),
             )
         else:
             if n_input_features != n_qubits:
                 raise ValueError(
                     f"When use_classical_encoder=False, n_input_features "
                     f"({n_input_features}) must equal n_qubits ({n_qubits})."
+                )
+            if encoder_activation != _DEFAULT_ENCODER_ACTIVATION:
+                raise ValueError(
+                    f"encoder_activation applies with use_classical_encoder=True only; "
+                    f"without the encoder the features enter the circuit as given, so "
+                    f"{encoder_activation!r} would be recorded in the config and ignored."
                 )
             self.classical_encoder = nn.Identity()
 
@@ -225,32 +298,54 @@ class ParallelHybridClassifier(BinaryClassifierBase):
             self.quantum_layer: QuantumEncodingLayer | IQPEncodingLayer = QuantumEncodingLayer(
                 n_qubits=n_qubits,
                 n_layers=n_layers,
+                rotation=embedding_rotation,
                 device_name=device_name,
                 diff_method=diff_method,
+                entangler=entangler,
+                readout=readout,
                 noise_level=noise_level,
                 noise_position=noise_position,
             )
         elif encoding_type == "iqp":
+            if embedding_rotation != "X":
+                raise ValueError(
+                    "embedding_rotation applies to encoding_type='angle' only; IQP embedding "
+                    "has no rotation axis."
+                )
             self.quantum_layer = IQPEncodingLayer(
                 n_qubits=n_qubits,
                 n_layers=n_layers,
                 n_repeats=1,
                 device_name=device_name,
                 diff_method=diff_method,
+                entangler=entangler,
+                readout=readout,
                 noise_level=noise_level,
                 noise_position=noise_position,
             )
         else:
             raise ValueError(f"Unsupported encoding_type: {encoding_type}")
+        n_readouts = self.quantum_layer.n_outputs
 
         # ── Fusion + regularisation ────────────────────────────────────────
         self.dropout = nn.Dropout(p=dropout_p) if dropout_p > 0.0 else nn.Identity()
 
         # ── Classical head ────────────────────────────────────────────────
-        self.head = nn.Linear(classical_hidden_dim + n_qubits, 1)
+        self.head = nn.Linear(classical_hidden_dim + n_readouts, 1)
 
         # ── Small-angle restricted-variance initialisation ─────────────────
         self._initialise_weights()
+
+    # ------------------------------------------------------------------
+    @classmethod
+    def published_shnn(cls, **overrides: object) -> ParallelHybridClassifier:
+        """
+        The published SHNN's quantum branch and encoder (see
+        :meth:`HybridBinaryClassifier.published_shnn`) alongside the classical
+        MLP branch.  ``overrides`` are passed to the constructor.
+        """
+        options: dict[str, object] = {**_PUBLISHED_SHNN, **overrides}
+        return cls(**options)  # type: ignore[arg-type]
 
     # ------------------------------------------------------------------
     def _initialise_weights(self) -> None:
@@ -278,10 +373,12 @@ class ParallelHybridClassifier(BinaryClassifierBase):
         weights = self.quantum_layer.qlayer.weights  # shape (n_layers, n_qubits, 3)
         if self.init_strategy == "block_local":
             block_local_init_(weights.data, n_qubits=self.n_qubits)
+        elif self.init_strategy == "normal":
+            # The published SHNN's init: N(0, init_std²), independent of size.
+            with torch.no_grad():
+                weights.normal_(mean=0.0, std=self.init_std)
         else:
-            restricted_normal_init_(
-                weights.data, n_qubits=self.n_qubits, n_layers=self.n_layers
-            )
+            restricted_normal_init_(weights.data, n_qubits=self.n_qubits, n_layers=self.n_layers)
 
     # ------------------------------------------------------------------
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -302,22 +399,23 @@ class ParallelHybridClassifier(BinaryClassifierBase):
             for probabilities, or pass directly to ``FocalLoss``.
         """
         # Classical branch
-        classical_out = self.classical_branch(x)   # (B, classical_hidden_dim)
+        classical_out = self.classical_branch(x)  # (B, classical_hidden_dim)
 
         # Quantum branch: classical projection + activation
-        q = self.classical_encoder(x)               # (B, n_qubits)
-        # Tanh output (-1, 1) → (-π, π).  Bypassed input is already in (-π, π);
-        # scaling it again would alias angles mod 2π.
+        q = self.classical_encoder(x)  # (B, n_qubits)
+        # Tanh output (-1, 1) → (-π, π), or sigmoid output (0, 1) → (0, π).
+        # Bypassed input is already in (-π, π); scaling it again would alias
+        # angles mod 2π.
         if self.use_classical_encoder:
             q = q * torch.pi
-        quantum_out = self.quantum_layer(q)          # (B, n_qubits), values ∈ [-1, 1]
+        quantum_out = self.quantum_layer(q)  # (B, n_qubits), values ∈ [-1, 1]
 
         # Fuse branches
         fused = torch.cat([classical_out, quantum_out], dim=-1)
         fused = self.dropout(fused)
 
         # Classification head
-        return self.head(fused)                     # (B, 1)
+        return self.head(fused)  # (B, 1)
 
     # ------------------------------------------------------------------
     def extra_repr(self) -> str:

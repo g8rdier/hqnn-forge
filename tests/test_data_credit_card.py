@@ -24,7 +24,9 @@ from hqnn_forge.data import (
 from hqnn_forge.data import credit_card as cc
 
 
-def _write_csv(path: Path, rows: np.ndarray, header: list[str] | None = None, quote_class: bool = True) -> Path:
+def _write_csv(
+    path: Path, rows: np.ndarray, header: list[str] | None = None, quote_class: bool = True
+) -> Path:
     header = list(cc.COLUMNS) if header is None else header
     lines = [",".join(f'"{h}"' for h in header)]
     for row in rows:
@@ -38,7 +40,14 @@ def _write_csv(path: Path, rows: np.ndarray, header: list[str] | None = None, qu
 
 def _rows(n: int = 20, n_fraud: int = 3, seed: int = 0) -> np.ndarray:
     rng = np.random.default_rng(seed)
-    rows = np.column_stack([np.arange(n, dtype=float), rng.standard_normal((n, 28)), rng.uniform(0, 500, n), np.zeros(n)])
+    rows = np.column_stack(
+        [
+            np.arange(n, dtype=float),
+            rng.standard_normal((n, 28)),
+            rng.uniform(0, 500, n),
+            np.zeros(n),
+        ]
+    )
     rows[:n_fraud, -1] = 1.0
     return rows
 
@@ -75,7 +84,9 @@ class TestLoading:
         np.testing.assert_allclose(data.X, rows[:, 1:-1], rtol=0, atol=0)
         assert data.X.flags["C_CONTIGUOUS"]
 
-    def test_env_var_and_default_location(self, csv_file: tuple, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def test_env_var_and_default_location(
+        self, csv_file: tuple, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
         path, _ = csv_file
         monkeypatch.setenv(cc.DATA_DIR_ENV, str(path.parent))
         assert load_credit_card_fraud().X.shape == (20, 30)
@@ -144,7 +155,10 @@ class TestSchemaValidation:
 
 class TestMissingFile:
     def test_message_contains_the_kaggle_command(self, tmp_path: Path) -> None:
-        with pytest.raises(DatasetNotFoundError, match=r"kaggle datasets download -d mlg-ulb/creditcardfraud -p .* --unzip") as info:
+        with pytest.raises(
+            DatasetNotFoundError,
+            match=r"kaggle datasets download -d mlg-ulb/creditcardfraud -p .* --unzip",
+        ) as info:
             load_credit_card_fraud(tmp_path / "missing" / cc.FILE_NAME)
         assert isinstance(info.value, FileNotFoundError)
         assert not (tmp_path / "missing").exists()
@@ -157,7 +171,9 @@ class TestMissingFile:
         # download=True must not come back to this branch forever.
         assert not isinstance(info.value, FileNotFoundError)
 
-    def test_download_runs_the_cli_and_loads(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_download_runs_the_cli_and_loads(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         target = tmp_path / "dl" / cc.FILE_NAME
         calls: list[list[str]] = []
 
@@ -169,7 +185,18 @@ class TestMissingFile:
         monkeypatch.setattr(cc.shutil, "which", lambda _: "/usr/bin/kaggle")
         monkeypatch.setattr(cc.subprocess, "run", fake_run)
         data = load_credit_card_fraud(target, download=True)
-        assert calls == [["kaggle", "datasets", "download", "-d", "mlg-ulb/creditcardfraud", "-p", str(target.parent), "--unzip"]]
+        assert calls == [
+            [
+                "kaggle",
+                "datasets",
+                "download",
+                "-d",
+                "mlg-ulb/creditcardfraud",
+                "-p",
+                str(target.parent),
+                "--unzip",
+            ]
+        ]
         assert data.X.shape == (7, 30)
 
     def test_download_into_a_directory_that_does_not_exist_yet(
@@ -212,14 +239,19 @@ class TestMissingFile:
     def test_download_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(cc.shutil, "which", lambda _: "/usr/bin/kaggle")
         monkeypatch.setattr(
-            cc.subprocess, "run",
+            cc.subprocess,
+            "run",
             lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, "", "403 Forbidden"),
         )
         with pytest.raises(DatasetDownloadError, match=r"exit 1\):\n403 Forbidden"):
             load_credit_card_fraud(tmp_path / cc.FILE_NAME, download=True)
 
-    def test_download_that_creates_nothing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_download_that_creates_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr(cc.shutil, "which", lambda _: "/usr/bin/kaggle")
-        monkeypatch.setattr(cc.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "", ""))
+        monkeypatch.setattr(
+            cc.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "", "")
+        )
         with pytest.raises(DatasetDownloadError, match="was not created"):
             load_credit_card_fraud(tmp_path / cc.FILE_NAME, download=True)

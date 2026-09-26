@@ -31,12 +31,16 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Physics",
 ]
 
+# Every floor below is installed by the test-lowest CI job (--resolution
+# lowest-direct), so each one is the lowest version the suite actually passes on
 dependencies = [
-    "torch>=2.2",
-    # floor is the lowest CI-tested version; 0.38 breaks with autoray>=0.7
-    # (NumpyMimic removed) and PennyLane declares no upper bound of its own
+    # 2.2 wheels were compiled against NumPy 1.x and fail to initialise NumPy 2
+    "torch>=2.3",
+    # 0.38 breaks with autoray>=0.7 (NumpyMimic removed) and PennyLane declares
+    # no upper bound of its own
     "pennylane>=0.45",
-    "numpy>=1.26",
+    # pennylane>=0.45 already requires numpy>=2.0, so a lower floor is unreachable
+    "numpy>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -46,9 +50,9 @@ lightning = [
 dev = [
     "pytest>=8.0",
     "pytest-cov",
-    "black",
     "ruff",
     "mypy",
+    "vermin",
 ]
 sklearn = [
     # hqnn_forge.sklearn needs validate_data and __sklearn_tags__, both new in 1.6
@@ -66,9 +70,33 @@ include = ["hqnn_forge*"]
 [tool.setuptools.package-data]
 hqnn_forge = ["py.typed"]
 
+# ruff is the only formatter and linter; black is deliberately not declared,
+# so there is one line length (99) and one formatting style (see #133)
 [tool.ruff]
 line-length = 99
 target-version = "py311"
+
+[tool.ruff.lint]
+ignore = [
+    # `import torch.nn as nn` / `import torch.optim as optim` is the PyTorch
+    # idiom used throughout; `from torch import nn` reads as a different thing
+    "PLR0402",
+    # `dict(key=value)` for config dicts reads like the keyword arguments
+    # it records or forwards
+    "C408",
+    # int(round(x)) is kept on purpose: round() of a numpy scalar is not
+    # guaranteed to return a Python int
+    "RUF046",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    # class-level constants in tests are read-only fixtures, not shared state
+    "RUF012",
+    # nesting pytest.raises around a context manager shows which statement is
+    # expected to raise
+    "SIM117",
+]
 
 [tool.mypy]
 # 3.12, not the 3.11 floor: the numpy stubs use the PEP 695 `type` statement,

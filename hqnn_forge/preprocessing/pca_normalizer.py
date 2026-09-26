@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import operator
 import warnings
-from typing import Optional
 
 import numpy as np
 import numpy.typing as npt
@@ -126,17 +125,17 @@ class PCANormalizer:
         scale_to_pi: bool = True,
     ) -> None:
         self.n_components = n_components
-        self.scale_to_pi  = scale_to_pi
+        self.scale_to_pi = scale_to_pi
 
         # Populated by fit()
-        self.mean_: Optional[npt.NDArray[np.float64]] = None
-        self.components_: Optional[npt.NDArray[np.float64]] = None
-        self.explained_variance_: Optional[npt.NDArray[np.float64]] = None
-        self.std_: Optional[npt.NDArray[np.float64]] = None
+        self.mean_: npt.NDArray[np.float64] | None = None
+        self.components_: npt.NDArray[np.float64] | None = None
+        self.explained_variance_: npt.NDArray[np.float64] | None = None
+        self.std_: npt.NDArray[np.float64] | None = None
         self.is_fitted_: bool = False
 
     # ------------------------------------------------------------------
-    def fit(self, X: npt.ArrayLike) -> "PCANormalizer":
+    def fit(self, X: npt.ArrayLike) -> PCANormalizer:
         """
         Compute PCA basis and per-component statistics on training data.
 
@@ -176,7 +175,7 @@ class PCANormalizer:
         """
         return self._fit(X, stacklevel=3)
 
-    def _fit(self, X: npt.ArrayLike, stacklevel: int) -> "PCANormalizer":
+    def _fit(self, X: npt.ArrayLike, stacklevel: int) -> PCANormalizer:
         # Body of fit, shared with fit_transform so the degeneracy warning's
         # stacklevel points at the caller of either public method.
         # asarray, not array: float64 input is used as-is rather than copied, so
@@ -206,7 +205,8 @@ class PCANormalizer:
         # a fixed-width NumPy integer would wrap in the arithmetic of the error
         # messages (np.uint8(255) + 1 == 0)
         if isinstance(self.n_components, bool):
-            raise ValueError(
+            # a value check, not a type check: bool is an int subclass
+            raise ValueError(  # noqa: TRY004
                 f"n_components={self.n_components!r} is a bool, not an integer.  "
                 f"Provide the number of components to retain."
             )
@@ -255,7 +255,7 @@ class PCANormalizer:
 
         # 4. Sort by descending eigenvalue and keep top-k components
         sort_idx = np.argsort(eigenvalues)[::-1]
-        eigenvalues  = eigenvalues[sort_idx]
+        eigenvalues = eigenvalues[sort_idx]
         eigenvectors = eigenvectors[:, sort_idx]
 
         # 5. Reject data whose centred rank is below n_components.  The extra
@@ -315,8 +315,7 @@ class PCANormalizer:
             if degenerate.size:
                 first = int(degenerate[0])
                 where = (
-                    "at the n_components cutoff, so which component is retained "
-                    "is arbitrary"
+                    "at the n_components cutoff, so which component is retained is arbitrary"
                     if first == n_components - 1
                     else "among the retained components"
                 )
@@ -359,16 +358,16 @@ class PCANormalizer:
         # np.sign cannot return 0 here: the largest-magnitude entry of a
         # unit-norm vector is at least 1/sqrt(n_features).
         magnitudes = np.abs(components)
-        tied       = magnitudes >= magnitudes.max(axis=1, keepdims=True) * (1 - 1e-12)
-        leading    = tied.argmax(axis=1)
-        signs      = np.sign(components[np.arange(components.shape[0]), leading])
+        tied = magnitudes >= magnitudes.max(axis=1, keepdims=True) * (1 - 1e-12)
+        leading = tied.argmax(axis=1)
+        signs = np.sign(components[np.arange(components.shape[0]), leading])
         # Out-of-place: components is a non-contiguous view over the full
         # (n_features, n_features) eigenvector matrix, which this also drops
         self.components_ = components * signs[:, np.newaxis]
 
         # 7. Project training data → compute per-component std for standardisation
-        projections = X_centered @ self.components_.T          # (n_samples, n_components)
-        self.std_   = projections.std(axis=0, ddof=1) + 1e-8  # avoid div-by-zero
+        projections = X_centered @ self.components_.T  # (n_samples, n_components)
+        self.std_ = projections.std(axis=0, ddof=1) + 1e-8  # avoid div-by-zero
 
         self.is_fitted_ = True
         return self
@@ -420,9 +419,9 @@ class PCANormalizer:
 
         # Centre → project → standardise, using training statistics only (no
         # per-batch mean), so each row's encoding is independent of the batch
-        X_centered   = X_arr - self.mean_                            # type: ignore[operator]
-        projections  = X_centered @ self.components_.T               # type: ignore[union-attr]
-        standardised = projections / self.std_                       # type: ignore[operator]
+        X_centered = X_arr - self.mean_  # type: ignore[operator]
+        projections = X_centered @ self.components_.T  # type: ignore[union-attr]
+        standardised = projections / self.std_  # type: ignore[operator]
 
         if self.scale_to_pi:
             # Soft-clip to (-π, π) preserving relative magnitudes of outliers
@@ -464,9 +463,7 @@ class PCANormalizer:
     # ------------------------------------------------------------------
     def _check_is_fitted(self) -> None:
         if not self.is_fitted_:
-            raise RuntimeError(
-                "PCANormalizer is not fitted.  Call .fit(X_train) first."
-            )
+            raise RuntimeError("PCANormalizer is not fitted.  Call .fit(X_train) first.")
 
     # ------------------------------------------------------------------
     @staticmethod

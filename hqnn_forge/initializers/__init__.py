@@ -15,6 +15,6 @@ from hqnn_forge.initializers.restricted_variance import (
 )
 
 __all__: list[str] = [
-    "restricted_normal_init_",
     "block_local_init_",
+    "restricted_normal_init_",
 ]

@@ -107,15 +107,19 @@ class GradientVarianceResult:
         }
 
 
-def _resolve_weights(target: nn.Module) -> tuple[nn.Module, torch.Tensor, int, int]:
+def _resolve_weights(
+    target: nn.Module, caller: str = "gradient_variance"
+) -> tuple[nn.Module, torch.Tensor, int, int]:
     """
     Return ``(layer, weights, n_qubits, n_layers)`` for the layer inside *target*.
+    *caller* names the public function in the error messages.
 
     The trainable tensor is read off the TorchLayer's ``qnode_weights`` mapping
     rather than a fixed attribute name, the same way
     :func:`~hqnn_forge.diagnostics.circuit.circuit_summary` resolves a layer.
-    Every layer the library builds declares exactly one trainable argument; a
-    layer with several is rejected rather than silently measured in part,
+    A layer with several trainable arguments -- such as ``DataReuploadingLayer``
+    with ``trainable_input_scaling=True``, which adds ``input_scaling`` next
+    to ``weights`` -- is rejected rather than silently measured in part,
     because ``total_variance`` is documented as the variance of the whole
     gradient vector.
     """
@@ -128,35 +132,48 @@ def _resolve_weights(target: nn.Module) -> tuple[nn.Module, torch.Tensor, int, i
         or not isinstance(n_qubits, int)
     ):
         raise TypeError(
-            f"gradient_variance expects an encoding layer (QuantumEncodingLayer, "
+            f"{caller} expects an encoding layer (QuantumEncodingLayer, "
             f"IQPEncodingLayer) or a hybrid classifier with a quantum_layer attribute; "
             f"got {type(target).__name__}."
         )
     if len(qlayer.qnode_weights) != 1:
         raise NotImplementedError(
-            f"gradient_variance measures a single trainable weight tensor; "
+            f"{caller} measures a single trainable weight tensor; "
             f"{type(layer).__name__} has {len(qlayer.qnode_weights)} "
             f"({', '.join(sorted(qlayer.qnode_weights))})."
         )
     (weights,) = qlayer.qnode_weights.values()
     n_layers = getattr(layer, "n_layers", None)
-    return layer, weights, n_qubits, n_layers if isinstance(n_layers, int) else int(weights.shape[0])
+    return (
+        layer,
+        weights,
+        n_qubits,
+        n_layers if isinstance(n_layers, int) else int(weights.shape[0]),
+    )
 
 
-def _make_init(init: InitName | InitFn, n_qubits: int, n_layers: int, generator: torch.Generator) -> tuple[str, InitFn]:
+def _make_init(
+    init: InitName | InitFn, n_qubits: int, n_layers: int, generator: torch.Generator
+) -> tuple[str, InitFn]:
     if callable(init):
         return "custom", init
     if init == "uniform":
-        return init, lambda w: w.copy_(torch.rand(w.shape, generator=generator, dtype=w.dtype) * 2 * math.pi)
+        return init, lambda w: w.copy_(
+            torch.rand(w.shape, generator=generator, dtype=w.dtype) * 2 * math.pi
+        )
     if init == "restricted":
+
         def restricted(w: torch.Tensor) -> None:
             with _seeded(generator):
                 restricted_normal_init_(w, n_qubits=n_qubits, n_layers=n_layers)
+
         return init, restricted
     if init == "block_local":
+
         def block_local(w: torch.Tensor) -> None:
             with _seeded(generator):
                 block_local_init_(w, n_qubits=n_qubits)
+
         return init, block_local
     raise ValueError(
         f"unknown init {init!r}; choose 'uniform', 'restricted', 'block_local' or pass a callable."
@@ -179,9 +196,7 @@ class _seeded:
 
     def __enter__(self) -> None:
         self.saved = torch.get_rng_state()
-        self.saved_cuda = (
-            torch.cuda.get_rng_state_all() if torch.cuda.is_initialized() else None
-        )
+        self.saved_cuda = torch.cuda.get_rng_state_all() if torch.cuda.is_initialized() else None
         seed = int(torch.randint(0, 2**62, (1,), generator=self.generator))
         torch.manual_seed(seed)
 
@@ -253,7 +268,8 @@ def gradient_variance(
             weights.grad = None
             value = cost(layer(x))
             if not isinstance(value, torch.Tensor):
-                raise ValueError(
+                # existing behaviour; switching to TypeError is not a style change
+                raise ValueError(  # noqa: TRY004
                     f"cost_fn must return a 0-d Tensor to differentiate; "
                     f"got {type(value).__name__}."
                 )
@@ -307,11 +323,7 @@ def gradient_variance_sweep(
         One per combination, qubits in the outer loop.
     """
     layer_counts = list(layer_counts)
-    return [
-        gradient_variance(build(q, l), **kwargs)
-        for q in qubit_counts
-        for l in layer_counts
-    ]
+    return [gradient_variance(build(q, l), **kwargs) for q in qubit_counts for l in layer_counts]
 
 
 def format_sweep(results: Sequence[GradientVarianceResult]) -> str:
@@ -319,7 +331,9 @@ def format_sweep(results: Sequence[GradientVarianceResult]) -> str:
     Plain-text table of a sweep, with the ratio to the previous row of the
     same init and layer count so exponential decay is readable at a glance.
     """
-    header = f"{'init':<12} {'qubits':>6} {'layers':>6} {'total var':>12} {'mean var':>12} {'ratio':>7}"
+    header = (
+        f"{'init':<12} {'qubits':>6} {'layers':>6} {'total var':>12} {'mean var':>12} {'ratio':>7}"
+    )
     lines = [header, "-" * len(header)]
     previous: dict[tuple[str, int], float] = {}
     for r in results:
