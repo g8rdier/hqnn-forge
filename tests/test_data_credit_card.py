@@ -8,7 +8,9 @@ Kaggle schema, so the suite never needs the real (non-redistributable) file.
 from __future__ import annotations
 
 import re
-import subprocess
+import sys
+import textwrap
+import time
 import warnings
 from pathlib import Path
 
@@ -177,13 +179,13 @@ class TestMissingFile:
         target = tmp_path / "dl" / cc.FILE_NAME
         calls: list[list[str]] = []
 
-        def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        def fake_run(cmd: list[str], **kwargs: object) -> tuple[int, str]:
             calls.append(cmd)
             _write_csv(Path(cmd[cmd.index("-p") + 1]) / cc.FILE_NAME, _rows(7, 2))
-            return subprocess.CompletedProcess(cmd, 0, "", "")
+            return 0, ""
 
         monkeypatch.setattr(cc.shutil, "which", lambda _: "/usr/bin/kaggle")
-        monkeypatch.setattr(cc.subprocess, "run", fake_run)
+        monkeypatch.setattr(cc, "_run_cli", fake_run)
         data = load_credit_card_fraud(target, download=True)
         assert calls == [
             [
@@ -207,13 +209,13 @@ class TestMissingFile:
         directory = tmp_path / "data" / "raw"
         calls: list[list[str]] = []
 
-        def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        def fake_run(cmd: list[str], **kwargs: object) -> tuple[int, str]:
             calls.append(cmd)
             _write_csv(Path(cmd[cmd.index("-p") + 1]) / cc.FILE_NAME, _rows(5, 1))
-            return subprocess.CompletedProcess(cmd, 0, "", "")
+            return 0, ""
 
         monkeypatch.setattr(cc.shutil, "which", lambda _: "/usr/bin/kaggle")
-        monkeypatch.setattr(cc.subprocess, "run", fake_run)
+        monkeypatch.setattr(cc, "_run_cli", fake_run)
         data = load_credit_card_fraud(directory, download=True)
         assert calls[0][calls[0].index("-p") + 1] == str(directory)
         assert (directory / cc.FILE_NAME).exists()
@@ -232,17 +234,13 @@ class TestMissingFile:
             raise AssertionError("the CLI must not run for a name it cannot produce")
 
         monkeypatch.setattr(cc.shutil, "which", lambda _: "/usr/bin/kaggle")
-        monkeypatch.setattr(cc.subprocess, "run", fail)
+        monkeypatch.setattr(cc, "_run_cli", fail)
         with pytest.raises(DatasetDownloadError, match=f"path ending in {cc.FILE_NAME}"):
             load_credit_card_fraud(tmp_path / "fraud.csv", download=True)
 
     def test_download_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(cc.shutil, "which", lambda _: "/usr/bin/kaggle")
-        monkeypatch.setattr(
-            cc.subprocess,
-            "run",
-            lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, "", "403 Forbidden"),
-        )
+        monkeypatch.setattr(cc, "_run_cli", lambda cmd, **kw: (1, "403 Forbidden"))
         with pytest.raises(DatasetDownloadError, match=r"exit 1\):\n403 Forbidden"):
             load_credit_card_fraud(tmp_path / cc.FILE_NAME, download=True)
 
@@ -250,8 +248,119 @@ class TestMissingFile:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(cc.shutil, "which", lambda _: "/usr/bin/kaggle")
-        monkeypatch.setattr(
-            cc.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "", "")
-        )
+        monkeypatch.setattr(cc, "_run_cli", lambda cmd, **kw: (0, ""))
         with pytest.raises(DatasetDownloadError, match="was not created"):
             load_credit_card_fraud(tmp_path / cc.FILE_NAME, download=True)
+
+
+def _script(tmp_path: Path, body: str) -> list[str]:
+    """A local stand-in for the Kaggle CLI: a Python script, no network."""
+    script = tmp_path / "fake_kaggle.py"
+    script.write_text(textwrap.dedent(body))
+    return [sys.executable, "-u", str(script)]
+
+
+class TestStreamingDownload:
+    """
+    #181: the real _run_cli against local scripts.  Output reaches the caller
+    as it is produced, a stall and an overlong run are told apart, and a
+    failed download leaves no partial file behind.
+    """
+
+    def test_progress_is_passed_through_as_it_arrives(
+        self, tmp_path: Path, capfd: pytest.CaptureFixture[str]
+    ) -> None:
+        cmd = _script(
+            tmp_path,
+            """
+            import sys, time
+            for pct in (10, 50, 100):
+                sys.stderr.write(f"\\r{pct}%")  # a progress bar: no newlines
+                sys.stderr.flush()
+                time.sleep(0.05)
+            print("Downloaded")
+            """,
+        )
+        code, tail = cc._run_cli(cmd, timeout=30, stall_timeout=30)
+        out, err = capfd.readouterr()
+        assert code == 0
+        assert "\r10%\r50%\r100%" in err
+        assert "Downloaded" in out
+        assert "100%" in tail and "Downloaded" in tail
+
+    def test_a_stall_is_stopped_and_named(self, tmp_path: Path) -> None:
+        cmd = _script(
+            tmp_path,
+            """
+            import sys, time
+            sys.stderr.write("\\r5%"); sys.stderr.flush()
+            time.sleep(60)
+            """,
+        )
+        start = time.monotonic()
+        with pytest.raises(DatasetDownloadError, match=r"(?s)stalled: no output for 0.5 s.*5%"):
+            cc._run_cli(cmd, timeout=30, stall_timeout=0.5)
+        assert time.monotonic() - start < 10
+
+    def test_steady_output_is_not_a_stall_but_the_total_bound_holds(self, tmp_path: Path) -> None:
+        cmd = _script(
+            tmp_path,
+            """
+            import sys, time
+            while True:
+                sys.stderr.write("\\r."); sys.stderr.flush()
+                time.sleep(0.1)
+            """,
+        )
+        with pytest.raises(DatasetDownloadError, match=r"did not finish within 1.5 s"):
+            cc._run_cli(cmd, timeout=1.5, stall_timeout=0.5)
+
+    def test_a_failed_download_leaves_no_partial_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        target = tmp_path / "dl" / cc.FILE_NAME
+        writer = _script(
+            tmp_path,
+            f"""
+            import sys, time, pathlib
+            d = pathlib.Path(sys.argv[sys.argv.index("-p") + 1])
+            (d / "{cc.ZIP_NAME}").write_bytes(b"partial")
+            (d / "{cc.FILE_NAME}").write_text("Time,V1\\n0,")
+            time.sleep(60)
+            """,
+        )
+        monkeypatch.setattr(cc.shutil, "which", lambda _: "/usr/bin/kaggle")
+        monkeypatch.setattr(cc, "_download_command", lambda d: [*writer, "-p", str(d)])
+        with pytest.raises(DatasetDownloadError, match="stalled"):
+            load_credit_card_fraud(target, download=True, stall_timeout=0.5)
+        assert not target.exists()
+        assert not (target.parent / cc.ZIP_NAME).exists()
+
+    def test_files_that_were_there_before_are_kept(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        directory = tmp_path / "dl"
+        directory.mkdir()
+        (directory / cc.ZIP_NAME).write_bytes(b"the user's own archive")
+        monkeypatch.setattr(cc.shutil, "which", lambda _: "/usr/bin/kaggle")
+        monkeypatch.setattr(cc, "_run_cli", lambda cmd, **kw: (1, "boom"))
+        with pytest.raises(DatasetDownloadError, match="exit 1"):
+            load_credit_card_fraud(directory, download=True)
+        assert (directory / cc.ZIP_NAME).read_bytes() == b"the user's own archive"
+
+    def test_the_timeouts_reach_the_cli_runner(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: dict[str, object] = {}
+
+        def fake_run(cmd: list[str], **kwargs: object) -> tuple[int, str]:
+            seen.update(kwargs)
+            return 1, ""
+
+        monkeypatch.setattr(cc.shutil, "which", lambda _: "/usr/bin/kaggle")
+        monkeypatch.setattr(cc, "_run_cli", fake_run)
+        with pytest.raises(DatasetDownloadError):
+            load_credit_card_fraud(
+                tmp_path / cc.FILE_NAME, download=True, download_timeout=7, stall_timeout=None
+            )
+        assert seen == {"timeout": 7, "stall_timeout": None}
