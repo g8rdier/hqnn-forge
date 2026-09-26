@@ -266,8 +266,9 @@ def fisher_information_matrix(model: nn.Module, data_sample: torch.Tensor) -> Fi
     Cost is one forward pass and ``k`` backward passes per row, ``k`` being
     the number of outputs (1 for a classifier), plus one ``(d, d)``
     eigendecomposition.  The model is evaluated as it is (train or eval mode
-    untouched, dropout included if active); put it in eval mode first for a
-    deterministic answer.
+    untouched, dropout and training-time noise from ``noise_level > 0``
+    included if active); put it in eval mode first for a deterministic answer
+    on the noiseless circuit.
     """
     layer, weights, _, _ = _resolve_weights(model, caller="fisher_information_matrix")
     X = _check_data(data_sample)

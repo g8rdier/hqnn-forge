@@ -23,8 +23,10 @@ depolarizing, and ``p`` is restricted to [0, 3/4].
 * ``"end"`` -- once on every wire before measurement: readout-style noise that
   damps each ⟨Z_i⟩ by exactly ``1 − 4p/3``.
 
-``p = 0`` is a no-op: the original QNode stays in place, so the output is
-bit-identical to the noiseless model rather than merely close to it.
+``p = 0`` replaces nothing: the original QNode stays in place, so the output
+is bit-identical to the noiseless model rather than merely close to it.  It
+still counts as an active wrapper, so a layer's training-time noise (below) is
+suppressed inside it just as for ``p > 0``.
 
 Training-time noise
 -------------------
@@ -114,8 +116,8 @@ def run_with_training_noise(
     """
     Evaluate ``qlayer`` on ``x`` with ``noisy_qnode`` in place of its QNode.
 
-    If :func:`apply_depolarizing_noise` currently holds the layer's QNode,
-    that channel is kept and the training-time one is not applied: the
+    If :func:`apply_depolarizing_noise` is active on the layer, its channel
+    (none at ``p = 0``) is kept and the training-time one is not applied: the
     post-hoc wrapper is the evaluation instrument and wins.  The original
     QNode is restored afterwards, including when the forward pass raises.
     """
@@ -170,16 +172,26 @@ def apply_depolarizing_noise(
     """
     validate_noise(p, position)
     qlayer, n_qubits = _resolve_qlayer(model)
+    armed = getattr(qlayer, "_hqnn_noise_original", None) is not None
+    original = qlayer.qnode
     if p == 0.0:
-        # A true no-op, so it is checked before the nesting guard: it replaces
-        # no QNode, has nothing to restore, and must not raise inside a block
-        # that a sweep over a range starting at 0 has already opened.
-        yield model
+        # Replaces no QNode, so the output is bit-identical to the noiseless
+        # model.  Checked before the nesting guard: inside a block that is
+        # already open it must not raise, and leaves that block's channel in
+        # charge.  Otherwise it still arms the guard, which is what tells
+        # run_with_training_noise to skip a layer's train-mode channel.
+        if armed:
+            yield model
+            return
+        qlayer._hqnn_noise_original = original
+        try:
+            yield model
+        finally:
+            qlayer._hqnn_noise_original = None
         return
-    if getattr(qlayer, "_hqnn_noise_original", None) is not None:
+    if armed:
         raise RuntimeError("apply_depolarizing_noise cannot be nested on the same layer.")
 
-    original = qlayer.qnode
     # Build the replacement before touching the layer. default.mixed refuses
     # more than 23 wires, and a failure here has to leave the layer as it was:
     # arming the guard first would leave it armed with no block to disarm it,
