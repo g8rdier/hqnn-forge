@@ -8,6 +8,8 @@ Skipped where matplotlib is not installed (it is an optional extra).
 
 from __future__ import annotations
 
+import io
+
 import numpy as np
 import pytest
 
@@ -179,3 +181,41 @@ class TestEfficiencyFrontier:
         plots.plot_efficiency_frontier(THESIS)
         plots.plot_fold_metric_boxplot({"a": [0.1, 0.2]})
         plots.plot_confusion_matrix([0, 1], [1, 1])
+
+
+class TestSubfigureAxes:
+    """
+    #173: an axes on a ``fig.subfigures()`` sub-figure has ``ax.figure`` set
+    to the SubFigure, which has no ``savefig``.  Every plot returns the root
+    Figure instead, the object the caller can save.
+    """
+
+    @staticmethod
+    def _draw(kind: str, ax: object) -> Figure:
+        if kind == "confusion":
+            return plots.plot_confusion_matrix([0, 1, 1], [0, 1, 0], ax=ax)
+        if kind == "boxplot":
+            return plots.plot_fold_metric_boxplot({"a": [0.5, 0.6], "b": [0.4, 0.5]}, ax=ax)
+        return plots.plot_efficiency_frontier({"a": (0.5, 10), "b": (0.6, 20)}, ax=ax)
+
+    @pytest.mark.parametrize("kind", ["confusion", "boxplot", "frontier"])
+    def test_returns_the_root_figure_which_can_be_saved(self, kind: str) -> None:
+        root = plt.figure()
+        sub = root.subfigures(1, 2)[1]
+        ax = sub.subplots()
+        out = self._draw(kind, ax)
+        assert out is root and type(out) is Figure
+        out.savefig(io.BytesIO(), format="png")
+
+    def test_nested_subfigures_reach_the_root(self) -> None:
+        root = plt.figure()
+        inner = root.subfigures(1, 2)[0].subfigures(2, 1)[1]
+        assert self._draw("confusion", inner.subplots()) is root
+
+    def test_detached_axes_raises(self) -> None:
+        ax = plt.figure().add_subplot()
+        ax.remove()
+        if ax.get_figure(root=True) is not None:
+            pytest.skip("this matplotlib keeps the figure on a removed axes")
+        with pytest.raises(ValueError, match="not attached"):
+            plots.plot_confusion_matrix([0, 1], [0, 1], ax=ax)

@@ -60,7 +60,8 @@ sklearn = [
 ]
 examples = [
     "scikit-learn>=1.6",  # dataset generation in examples, and hqnn_forge.sklearn
-    "matplotlib",
+    # hqnn_forge.evaluation.plots needs Axes.get_figure(root=True), new in 3.10
+    "matplotlib>=3.10",
 ]
 
 [tool.setuptools.packages.find]

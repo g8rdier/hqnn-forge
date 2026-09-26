@@ -6,8 +6,9 @@ distributions, and the score-versus-parameter-count frontier.
 
 Every function returns the ``matplotlib.figure.Figure`` it drew on and never
 calls ``plt.show()``, so the figures compose with notebooks and with
-``fig.savefig`` pipelines.  Pass ``ax`` to draw into an existing axes (the
-returned figure is then that axes' figure).
+``fig.savefig`` pipelines.  Pass ``ax`` to draw into an existing axes; the
+returned figure is then that axes' root figure, the top-level ``Figure`` even
+when the axes sits on a ``fig.subfigures()`` sub-figure.
 
 matplotlib is an optional dependency (the ``examples`` extra); it is imported
 when a plotting function is first called, and a missing install raises an
@@ -41,7 +42,12 @@ def _pyplot() -> Any:
 
 def _axes(ax: Axes | None, figsize: tuple[float, float]) -> tuple[Figure, Axes]:
     if ax is not None:
-        return ax.figure, ax  # type: ignore[return-value]
+        # root=True: for an axes on a sub-figure, ax.figure is the SubFigure,
+        # which has no savefig; the root Figure is what the caller can save.
+        fig = ax.get_figure(root=True)
+        if fig is None:
+            raise ValueError("ax is not attached to a figure.")
+        return fig, ax
     fig, new_ax = _pyplot().subplots(figsize=figsize)
     return fig, new_ax
 
