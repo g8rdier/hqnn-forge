@@ -82,6 +82,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on an unfitted instance raises `AttributeError`. Check `is_fitted_` instead of comparing an
   attribute to `None`
 
+- `gradient_variance` measures layers with several trainable tensors, such as
+  `DataReuploadingLayer(trainable_input_scaling=True)`, instead of refusing them:
+  `total_variance` sums over the whole gradient vector, the init draws only the `weights`
+  angles, and the new `GradientVarianceResult.per_tensor` maps each tensor to its variance.
+  `per_parameter` keeps the weight tensor's shape for a single-tensor layer and is the flat
+  concatenation otherwise
 ### Fixed
 - Device fallback raised `AttributeError` on PennyLane 0.45, where `qml.DeviceError` no longer
   exists; the chain now catches `pennylane.exceptions.DeviceError` and is exercised by a test

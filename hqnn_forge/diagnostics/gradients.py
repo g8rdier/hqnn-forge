@@ -49,7 +49,7 @@ follow the same rule.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -81,14 +81,23 @@ class GradientVarianceResult:
     n_samples:
         Number of random draws.
     total_variance:
-        Sum over weights of the per-weight gradient variance.
+        Sum of the per-entry gradient variance over every trainable tensor of
+        the layer, i.e. over the whole gradient vector.
     mean_variance:
-        Mean over weights of the per-weight gradient variance.
+        ``total_variance`` divided by the number of trainable entries.
     per_parameter:
-        Per-weight variance, same shape as the layer's weight tensor.  This
-        field is excluded from ``==`` and ``hash``: comparing it would return
-        a Tensor rather than a bool, so two results compare on their scalar
-        fields only.
+        Per-entry variance.  For a layer with one trainable tensor, the
+        common case, it has that tensor's shape.  With several, it is the
+        flat concatenation of ``per_tensor``'s values, in that mapping's
+        order.
+    per_tensor:
+        Per-entry variance per trainable tensor, keyed by the TorchLayer
+        argument name (``"weights"``, ``"input_scaling"``), each shaped like
+        its tensor.
+
+    ``per_parameter`` and ``per_tensor`` are excluded from ``==`` and
+    ``hash``: comparing them would return a Tensor rather than a bool, so two
+    results compare on their scalar fields only.
     """
 
     layer_type: str
@@ -100,6 +109,7 @@ class GradientVarianceResult:
     total_variance: float
     mean_variance: float
     per_parameter: torch.Tensor = field(compare=False)
+    per_tensor: Mapping[str, torch.Tensor] = field(default_factory=dict, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
         """Scalar fields only, for logging."""
@@ -115,21 +125,21 @@ class GradientVarianceResult:
         }
 
 
-def _resolve_weights(
+def _resolve_tensors(
     target: nn.Module, caller: str = "gradient_variance"
-) -> tuple[nn.Module, torch.Tensor, int, int]:
+) -> tuple[nn.Module, dict[str, torch.Tensor], str, int, int]:
     """
-    Return ``(layer, weights, n_qubits, n_layers)`` for the layer inside *target*.
-    *caller* names the public function in the error messages.
+    Return ``(layer, tensors, angles, n_qubits, n_layers)`` for the layer
+    inside *target*.  *caller* names the public function in the error messages.
 
-    The trainable tensor is read off the TorchLayer's ``qnode_weights`` mapping
-    rather than a fixed attribute name, the same way
+    ``tensors`` is the TorchLayer's ``qnode_weights`` mapping, every trainable
+    argument by name, read the same way
     :func:`~hqnn_forge.diagnostics.circuit.circuit_summary` resolves a layer.
-    A layer with several trainable arguments -- such as ``DataReuploadingLayer``
-    with ``trainable_input_scaling=True``, which adds ``input_scaling`` next
-    to ``weights`` -- is rejected rather than silently measured in part,
-    because ``total_variance`` is documented as the variance of the whole
-    gradient vector.
+    ``angles`` names the rotation-angle tensor the init strategies draw:
+    ``"weights"``, or the only tensor there is.  A layer with several tensors
+    and none named ``weights`` is refused, since which of them is the angles
+    would be a guess.  ``n_layers`` falls back to the angle tensor's first
+    dimension when the layer has no ``n_layers`` attribute.
     """
     layer = getattr(target, "quantum_layer", target)
     qlayer = getattr(layer, "qlayer", None)
@@ -144,20 +154,42 @@ def _resolve_weights(
             f"IQPEncodingLayer) or a hybrid classifier with a quantum_layer attribute; "
             f"got {type(target).__name__}."
         )
-    if len(qlayer.qnode_weights) != 1:
-        raise NotImplementedError(
-            f"{caller} measures a single trainable weight tensor; "
-            f"{type(layer).__name__} has {len(qlayer.qnode_weights)} "
-            f"({', '.join(sorted(qlayer.qnode_weights))})."
+    tensors = dict(qlayer.qnode_weights.items())
+    if len(tensors) == 1:
+        (angles,) = tensors
+    elif "weights" in tensors:
+        angles = "weights"
+    else:
+        raise ValueError(
+            f"{caller}: {type(layer).__name__} has {len(tensors)} trainable tensors "
+            f"({', '.join(sorted(tensors))}) and none named 'weights', so which of them "
+            f"holds the rotation angles the init draws is ambiguous."
         )
-    (weights,) = qlayer.qnode_weights.values()
     n_layers = getattr(layer, "n_layers", None)
     return (
         layer,
-        weights,
+        tensors,
+        angles,
         n_qubits,
-        n_layers if isinstance(n_layers, int) else int(weights.shape[0]),
+        n_layers if isinstance(n_layers, int) else int(tensors[angles].shape[0]),
     )
+
+
+def _resolve_weights(
+    target: nn.Module, caller: str = "gradient_variance"
+) -> tuple[nn.Module, torch.Tensor, int, int]:
+    """
+    ``(layer, weights, n_qubits, n_layers)`` for a layer with exactly one
+    trainable tensor: the Fisher diagnostics, which do not yet measure
+    several.  A layer with more is refused rather than measured in part.
+    """
+    layer, tensors, angles, n_qubits, n_layers = _resolve_tensors(target, caller)
+    if len(tensors) != 1:
+        raise NotImplementedError(
+            f"{caller} measures a single trainable weight tensor; "
+            f"{type(layer).__name__} has {len(tensors)} ({', '.join(sorted(tensors))})."
+        )
+    return layer, tensors[angles], n_qubits, n_layers
 
 
 def _make_init(
@@ -241,7 +273,12 @@ def gradient_variance(
     init:
         ``"uniform"`` over [0, 2π) (the barren-plateau reference),
         ``"restricted"``, ``"block_local"``, or a callable that fills the
-        weight tensor in place.
+        weight tensor in place.  Only the rotation angles are drawn: the
+        tensor named ``weights`` (or the layer's only tensor).  Any other
+        trainable tensor -- ``DataReuploadingLayer``'s ``input_scaling`` --
+        keeps its current values for every draw, since an angle distribution
+        means nothing for a scale factor, but its gradient is measured and
+        counted in ``total_variance`` like the rest of the gradient vector.
     input_scale:
         Inputs are uniform in ``[-input_scale, input_scale]``.  ``π`` matches
         what the classifiers feed the circuit; ``0`` feeds zeros.
@@ -260,21 +297,26 @@ def gradient_variance(
         raise ValueError(f"n_samples must be >= 2 to estimate a variance; got {n_samples}.")
     if input_scale < 0:
         raise ValueError(f"input_scale must be >= 0; got {input_scale}.")
-    layer, weights, n_qubits, n_layers = _resolve_weights(target)
+    layer, tensors, angles, n_qubits, n_layers = _resolve_tensors(target)
+    weights = tensors[angles]
     gen = generator if generator is not None else torch.Generator().manual_seed(0)
     init_name, init_fn = _make_init(init, n_qubits, n_layers, gen)
     cost = cost_fn if cost_fn is not None else _local_z0
 
-    original = weights.detach().clone()
-    original_grad = weights.grad
-    grads = torch.empty((n_samples, *weights.shape), dtype=torch.float64)
+    names = list(tensors)
+    originals = {name: (t.detach().clone(), t.grad) for name, t in tensors.items()}
+    grads = {
+        name: torch.empty((n_samples, *t.shape), dtype=torch.float64)
+        for name, t in tensors.items()
+    }
     try:
         with eval_mode(layer):
             for s in range(n_samples):
                 with torch.no_grad():
                     init_fn(weights)
                 x = (torch.rand(1, n_qubits, generator=gen) * 2 - 1) * input_scale
-                weights.grad = None
+                for t in tensors.values():
+                    t.grad = None
                 value = cost(layer(x))
                 if not isinstance(value, torch.Tensor):
                     # existing behaviour; switching to TypeError is not a style change
@@ -286,14 +328,25 @@ def gradient_variance(
                     raise ValueError(
                         f"cost_fn must return a scalar; got shape {tuple(value.shape)}."
                     )
-                (grad,) = torch.autograd.grad(value, weights)
-                grads[s] = grad.detach().to(torch.float64)
+                # allow_unused: a tensor the cost cannot reach has gradient 0
+                # for this draw, not an undefined one.
+                sample = torch.autograd.grad(
+                    value, [tensors[name] for name in names], allow_unused=True
+                )
+                for name, grad in zip(names, sample, strict=True):
+                    grads[name][s] = 0.0 if grad is None else grad.detach().to(torch.float64)
     finally:
         with torch.no_grad():
-            weights.copy_(original)
-        weights.grad = original_grad
+            for name, (value_before, grad_before) in originals.items():
+                tensors[name].copy_(value_before)
+                tensors[name].grad = grad_before
 
-    per_parameter = grads.var(dim=0)
+    per_tensor = {name: g.var(dim=0) for name, g in grads.items()}
+    per_parameter = (
+        per_tensor[names[0]]
+        if len(names) == 1
+        else torch.cat([v.reshape(-1) for v in per_tensor.values()])
+    )
     return GradientVarianceResult(
         layer_type=type(layer).__name__,
         n_qubits=n_qubits,
@@ -304,6 +357,7 @@ def gradient_variance(
         total_variance=float(per_parameter.sum()),
         mean_variance=float(per_parameter.mean()),
         per_parameter=per_parameter,
+        per_tensor=per_tensor,
     )
 
 
