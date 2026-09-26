@@ -47,6 +47,13 @@ import torch
 import torch.nn as nn
 from pennylane.exceptions import AllocationError, DeviceError
 
+from hqnn_forge.noise import (
+    Position,
+    run_with_training_noise,
+    training_noise_qnode,
+    validate_noise,
+)
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -557,6 +564,18 @@ class QuantumEncodingLayer(nn.Module):
     readout:
         ``"all"`` (default): the layer returns ``(batch, n_qubits)``.
         ``"first"``: ⟨Z_0⟩ only, ``(batch, 1)``, the published SHNN readout.
+    noise_level:
+        Depolarizing probability applied to the circuit in **train mode**,
+        in ``[0, 0.75]``; ``0`` (default) is the plain noiseless layer.  With
+        ``noise_level > 0`` the train-mode forward pass runs the circuit on
+        ``default.mixed`` with a ``DepolarizingChannel`` inserted, so
+        gradients are computed through the noisy circuit (noise-aware
+        training); eval mode is always noiseless, like dropout.  Backprop
+        keeps a ``batch × 4^n`` density matrix per operation, so this is
+        practical up to about 6 qubits.  See :mod:`hqnn_forge.noise`.
+    noise_position:
+        ``"all"`` (after every gate, default) or ``"end"`` (before
+        measurement), as in :func:`hqnn_forge.noise.apply_depolarizing_noise`.
 
     Attributes
     ----------
@@ -566,6 +585,8 @@ class QuantumEncodingLayer(nn.Module):
         Width of the output: ``n_qubits`` or 1.
     entangler : str
     readout : str
+    noise_level : float
+    noise_position : str
     qlayer : pennylane.qnn.TorchLayer
         The underlying differentiable quantum layer.
 
@@ -593,6 +614,8 @@ class QuantumEncodingLayer(nn.Module):
         diff_method: DiffMethod = "adjoint",
         entangler: Entangler = "ring",
         readout: Readout = "all",
+        noise_level: float = 0.0,
+        noise_position: Position = "all",
     ) -> None:
         super().__init__()
 
@@ -601,6 +624,8 @@ class QuantumEncodingLayer(nn.Module):
         self.entangler = entangler
         self.readout = readout
         self.n_outputs = len(readout_wires(n_qubits, readout))
+        self.noise_level = noise_level
+        self.noise_position = noise_position
 
         # Build the QNode ─────────────────────────────────────────────────
         qnode = build_encoding_qnode(
@@ -624,6 +649,11 @@ class QuantumEncodingLayer(nn.Module):
 
         # Wrap QNode as an nn.Module with registered Parameters ───────────
         self.qlayer = qml.qnn.TorchLayer(qnode, weight_shapes)
+
+        # Training-time depolarizing noise (see hqnn_forge.noise) ─────────
+        self._training_noise_qnode = _build_training_noise(
+            qnode, n_qubits, noise_level, noise_position
+        )
 
     # ------------------------------------------------------------------
     # Forward pass
@@ -675,6 +705,8 @@ class QuantumEncodingLayer(nn.Module):
         # broadcasted tape or split into one tape per sample is decided in
         # build_encoding_qnode (see _expand_batch_dimension); the outputs and
         # gradients are the same either way.
+        if self.training and self._training_noise_qnode is not None:
+            return run_with_training_noise(self.qlayer, self._training_noise_qnode, x)
         return self.qlayer(x)
 
     # ------------------------------------------------------------------
@@ -687,11 +719,43 @@ class QuantumEncodingLayer(nn.Module):
             options += f", entangler={self.entangler!r}"
         if self.readout != "all":
             options += f", readout={self.readout!r}"
+        if self.noise_level:
+            options += f", noise_level={self.noise_level}, noise_position={self.noise_position!r}"
         return (
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "
             f"n_params={self.n_layers * self.n_qubits * 3}{options}"
         )
+
+
+MAX_TRAINING_NOISE_QUBITS = 6
+"""Above this many qubits, a layer built with ``noise_level > 0`` warns."""
+
+
+def _build_training_noise(
+    qnode: qml.QNode, n_qubits: int, noise_level: float, noise_position: Position
+) -> qml.QNode | None:
+    """
+    The train-mode QNode for ``noise_level > 0``, or ``None`` for the
+    noiseless default.  Shared by every encoding layer; validation happens
+    here so a bad ``noise_level`` fails at construction, and a qubit count
+    past what mixed-state backprop can train in practice warns there too.
+    """
+    validate_noise(
+        noise_level, noise_position, p_name="noise_level", position_name="noise_position"
+    )
+    if noise_level == 0.0:
+        return None
+    if n_qubits > MAX_TRAINING_NOISE_QUBITS:
+        warnings.warn(
+            f"noise_level > 0 trains on default.mixed, which keeps a batch × 4^n density "
+            f"matrix per operation for backprop; at n_qubits={n_qubits} (practical limit "
+            f"about {MAX_TRAINING_NOISE_QUBITS}) a training step may run out of memory.  "
+            f"See hqnn_forge.noise and #229.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+    return training_noise_qnode(qnode, n_qubits, noise_level, noise_position)
 
 
 # ---------------------------------------------------------------------------

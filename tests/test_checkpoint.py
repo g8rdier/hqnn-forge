@@ -325,7 +325,13 @@ class TestFailures:
         _, path = saved
         loaded = load_checkpoint(path, **CPU)
         assert loaded.get_config()["diff_method"] == "backprop"
-        assert set(ckpt.WEIGHT_SAFE_ARGS) == {"device_name", "diff_method", "dropout_p"}
+        assert set(ckpt.WEIGHT_SAFE_ARGS) == {
+            "device_name",
+            "diff_method",
+            "dropout_p",
+            "noise_level",
+            "noise_position",
+        }
 
     def test_dropout_override_needs_no_opt_in_and_keeps_the_weights(self, saved: tuple) -> None:
         # nn.Dropout has no parameters, so this cannot invalidate a state dict
@@ -341,6 +347,25 @@ class TestFailures:
         model.eval()
         with torch.no_grad():
             torch.testing.assert_close(loaded(x), model(x), rtol=0, atol=0)
+
+    def test_training_noise_override_needs_no_opt_in_and_can_be_re_saved(
+        self, saved: tuple, tmp_path: Path
+    ) -> None:
+        # Training noise only replaces the circuit in train mode, like dropout:
+        # fine-tuning a saved model at another noise level must neither need the
+        # architecture opt-in nor mark the model so save_checkpoint refuses it.
+        model, path = saved
+        loaded = load_checkpoint(path, noise_level=0.1, noise_position="end")
+        assert loaded.quantum_layer.noise_level == 0.1
+        assert loaded.quantum_layer.noise_position == "end"
+        for (name, a), (_, b) in zip(model.state_dict().items(), loaded.state_dict().items()):
+            torch.testing.assert_close(a, b, rtol=0, atol=0, msg=name)
+        x = torch.randn(4, 6)
+        model.eval()
+        with torch.no_grad():
+            torch.testing.assert_close(loaded(x), model(x), rtol=0, atol=0)
+        save_checkpoint(loaded, tmp_path / "resaved.pt")
+        assert load_checkpoint(tmp_path / "resaved.pt").get_config()["noise_level"] == 0.1
 
     def test_missing_state_dict(self, saved: tuple, tmp_path: Path) -> None:
         _, path = saved

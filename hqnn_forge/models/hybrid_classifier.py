@@ -76,6 +76,7 @@ from hqnn_forge.initializers.restricted_variance import (
     restricted_normal_init_,
 )
 from hqnn_forge.models.base import BinaryClassifierBase
+from hqnn_forge.noise import Position
 
 #: Constructor arguments of the SHNN published in the thesis (see
 #: ``HybridBinaryClassifier.published_shnn``).
@@ -154,6 +155,14 @@ class HybridBinaryClassifier(BinaryClassifierBase):
     ``embedding_rotation="Y"``, ``entangler="strongly_entangling"``,
     ``readout="first"``, ``encoder_activation="sigmoid"``,
     ``init_strategy="normal"``; see :meth:`published_shnn`.
+    noise_level:
+        Training-time depolarizing probability for the quantum layer, in
+        ``[0, 0.75]``.  Default: ``0.0`` (noiseless).  Applied in train mode
+        only, on ``default.mixed`` with backprop, whose memory grows as
+        ``batch × 4^n_qubits`` per operation: practical up to about 6 qubits.
+        See :mod:`hqnn_forge.noise`.
+    noise_position:
+        ``"all"`` (default) or ``"end"``; where the channel is inserted.
 
     Attributes
     ----------
@@ -189,6 +198,8 @@ class HybridBinaryClassifier(BinaryClassifierBase):
         readout: Readout = "all",
         encoder_activation: str = "tanh",
         init_std: float = 0.1,
+        noise_level: float = 0.0,
+        noise_position: Position = "all",
     ) -> None:
         super().__init__()
         self._config = dict(
@@ -206,6 +217,8 @@ class HybridBinaryClassifier(BinaryClassifierBase):
             readout=readout,
             encoder_activation=encoder_activation,
             init_std=init_std,
+            noise_level=noise_level,
+            noise_position=noise_position,
         )
 
         if encoder_activation not in ("tanh", "sigmoid"):
@@ -264,6 +277,8 @@ class HybridBinaryClassifier(BinaryClassifierBase):
                 diff_method=diff_method,
                 entangler=entangler,
                 readout=readout,
+                noise_level=noise_level,
+                noise_position=noise_position,
             )
         elif encoding_type == "iqp":
             if embedding_rotation != "X":
@@ -279,6 +294,8 @@ class HybridBinaryClassifier(BinaryClassifierBase):
                 diff_method=diff_method,
                 entangler=entangler,
                 readout=readout,
+                noise_level=noise_level,
+                noise_position=noise_position,
             )
         else:
             raise ValueError(f"Unsupported encoding_type: {encoding_type}")

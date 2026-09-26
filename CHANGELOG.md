@@ -43,6 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MulticlassHybridClassifier`: shared quantum layer with `n_classes` linear heads, softmax or
   one-vs-rest probabilities, argmax `predict`; supported by `save_checkpoint` /
   `load_checkpoint`
+- `noise_level` / `noise_position` on `QuantumEncodingLayer`, `IQPEncodingLayer`,
+  `HybridBinaryClassifier` and `ParallelHybridClassifier`: depolarizing noise applied in train
+  mode so gradients flow through the noisy circuit, practical up to about 6 qubits;
+  `examples/noise_aware_training.py` compares noiseless and noise-aware training under the
+  post-hoc noise sweep. Both are weight-safe `load_checkpoint` overrides, and a checkpoint
+  from before them loads as noiseless. `apply_depolarizing_noise` at `p = 0` suppresses the
+  training channel, and `gradient_variance` measures the layer in eval mode, so neither sees
+  the train-mode noise
 
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from

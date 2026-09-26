@@ -58,12 +58,16 @@ if TYPE_CHECKING:
 FORMAT_VERSION: int = 1
 
 #: Constructor arguments whose override cannot invalidate the stored weights:
-#: the two simulator knobs, plus ``dropout_p``, since ``nn.Dropout`` has no
-#: parameters of its own and is inert in the eval-mode model that comes back.
+#: the two simulator knobs, plus the train-mode-only regularisers --
+#: ``dropout_p`` (``nn.Dropout`` has no parameters of its own) and the
+#: training-noise pair, which only replace the circuit in train mode.  All
+#: three are inert in the eval-mode model that comes back.
 #: ``load_checkpoint`` takes these without an opt-in; every other argument
 #: describes the circuit the weights were trained in, so overriding it needs
 #: ``allow_architecture_override=True``.
-WEIGHT_SAFE_ARGS: frozenset[str] = frozenset({"device_name", "diff_method", "dropout_p"})
+WEIGHT_SAFE_ARGS: frozenset[str] = frozenset(
+    {"device_name", "diff_method", "dropout_p", "noise_level", "noise_position"}
+)
 
 #: Constructor arguments the classifiers have gained since checkpoints were
 #: first written, mapped to the behaviour that predates each one.  A config
@@ -79,6 +83,8 @@ _LEGACY_DEFAULTS: dict[str, Any] = {
     "readout": "all",  # read out on every qubit, with a tanh encoder
     "encoder_activation": "tanh",
     "init_std": 0.1,  # inert unless init_strategy="normal"
+    "noise_level": 0.0,  # training-time depolarizing noise: none
+    "noise_position": "all",
 }
 
 #: Set by ``load_checkpoint`` on a model it rebuilt under a forced
@@ -187,9 +193,10 @@ def load_checkpoint(
     **overrides:
         Constructor arguments that replace the stored ones.  Without
         ``allow_architecture_override``, only :data:`WEIGHT_SAFE_ARGS`
-        (``device_name``, ``diff_method``, ``dropout_p``) may be given --
-        typically to run a saved model on a different simulator, or to
-        fine-tune it at a different dropout rate.
+        (``device_name``, ``diff_method``, ``dropout_p``, ``noise_level``,
+        ``noise_position``) may be given -- typically to run a saved model on
+        a different simulator, or to fine-tune it at a different dropout rate
+        or training-noise level.
 
     Returns
     -------

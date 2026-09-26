@@ -89,6 +89,7 @@ import torch
 import torch.nn as nn
 
 from hqnn_forge.diagnostics.gradients import InitFn, InitName, _make_init, _resolve_weights
+from hqnn_forge.utils.modes import eval_mode
 
 
 @dataclass(frozen=True)
@@ -265,9 +266,11 @@ def fisher_information_matrix(model: nn.Module, data_sample: torch.Tensor) -> Fi
     -----
     Cost is one forward pass and ``k`` backward passes per row, ``k`` being
     the number of outputs (1 for a classifier), plus one ``(d, d)``
-    eigendecomposition.  The model is evaluated as it is (train or eval mode
-    untouched, dropout included if active); put it in eval mode first for a
-    deterministic answer.
+    eigendecomposition.  The model is run in eval mode (its mode is restored
+    afterwards), so dropout is off and a model built with ``noise_level > 0``
+    is measured on its noiseless circuit, as :func:`gradient_variance` is.  To
+    measure it under noise, call this inside
+    :func:`hqnn_forge.noise.apply_depolarizing_noise`.
     """
     layer, weights, _, _ = _resolve_weights(model, caller="fisher_information_matrix")
     X = _check_data(data_sample)
@@ -279,18 +282,19 @@ def fisher_information_matrix(model: nn.Module, data_sample: torch.Tensor) -> Fi
     was_frozen = not weights.requires_grad
     weights.requires_grad_(True)
     try:
-        for i in range(X.shape[0]):
-            out, jac = _per_sample_jacobian(model, weights, X[i])
-            if likelihood == "bernoulli":
-                if out.shape[0] != 1:
-                    raise ValueError(
-                        f"fisher_information_matrix expects a classifier to return one logit "
-                        f"per sample; {type(model).__name__} returned {out.shape[0]}."
-                    )
-                p = torch.sigmoid(out[0])
-                fisher += (p * (1 - p)) * (jac.T @ jac)
-            else:
-                fisher += jac.T @ jac
+        with eval_mode(model):
+            for i in range(X.shape[0]):
+                out, jac = _per_sample_jacobian(model, weights, X[i])
+                if likelihood == "bernoulli":
+                    if out.shape[0] != 1:
+                        raise ValueError(
+                            f"fisher_information_matrix expects a classifier to return one logit "
+                            f"per sample; {type(model).__name__} returned {out.shape[0]}."
+                        )
+                    p = torch.sigmoid(out[0])
+                    fisher += (p * (1 - p)) * (jac.T @ jac)
+                else:
+                    fisher += jac.T @ jac
     finally:
         if was_frozen:
             weights.requires_grad_(False)

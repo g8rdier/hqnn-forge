@@ -36,7 +36,12 @@ samples, ``default.qubit``):
   already randomises the state.  Only with inputs near 0 does the restricted
   init retain more variance (about 1.3–1.8x at 8 qubits).
 
-The layer's weights are restored when the estimate finishes.
+The layer is run in eval mode, so a layer built with ``noise_level > 0``
+is measured on its noiseless circuit, not the train-mode ``default.mixed``
+one; its mode and weights are restored when the estimate finishes.  To
+measure a noise-induced plateau, run the estimate inside
+:func:`hqnn_forge.noise.apply_depolarizing_noise`.  The Fisher diagnostics
+follow the same rule.
 """
 
 from __future__ import annotations
@@ -51,6 +56,7 @@ import torch
 import torch.nn as nn
 
 from hqnn_forge.initializers import block_local_init_, restricted_normal_init_
+from hqnn_forge.utils.modes import eval_mode
 
 InitName = Literal["uniform", "restricted", "block_local"]
 InitFn = Callable[[torch.Tensor], Any]
@@ -261,22 +267,25 @@ def gradient_variance(
     original_grad = weights.grad
     grads = torch.empty((n_samples, *weights.shape), dtype=torch.float64)
     try:
-        for s in range(n_samples):
-            with torch.no_grad():
-                init_fn(weights)
-            x = (torch.rand(1, n_qubits, generator=gen) * 2 - 1) * input_scale
-            weights.grad = None
-            value = cost(layer(x))
-            if not isinstance(value, torch.Tensor):
-                # existing behaviour; switching to TypeError is not a style change
-                raise ValueError(  # noqa: TRY004
-                    f"cost_fn must return a 0-d Tensor to differentiate; "
-                    f"got {type(value).__name__}."
-                )
-            if value.ndim != 0:
-                raise ValueError(f"cost_fn must return a scalar; got shape {tuple(value.shape)}.")
-            (grad,) = torch.autograd.grad(value, weights)
-            grads[s] = grad.detach().to(torch.float64)
+        with eval_mode(layer):
+            for s in range(n_samples):
+                with torch.no_grad():
+                    init_fn(weights)
+                x = (torch.rand(1, n_qubits, generator=gen) * 2 - 1) * input_scale
+                weights.grad = None
+                value = cost(layer(x))
+                if not isinstance(value, torch.Tensor):
+                    # existing behaviour; switching to TypeError is not a style change
+                    raise ValueError(  # noqa: TRY004
+                        f"cost_fn must return a 0-d Tensor to differentiate; "
+                        f"got {type(value).__name__}."
+                    )
+                if value.ndim != 0:
+                    raise ValueError(
+                        f"cost_fn must return a scalar; got shape {tuple(value.shape)}."
+                    )
+                (grad,) = torch.autograd.grad(value, weights)
+                grads[s] = grad.detach().to(torch.float64)
     finally:
         with torch.no_grad():
             weights.copy_(original)
