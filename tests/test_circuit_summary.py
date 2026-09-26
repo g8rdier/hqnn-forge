@@ -162,6 +162,7 @@ class TestPresentation:
         s = circuit_summary(IQPEncodingLayer(n_qubits=3, n_layers=1, **CPU))
         d = s.to_dict()
         assert isinstance(d["gate_counts"], dict)
+        assert d.pop("n_effective_params") == s.n_effective_params
         assert CircuitSummary(**d) == s
 
     def test_to_dict_accepts_any_mapping(self) -> None:

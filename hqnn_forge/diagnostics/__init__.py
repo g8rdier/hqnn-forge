@@ -6,10 +6,11 @@ circuit source: what the circuit costs on hardware, and later, how it trains.
 
 Exported symbols
 ----------------
-CircuitSummary     Frozen record: qubits, depth, gate counts, trainable parameters.
-circuit_summary    Build a CircuitSummary from an encoding layer or a hybrid classifier.
-draw_circuit       Text drawing of the same circuit, for logs and notebooks.
-LOGICAL_GATE_SET   The gate names circuits are decomposed to before counting.
+CircuitSummary           Frozen record: qubits, depth, gate counts, trainable parameters.
+circuit_summary          Build a CircuitSummary from an encoding layer or a hybrid classifier.
+draw_circuit             Text drawing of the same circuit, for logs and notebooks.
+count_inert_parameters   Trainable gate parameters that can never reach a measurement.
+LOGICAL_GATE_SET         The gate names circuits are decomposed to before counting.
 gradient_variance        Variance of the cost gradient over random weight draws.
 gradient_variance_sweep  The same over a grid of qubit and layer counts.
 GradientVarianceResult   Result of gradient_variance.
@@ -20,7 +21,6 @@ FisherSpectrum                Result of fisher_information_matrix.
 effective_dimension           Effective dimension (Abbas et al. 2021) over random draws.
 effective_dimension_from_spectra  The formula alone, from Fisher eigenvalues.
 EffectiveDimensionResult      Result of effective_dimension.
-count_inert_parameters   Trainable gate parameters that can never reach a measurement.
 """
 
 from hqnn_forge.diagnostics.circuit import (

@@ -54,7 +54,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CircuitSummary.n_inert_params` / `count_inert_parameters`: trainable gate parameters that
   can never reach a measurement, found structurally and counted as a lower bound; with
   `readout="all"` they are the `n_qubits` last-layer `Rot` ω angles, with `readout="first"`
-  many more (12 of 24 for the ring ansatz at 4 qubits and 2 layers)
+  many more (12 of 24 for the ring ansatz at 4 qubits and 2 layers).  `n_effective_params`
+  appears in `to_dict()` and the printed summary; templates are decomposed before counting
+  and broadcast tapes are rejected
 
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from

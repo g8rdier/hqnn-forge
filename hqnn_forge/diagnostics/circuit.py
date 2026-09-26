@@ -31,7 +31,6 @@ from typing import Any
 import pennylane as qml
 import torch
 import torch.nn as nn
-from pennylane.measurements import MidMeasureMP
 
 #: Gate names a circuit is decomposed to before its resources are counted.
 #: Every gate the library's circuits emit is in here, so the count is of the
@@ -71,7 +70,8 @@ class CircuitSummary:
         Trainable parameters that cannot affect any measurement for **any**
         input or weight values, found structurally by
         :func:`count_inert_parameters`.  The typical case is the ``ω`` of a
-        ``Rot`` that is the last non-diagonal gate before a ``⟨Z⟩`` readout:
+        ``Rot`` whose wire carries only ``Z``-type content downstream, such as
+        a last-layer ``Rot`` followed at most by CNOTs and a ``⟨Z⟩`` readout:
         ``Rot = RZ(ω)·RY(θ)·RZ(φ)`` and the final ``RZ`` commutes with ``Z``.
         The count is of gate-parameter slots; see :attr:`n_effective_params`
         for how it relates to ``n_trainable_params``.
@@ -104,11 +104,17 @@ class CircuitSummary:
         return self.n_trainable_params - self.n_inert_params
 
     def to_dict(self) -> dict[str, Any]:
-        """Plain-dict form, for logging frameworks and JSON."""
+        """
+        Plain-dict form, for logging frameworks and JSON.
+
+        Besides the fields it holds the derived ``n_effective_params``; drop
+        that key to rebuild a ``CircuitSummary`` from the dict.
+        """
         # Not dataclasses.asdict: it deep-copies, which raises for a
         # gate_counts that is a Mapping but not a dict (e.g. a mappingproxy).
         d = {f.name: getattr(self, f.name) for f in fields(self)}
         d["gate_counts"] = dict(self.gate_counts)
+        d["n_effective_params"] = self.n_effective_params
         return d
 
     def __str__(self) -> str:
@@ -116,6 +122,7 @@ class CircuitSummary:
             ("qubits", self.n_qubits),
             ("trainable params", self.n_trainable_params),
             ("inert params", self.n_inert_params),
+            ("effective params", self.n_effective_params),
             ("depth", self.depth),
             ("gates", self.n_gates),
             ("two-qubit gates", self.n_two_qubit_gates),
@@ -197,11 +204,8 @@ _DIAGONAL = frozenset(
 )
 
 
-def _requires_grad(value: Any) -> bool:
-    try:
-        return bool(qml.math.requires_grad(value))
-    except Exception:  # noqa: BLE001 - plain floats and the like
-        return False
+def _has_scalar_parameters(op: qml.operation.Operator) -> bool:
+    return all(qml.math.ndim(value) == 0 for value in op.data)
 
 
 def count_inert_parameters(tape: qml.tape.QuantumScript) -> int:
@@ -229,14 +233,41 @@ def count_inert_parameters(tape: qml.tape.QuantumScript) -> int:
     parameters that are dead only for particular inputs or weights (say, a
     rotation of ``|0⟩`` about ``Z``) are not counted.
 
-    Only ``expval`` of ``PauliZ`` products is treated as diagonal; any other
-    measurement marks its wires as ``X``/``Y`` content, and a measurement
+    Templates and other gates with tensor-valued parameters (such as
+    ``StronglyEntanglingLayers``) are first decomposed until every gate
+    parameter is a scalar, so each counted parameter is one gate-parameter
+    slot.  A parameter-broadcast tape is rejected, since one slot there
+    stands for a whole batch of values.
+
+    A measurement counts as diagonal when its observable is ``PauliZ`` or a
+    flat product of ``PauliZ`` (``expval``, ``var``, ``sample(obs)``, ...);
+    any other measurement, including ``probs`` and ``sample`` without an
+    observable, marks its wires as ``X``/``Y`` content, and a measurement
     without wires (``state``, ``probs`` over all wires) marks every wire.
     A mid-circuit measurement counts as a measurement of arbitrary content on
     its wire, since its outcome may drive a conditional gate or be returned.
     Gates that are neither diagonal nor ``CNOT`` nor ``Rot`` are treated as
     fully mixing, which keeps the count a lower bound for any gate.
+
+    Raises
+    ------
+    ValueError
+        If ``tape`` uses parameter broadcasting, or a gate with a
+        tensor-valued parameter cannot be decomposed to scalar-parameter gates.
     """
+    if tape.batch_size is not None:
+        raise ValueError(
+            "count_inert_parameters needs an unbroadcast tape: with parameter "
+            f"broadcasting (batch size {tape.batch_size}) one gate parameter holds "
+            "several values, so a count of gate parameters has no clear meaning."
+        )
+    (tape,), _ = qml.transforms.decompose(tape, stopping_condition=_has_scalar_parameters)
+    unexpanded = sorted({op.name for op in tape.operations if not _has_scalar_parameters(op)})
+    if unexpanded:
+        raise ValueError(
+            "count_inert_parameters could not decompose these gates to gates with "
+            f"scalar parameters: {', '.join(unexpanded)}."
+        )
     support: dict[Any, int] = dict.fromkeys(tape.wires, _NONE)
     for measurement in tape.measurements:
         obs = getattr(measurement, "obs", None)
@@ -251,11 +282,11 @@ def count_inert_parameters(tape: qml.tape.QuantumScript) -> int:
     inert = 0
     for op in reversed(tape.operations):
         wires = list(op.wires)
-        if isinstance(op, MidMeasureMP):
+        if isinstance(op, qml.ops.MidMeasure):
             for w in wires:
                 support[w] = _XY
             continue
-        n_trainable = sum(1 for value in op.data if _requires_grad(value))
+        n_trainable = sum(1 for value in op.data if qml.math.requires_grad(value))
         if all(support[w] == _NONE for w in wires):
             inert += n_trainable  # nothing measured downstream ever sees this gate
             continue
@@ -279,7 +310,7 @@ def count_inert_parameters(tape: qml.tape.QuantumScript) -> int:
             # Rot = RZ(ω)·RY(θ)·RZ(φ), ω applied last: it commutes with a
             # diagonal observable, so ω is inert whenever the wire carries no
             # X/Y content.  RY(θ) then mixes Z into X/Y for the earlier gates.
-            if support[wire] != _XY and _requires_grad(op.data[2]):
+            if support[wire] != _XY and qml.math.requires_grad(op.data[2]):
                 inert += 1
             support[wire] = _XY
         else:

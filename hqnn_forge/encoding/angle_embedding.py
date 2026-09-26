@@ -348,11 +348,17 @@ def _make_angle_embedding_circuit(
        In the **last** layer the trailing Rz(ω) commutes with the ⟨Z⟩
        readouts, so with ``readout="all"`` those ``n_qubits`` angles can
        never change the output.  With ``readout="first"`` far more is dead:
-       the last layer's ``Rot`` on every wire but 0 acts after anything that
-       reaches ⟨Z_0⟩, and so do some earlier ω.  At 4 qubits and 2 layers
-       that is 4 of 24 weights under ``"all"`` and 12 under ``"first"``;
-       ``circuit_summary`` reports the count as ``n_inert_params``.  The
-       weight tensor keeps its ``(n_layers, n_qubits, 3)`` shape either way.
+       for this ring ansatz the last layer's ``Rot`` on every wire but 0
+       acts after anything that reaches ⟨Z_0⟩, and so do some earlier ω.
+       At 4 qubits and 2 layers that is 4 of 24 weights under ``"all"`` and
+       12 under ``"first"``; ``circuit_summary`` reports the count as
+       ``n_inert_params``.  With ``entangler="strongly_entangling"`` the
+       last-layer ``Rot`` comes before that layer's CNOTs, which carry Z_0
+       onto other wires (at 4 qubits, to wire 2, whose last-layer ``Rot`` is
+       then live while wire 0's is dead), and the count under ``"first"`` is
+       only a lower bound: 8 of the 12 weights autograd finds dead at 4
+       qubits and 2 layers.  The weight tensor keeps its
+       ``(n_layers, n_qubits, 3)`` shape either way.
 
     4. **Measurement**:
        Returns ``[qml.expval(qml.PauliZ(i)) for i in range(n_qubits)]``.

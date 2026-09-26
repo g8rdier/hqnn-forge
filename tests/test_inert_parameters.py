@@ -73,10 +73,11 @@ class TestAgainstAutograd:
         """
         With one layer and RX embedding more entries are dead for the actual
         inputs (the φ of some Rots, #150), which the structural count does
-        not claim; autograd finds at least as many zeros.
+        not claim: autograd finds 5 zeros against the structural 3.
         """
         layer = QuantumEncodingLayer(n_qubits=3, n_layers=1, **CPU)
-        assert _zero_gradient_entries(layer) >= circuit_summary(layer).n_inert_params == 3
+        assert circuit_summary(layer).n_inert_params == 3
+        assert _zero_gradient_entries(layer) == 5
 
     def test_iqp_layer(self) -> None:
         layer = IQPEncodingLayer(n_qubits=3, n_layers=2, **CPU)
@@ -90,13 +91,21 @@ class TestAgainstAutograd:
         assert summary.n_trainable_params == 48
         assert summary.n_inert_params == 8
         assert summary.n_effective_params == 40
+        assert summary.to_dict()["n_effective_params"] == 40
+        lines = str(summary).splitlines()
         assert any(
             line.strip().startswith("inert params") and line.rstrip().endswith(": 8")
-            for line in str(summary).splitlines()
+            for line in lines
+        )
+        assert any(
+            line.strip().startswith("effective params") and line.rstrip().endswith(": 40")
+            for line in lines
         )
 
-    @pytest.mark.parametrize(("entangler", "expected"), [("ring", 12), ("strongly_entangling", 8)])
-    def test_first_readout(self, entangler: Entangler, expected: int) -> None:
+    @pytest.mark.parametrize(
+        ("entangler", "expected", "dead"), [("ring", 12, 12), ("strongly_entangling", 8, 12)]
+    )
+    def test_first_readout(self, entangler: Entangler, expected: int, dead: int) -> None:
         """
         With only ⟨Z_0⟩ measured, the last layer's Rot on wires 1..n-1 is
         dead as a whole, far beyond the n_qubits ω of readout="all".  For the
@@ -108,11 +117,7 @@ class TestAgainstAutograd:
             n_qubits=4, n_layers=2, entangler=entangler, readout="first", **CPU
         )
         assert circuit_summary(layer).n_inert_params == expected
-        zeros = _zero_gradient_entries(layer)
-        if entangler == "ring":
-            assert zeros == expected
-        else:
-            assert zeros >= expected
+        assert _zero_gradient_entries(layer) == dead
 
     @pytest.mark.parametrize("entangler", ["ring", "strongly_entangling"])
     @pytest.mark.parametrize("readout", ["all", "first"])
@@ -233,3 +238,28 @@ class TestHandBuiltTapes:
         a = _p(0.7)
         circuit(a).backward()
         assert a.grad is not None and abs(a.grad.item()) > 0.1
+
+    def test_template_is_decomposed_before_counting(self) -> None:
+        """
+        A template carries its weights as one tensor; counted as is it would
+        be one slot, and the Rots inside it would never be seen.
+        """
+        weights = torch.rand(2, 2, 3, requires_grad=True)
+        tape = _tape(
+            lambda: qml.StronglyEntanglingLayers(weights, wires=[1, 2]),
+            [qml.expval(qml.PauliZ(0))],
+        )
+        assert count_inert_parameters(tape) == 12  # every weight, on unmeasured wires
+        weights = torch.rand(1, 3, 3, requires_grad=True)
+        tape = _tape(
+            lambda: qml.StronglyEntanglingLayers(weights, wires=[0, 1, 2]),
+            [qml.expval(qml.PauliZ(w)) for w in range(3)],
+        )
+        assert count_inert_parameters(tape) == 3  # the ω of each Rot
+
+    def test_broadcast_tape_is_rejected(self) -> None:
+        tape = _tape(
+            lambda: (qml.RX(torch.rand(4, requires_grad=True), 1),), [qml.expval(qml.PauliZ(0))]
+        )
+        with pytest.raises(ValueError, match="broadcast"):
+            count_inert_parameters(tape)
