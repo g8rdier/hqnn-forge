@@ -26,7 +26,8 @@ depolarizing, and ``p`` is restricted to [0, 3/4].
 ``p = 0`` replaces nothing: the original QNode stays in place, so the output
 is bit-identical to the noiseless model rather than merely close to it.  It
 still counts as an active wrapper, so a layer's training-time noise (below) is
-suppressed inside it just as for ``p > 0``.
+suppressed inside it just as for ``p > 0``, but it does not count as a
+replaced QNode: a ``p > 0`` block may be opened inside it.
 
 Training-time noise
 -------------------
@@ -127,7 +128,7 @@ def run_with_training_noise(
     post-hoc wrapper is the evaluation instrument and wins.  The original
     QNode is restored afterwards, including when the forward pass raises.
     """
-    if getattr(qlayer, "_hqnn_noise_original", None) is not None:
+    if getattr(qlayer, "_hqnn_noise_depth", 0) > 0:
         return qlayer(x)
     original = qlayer.qnode
     qlayer.qnode = noisy_qnode
@@ -178,38 +179,31 @@ def apply_depolarizing_noise(
     """
     validate_noise(p, position)
     qlayer, n_qubits = _resolve_qlayer(model)
-    armed = getattr(qlayer, "_hqnn_noise_original", None) is not None
-    original = qlayer.qnode
-    if p == 0.0:
-        # Replaces no QNode, so the output is bit-identical to the noiseless
-        # model.  Checked before the nesting guard: inside a block that is
-        # already open it must not raise, and leaves that block's channel in
-        # charge.  Otherwise it still arms the guard, which is what tells
-        # run_with_training_noise to skip a layer's train-mode channel.
-        if armed:
-            yield model
-            return
-        qlayer._hqnn_noise_original = original
-        try:
-            yield model
-        finally:
-            qlayer._hqnn_noise_original = None
-        return
-    if armed:
+    # Two separate markers.  _hqnn_noise_depth counts open blocks of any p and
+    # is what tells run_with_training_noise to skip a layer's train-mode
+    # channel.  _hqnn_noise_original is set only while a p > 0 block has
+    # replaced the QNode, and is the nesting guard.  p = 0 touches only the
+    # depth, so it neither raises inside a p > 0 block (whose channel stays in
+    # charge) nor blocks a p > 0 block opened inside it.
+    if p > 0.0 and getattr(qlayer, "_hqnn_noise_original", None) is not None:
         raise RuntimeError("apply_depolarizing_noise cannot be nested on the same layer.")
-
+    original = qlayer.qnode
     # Build the replacement before touching the layer. default.mixed refuses
     # more than 23 wires, and a failure here has to leave the layer as it was:
     # arming the guard first would leave it armed with no block to disarm it,
     # and every later call on that layer would raise "cannot be nested".
-    noisy = _noisy_qnode(original, n_qubits, p, position)
-    qlayer._hqnn_noise_original = original
-    qlayer.qnode = noisy
+    noisy = _noisy_qnode(original, n_qubits, p, position) if p > 0.0 else None
+    qlayer._hqnn_noise_depth = getattr(qlayer, "_hqnn_noise_depth", 0) + 1
+    if noisy is not None:
+        qlayer._hqnn_noise_original = original
+        qlayer.qnode = noisy
     try:
         yield model
     finally:
-        qlayer.qnode = original
-        qlayer._hqnn_noise_original = None
+        if noisy is not None:
+            qlayer.qnode = original
+            qlayer._hqnn_noise_original = None
+        qlayer._hqnn_noise_depth -= 1
 
 
 class NoiseSweepPoint(NamedTuple):

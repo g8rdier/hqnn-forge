@@ -220,7 +220,7 @@ class TestInteractions:
         with torch.no_grad():
             with apply_depolarizing_noise(noisy, 0.0):
                 torch.testing.assert_close(noisy(x), clean(x), rtol=0, atol=0)
-            assert noisy.qlayer._hqnn_noise_original is None
+            assert noisy.qlayer._hqnn_noise_depth == 0
             # Outside the block the training channel is back.
             torch.testing.assert_close(noisy(x), 0.6 * clean(x), rtol=1e-5, atol=1e-6)
 
@@ -244,6 +244,20 @@ class TestInteractions:
             # The inner p = 0 block must not have disarmed the outer one.
             assert noisy.qlayer._hqnn_noise_original is not None
         assert noisy.qlayer._hqnn_noise_original is None
+
+    def test_noisy_block_inside_a_zero_noise_block(self, x: torch.Tensor) -> None:
+        """A p = 0 baseline block wrapped around a sweep must not trip the nesting guard."""
+        noisy, clean = _pair(noise_level=0.3, noise_position="end")
+        noisy.train()
+        with torch.no_grad(), apply_depolarizing_noise(noisy, 0.0):
+            with apply_depolarizing_noise(noisy, 0.6, position="end"):
+                torch.testing.assert_close(
+                    noisy(x), (1 - 4 * 0.6 / 3) * clean(x), rtol=1e-5, atol=1e-6
+                )
+            # Back in the outer p = 0 block: noiseless, training channel still off.
+            torch.testing.assert_close(noisy(x), clean(x), rtol=0, atol=0)
+        torch.testing.assert_close(noisy(x), 0.6 * clean(x), rtol=1e-5, atol=1e-6)
+        assert noisy.qlayer._hqnn_noise_depth == 0
 
     @pytest.mark.parametrize("cls", LAYERS)
     def test_gradient_variance_measures_the_noiseless_circuit(self, cls: type) -> None:
