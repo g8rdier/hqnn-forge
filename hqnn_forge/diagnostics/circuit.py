@@ -16,10 +16,13 @@ device-specific decomposition.  ``lightning.qubit``'s adjoint path, for
 example, rewrites every ``Rot`` as ``RZ·RY·RZ``, which would make the same
 model report different counts depending on the simulator it happens to run
 on.  The gate set counted against is ``LOGICAL_GATE_SET``; everything is
-decomposed until only those gates remain.  Two-qubit gates are counted
-separately because they are what NISQ feasibility is usually judged by; a
-gate on more than two wires counts once there, not at the number of CNOTs it
-would compile to.
+decomposed until only those gates remain, and a gate on more than two wires
+(a ``MultiRZ`` on k wires, say) is decomposed further, into one- and
+two-qubit gates, even when its name is in the set.  Two-qubit gates are
+counted separately because they are what NISQ feasibility is usually judged
+by, so ``n_two_qubit_gates`` is the two-qubit cost of the circuit: a k-wire
+``MultiRZ`` contributes the 2(k-1) CNOTs of its ladder, not 1, while a
+two-wire ``MultiRZ`` (a ZZ rotation, native on some hardware) stays one gate.
 """
 
 from __future__ import annotations
@@ -34,7 +37,8 @@ import torch.nn as nn
 
 #: Gate names a circuit is decomposed to before its resources are counted.
 #: Every gate the library's circuits emit is in here, so the count is of the
-#: circuit as written; a template such as ``AngleEmbedding`` is expanded.
+#: circuit as written; a template such as ``AngleEmbedding`` is expanded.  A
+#: gate stops only if it also acts on at most two wires (see _is_logical).
 LOGICAL_GATE_SET: frozenset[str] = frozenset(
     {"Hadamard", "RX", "RY", "RZ", "Rot", "PhaseShift", "CNOT", "CZ", "MultiRZ"}
 )
@@ -58,7 +62,9 @@ class CircuitSummary:
     n_gates:
         Total gate count after decomposition to ``LOGICAL_GATE_SET``.
     n_two_qubit_gates:
-        Gates acting on two or more wires (CNOT, CZ, MultiRZ).
+        Two-qubit gates (CNOT, CZ, two-wire MultiRZ) after gates on more
+        than two wires have been decomposed into them, i.e. the circuit's
+        two-qubit cost.
     gate_counts:
         Count per gate name, sorted by name.  This field is a mapping, so the
         dataclass is frozen for immutability but is **not** hashable.
@@ -185,8 +191,13 @@ def _logical_tape(
     # level="top": the circuit as written, before the QNode's own transforms
     # (batch expansion) and before the device rewrites gates it cannot run.
     tape = qml.workflow.construct_tape(qlayer.qnode, level="top")(inputs, **weights)
-    (decomposed,), _ = qml.transforms.decompose(tape, gate_set=LOGICAL_GATE_SET)
+    (decomposed,), _ = qml.transforms.decompose(tape, stopping_condition=_is_logical)
     return decomposed
+
+
+def _is_logical(op: qml.operation.Operator) -> bool:
+    """In ``LOGICAL_GATE_SET`` and on at most two wires, so it counts at its two-qubit cost."""
+    return op.name in LOGICAL_GATE_SET and len(op.wires) <= 2
 
 
 # ---------------------------------------------------------------------------
@@ -370,7 +381,7 @@ def circuit_summary(target: nn.Module) -> CircuitSummary:
         ),
         depth=int(resources.depth),
         n_gates=int(resources.num_gates),
-        n_two_qubit_gates=sum(count for size, count in resources.gate_sizes.items() if size >= 2),
+        n_two_qubit_gates=resources.gate_sizes.get(2, 0),
         gate_counts=dict(sorted(resources.gate_types.items())),
         device_name=str(qnode.device.name),
         diff_method=str(qnode.diff_method),

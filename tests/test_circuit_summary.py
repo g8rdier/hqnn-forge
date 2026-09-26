@@ -16,10 +16,12 @@ from __future__ import annotations
 from math import comb
 from types import MappingProxyType
 
+import pennylane as qml
 import pytest
 import torch
 
 from hqnn_forge.diagnostics import CircuitSummary, circuit_summary, draw_circuit
+from hqnn_forge.diagnostics.circuit import _logical_tape
 from hqnn_forge.encoding import QuantumEncodingLayer
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
@@ -29,8 +31,6 @@ CPU = {"device_name": "default.qubit", "diff_method": "backprop"}
 
 def _lightning_available() -> bool:
     try:
-        import pennylane as qml
-
         qml.device("lightning.qubit", wires=1)
         return True
     except Exception:  # noqa: BLE001
@@ -84,6 +84,63 @@ class TestIQPEncodingCounts:
         iqp = circuit_summary(IQPEncodingLayer(n_qubits=4, n_layers=2, **CPU))
         assert iqp.n_two_qubit_gates > angle.n_two_qubit_gates
         assert iqp.depth > angle.depth
+
+
+def _multirz_layer(n_wires: int, n_qubits: int = 4) -> torch.nn.Module:
+    """RX embedding, one trainable ``MultiRZ`` on wires 0 … n_wires-1, ⟨Z_0⟩."""
+    dev = qml.device("default.qubit", wires=n_qubits)
+
+    @qml.qnode(dev, interface="torch", diff_method="backprop")
+    def circuit(inputs, weights):  # type: ignore[no-untyped-def]
+        qml.AngleEmbedding(inputs, wires=range(n_qubits))
+        qml.MultiRZ(weights[0], wires=range(n_wires))
+        return [qml.expval(qml.PauliZ(0))]
+
+    class MultiRZLayer(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.n_qubits = n_qubits
+            self.qlayer = qml.qnn.TorchLayer(circuit, {"weights": (1,)})
+
+    return MultiRZLayer()
+
+
+class TestMultiWireGateCost:
+    """
+    #170: a gate on k > 2 wires counts at its two-qubit cost.  MultiRZ on k
+    wires is a CNOT ladder, 2(k-1) CNOTs around one RZ; on two wires it is a
+    ZZ rotation and stays a single two-qubit gate.
+    """
+
+    @pytest.mark.parametrize("n_wires", [3, 4])
+    def test_wide_multirz_counts_its_cnot_ladder(self, n_wires: int) -> None:
+        s = circuit_summary(_multirz_layer(n_wires))
+        assert s.n_two_qubit_gates == 2 * (n_wires - 1)
+        assert s.gate_counts.get("CNOT") == 2 * (n_wires - 1)
+        assert s.gate_counts.get("RZ") == 1
+        assert "MultiRZ" not in s.gate_counts
+
+    def test_two_wire_multirz_stays_one_gate(self) -> None:
+        s = circuit_summary(_multirz_layer(2))
+        assert s.n_two_qubit_gates == 1
+        assert s.gate_counts.get("MultiRZ") == 1
+        assert "CNOT" not in s.gate_counts
+
+    def test_the_decomposition_is_the_same_unitary(self) -> None:
+        """What is counted is the circuit that runs: same output before and after."""
+        layer = _multirz_layer(3)
+        x = torch.tensor([0.3, -1.1, 0.7, 2.0], dtype=torch.float64)
+        weights = torch.tensor([0.9], dtype=torch.float64)
+        dev = qml.device("default.qubit", wires=4)
+        with torch.no_grad():
+            layer.qlayer.weights.copy_(weights)
+        tape = _logical_tape(layer.qlayer, 4, inputs=x)
+        (logical,) = qml.execute([tape], dev)
+        with torch.no_grad():
+            direct = layer.qlayer(x.float()).double()
+        assert float(torch.as_tensor(logical).detach()) == pytest.approx(
+            float(direct[0]), abs=1e-6
+        )
 
 
 class TestDeviceIndependence:
