@@ -119,6 +119,7 @@ _LEGACY_DEFAULTS: dict[str, Any] = {
     "init_std": 0.1,  # inert unless init_strategy="normal"
     "noise_level": 0.0,  # training-time depolarizing noise: none
     "noise_position": "all",
+    "init_seed": None,  # weights drawn from the global RNG; inert once loaded
 }
 
 #: Constructor arguments added deliberately without a legacy default: no value

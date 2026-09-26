@@ -15,12 +15,49 @@ Subclasses implement ``__init__`` and ``forward`` only.
 
 from __future__ import annotations
 
+import numbers
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import torch
 import torch.nn as nn
 
 from hqnn_forge.utils.modes import eval_mode
+
+
+@contextmanager
+def seeded_rng(seed: int | None) -> Iterator[None]:
+    """
+    Run the block on torch's CPU RNG seeded with ``seed``, then restore the
+    caller's RNG state; with ``None``, run it on the global RNG unchanged.
+
+    The draws inside are those ``torch.manual_seed(seed)`` would give, but the
+    process-wide stream the caller set up is exactly where it was afterwards,
+    so seeding a model's initialisation (``init_seed``) or a seeded
+    ``HybridClassifierEstimator.fit`` never reseeds anything else (#175).
+    """
+    if seed is None:
+        yield
+        return
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(as_seed(seed))
+        yield
+
+
+def as_seed(seed: object, name: str = "init_seed") -> int | None:
+    """
+    ``seed`` as a plain ``int`` (or ``None``), for an ``init_seed`` argument.
+
+    NumPy integers, which scikit-learn hands around as ``random_state``, are
+    accepted and converted, so the config -- and a checkpoint of it, read with
+    ``weights_only=True`` -- only ever holds a Python int.
+    """
+    if seed is None:
+        return None
+    if isinstance(seed, bool) or not isinstance(seed, numbers.Integral):
+        raise TypeError(f"{name} must be an int or None; got {type(seed).__name__}.")
+    return int(seed)
 
 
 class BinaryClassifierBase(nn.Module):

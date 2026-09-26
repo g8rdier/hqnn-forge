@@ -65,6 +65,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   operating point; threshold-free, so it stays out of `METRICS` and `find_optimal_threshold`
   refuses it
 
+- `init_seed` on `HybridBinaryClassifier`, `ParallelHybridClassifier` and
+  `MulticlassHybridClassifier`: seeds weight initialisation from a private RNG, so the same
+  seed gives the same weights and the global torch RNG is left exactly as it was
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from
   `checkpoint._LEGACY_DEFAULTS` — the behaviour from before each argument existed — with a
@@ -107,6 +110,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MultiRZ` counts as its 2(k-1) CNOTs instead of once. No circuit in the library emits such a
   gate today, so no current summary changes
 
+- `HybridClassifierEstimator.fit` no longer reseeds the global torch RNG: with `random_state`
+  set, initial weights and dropout masks come from a private RNG seeded with it, and the
+  caller's stream is restored afterwards. A given `random_state` therefore yields different
+  initial weights than before, and a NumPy integer `random_state` is accepted
 ### Fixed
 - `circuit_summary` and `count_inert_parameters` raised `TypeError` with PennyLane's
   graph-based decomposition enabled (`qml.decomposition.enable_graph()`), which requires a

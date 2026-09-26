@@ -89,6 +89,7 @@ from hqnn_forge.initializers.restricted_variance import (
     block_local_init_,
     restricted_normal_init_,
 )
+from hqnn_forge.models.base import as_seed, seeded_rng
 from hqnn_forge.utils.modes import eval_mode
 
 MulticlassStrategy = Literal["softmax", "one_vs_rest"]
@@ -133,6 +134,11 @@ class MulticlassHybridClassifier(nn.Module):
         Standard deviation for ``init_strategy="normal"``.  Default: 0.1.
         Any other value with another ``init_strategy`` raises, since it would
         be recorded in the config and ignored.
+    init_seed:
+        Seed for weight initialisation.  ``None`` (default) draws the initial
+        weights from the global torch RNG; an int draws them from a private RNG
+        seeded with it, so the same seed gives the same weights and the global
+        RNG is left exactly as it was.
 
     Attributes
     ----------
@@ -171,8 +177,15 @@ class MulticlassHybridClassifier(nn.Module):
         init_strategy: str = "restricted",
         encoding_type: str = "angle",
         init_std: float = _DEFAULT_INIT_STD,
+        init_seed: int | None = None,
     ) -> None:
         super().__init__()
+        # Building the layers draws from the global RNG (nn.Linear and
+        # TorchLayer defaults), all of it overwritten by _initialise_weights.
+        # With init_seed those draws are undone too, so the caller's stream is
+        # exactly where it was.
+        init_seed = as_seed(init_seed)
+        caller_rng = torch.random.get_rng_state() if init_seed is not None else None
         self._config: dict[str, Any] = dict(
             n_input_features=n_input_features,
             n_qubits=n_qubits,
@@ -186,6 +199,7 @@ class MulticlassHybridClassifier(nn.Module):
             init_strategy=init_strategy,
             encoding_type=encoding_type,
             init_std=init_std,
+            init_seed=init_seed,
         )
 
         if n_classes < 2:
@@ -258,7 +272,10 @@ class MulticlassHybridClassifier(nn.Module):
         self.head = nn.Linear(n_qubits, n_classes)
 
         # ── Small-angle restricted-variance initialisation ─────────────────
-        self._initialise_weights()
+        with seeded_rng(init_seed):
+            self._initialise_weights()
+        if caller_rng is not None:
+            torch.random.set_rng_state(caller_rng)
 
     # ------------------------------------------------------------------
     def _initialise_weights(self) -> None:

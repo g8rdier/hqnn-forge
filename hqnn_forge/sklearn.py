@@ -50,6 +50,7 @@ except ImportError as exc:  # pragma: no cover - exercised only without scikit-l
     ) from exc
 
 from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
+from hqnn_forge.models.base import as_seed, seeded_rng
 from hqnn_forge.training import TrainingHistory, train_model
 from hqnn_forge.utils import FocalLoss
 
@@ -92,9 +93,10 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         falls back to 0.5 both without a validation split and under
         ``monitor="val_loss"``.
     random_state:
-        Seeds weight initialisation, the validation split and batch order.
-        Weight initialisation runs off the global torch RNG, so a seeded
-        ``fit`` reseeds it process-wide (see #175).
+        Seeds weight initialisation, dropout, the validation split and batch
+        order.  The torch draws come from a private RNG seeded with it, so a
+        seeded ``fit`` is reproducible and leaves the global torch RNG exactly
+        as it was; ``None`` draws them from the global RNG.
 
     Attributes
     ----------
@@ -151,7 +153,9 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         self.random_state = random_state
 
     # ------------------------------------------------------------------
-    def _build(self, n_features: int) -> HybridBinaryClassifier | ParallelHybridClassifier:
+    def _build(
+        self, n_features: int, init_seed: int | None = None
+    ) -> HybridBinaryClassifier | ParallelHybridClassifier:
         common: dict[str, Any] = dict(
             n_input_features=n_features,
             n_qubits=self.n_qubits,
@@ -162,6 +166,7 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
             diff_method=self.diff_method,
             init_strategy=self.init_strategy,
             encoding_type=self.encoding_type,
+            init_seed=init_seed,
         )
         if self.model == "serial":
             return HybridBinaryClassifier(**common)
@@ -227,39 +232,43 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         self._check_threshold(self.threshold)
         y01 = (y_arr == classes[1]).astype(np.int64)
 
-        seed = self.random_state
+        # A NumPy integer, as scikit-learn tools pass, is taken as the int it is.
+        seed = as_seed(self.random_state, "random_state")
         rng = np.random.default_rng(seed)
-        if seed is not None:
-            torch.manual_seed(seed)
-        model = self._build(X_arr.shape[1])
-        loss_fn = self._loss()
+        # Everything torch draws during the fit -- the initial weights and the
+        # dropout masks -- comes from a private RNG seeded with random_state, so
+        # a seeded fit is reproducible and the caller's global RNG is left
+        # exactly where it was (#175).  Batch order has its own generator.
+        with seeded_rng(seed):
+            model = self._build(X_arr.shape[1], init_seed=seed)
+            loss_fn = self._loss()
 
-        X_t = torch.from_numpy(X_arr)
-        if self.validation_fraction > 0:
-            tr, va = self._stratified_holdout(y01, self.validation_fraction, rng)
-            val: tuple[torch.Tensor, torch.Tensor] | tuple[None, None] = (
-                X_t[va],
-                torch.from_numpy(y01[va]).float(),
+            X_t = torch.from_numpy(X_arr)
+            if self.validation_fraction > 0:
+                tr, va = self._stratified_holdout(y01, self.validation_fraction, rng)
+                val: tuple[torch.Tensor, torch.Tensor] | tuple[None, None] = (
+                    X_t[va],
+                    torch.from_numpy(y01[va]).float(),
+                )
+            else:
+                tr = np.arange(y01.size)
+                val = (None, None)
+
+            generator = torch.Generator().manual_seed(seed) if seed is not None else None
+            history = train_model(
+                model,
+                loss_fn,
+                torch.optim.Adam(model.parameters(), lr=self.lr),
+                X_t[tr],
+                torch.from_numpy(y01[tr]).float(),
+                val[0],
+                val[1],
+                max_epochs=self.max_epochs,
+                batch_size=self.batch_size,
+                monitor=self.monitor,
+                patience=self.patience,
+                generator=generator,
             )
-        else:
-            tr = np.arange(y01.size)
-            val = (None, None)
-
-        generator = torch.Generator().manual_seed(seed) if seed is not None else None
-        history = train_model(
-            model,
-            loss_fn,
-            torch.optim.Adam(model.parameters(), lr=self.lr),
-            X_t[tr],
-            torch.from_numpy(y01[tr]).float(),
-            val[0],
-            val[1],
-            max_epochs=self.max_epochs,
-            batch_size=self.batch_size,
-            monitor=self.monitor,
-            patience=self.patience,
-            generator=generator,
-        )
         if self.threshold == "optimal":
             best = history.best_threshold
             threshold = float(best) if best is not None else 0.5

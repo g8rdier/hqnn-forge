@@ -78,7 +78,7 @@ from hqnn_forge.initializers.restricted_variance import (
     block_local_init_,
     restricted_normal_init_,
 )
-from hqnn_forge.models.base import BinaryClassifierBase
+from hqnn_forge.models.base import BinaryClassifierBase, as_seed, seeded_rng
 from hqnn_forge.noise import Position
 
 #: Constructor arguments of the SHNN published in the thesis (see
@@ -172,6 +172,11 @@ class HybridBinaryClassifier(BinaryClassifierBase):
         See :mod:`hqnn_forge.noise`.
     noise_position:
         ``"all"`` (default) or ``"end"``; where the channel is inserted.
+    init_seed:
+        Seed for weight initialisation.  ``None`` (default) draws the initial
+        weights from the global torch RNG; an int draws them from a private RNG
+        seeded with it, so the same seed gives the same weights and the global
+        RNG is left exactly as it was.
 
     Attributes
     ----------
@@ -209,8 +214,15 @@ class HybridBinaryClassifier(BinaryClassifierBase):
         init_std: float = 0.1,
         noise_level: float = 0.0,
         noise_position: Position = "all",
+        init_seed: int | None = None,
     ) -> None:
         super().__init__()
+        # Building the layers draws from the global RNG (nn.Linear and
+        # TorchLayer defaults), all of it overwritten by _initialise_weights.
+        # With init_seed those draws are undone too, so the caller's stream is
+        # exactly where it was.
+        init_seed = as_seed(init_seed)
+        caller_rng = torch.random.get_rng_state() if init_seed is not None else None
         self._config = dict(
             n_input_features=n_input_features,
             n_qubits=n_qubits,
@@ -228,6 +240,7 @@ class HybridBinaryClassifier(BinaryClassifierBase):
             init_std=init_std,
             noise_level=noise_level,
             noise_position=noise_position,
+            init_seed=init_seed,
         )
 
         if encoder_activation not in ("tanh", "sigmoid"):
@@ -317,7 +330,10 @@ class HybridBinaryClassifier(BinaryClassifierBase):
         self.head = nn.Linear(n_readouts, 1)
 
         # ── Small-angle restricted-variance initialisation ─────────────────
-        self._initialise_weights()
+        with seeded_rng(init_seed):
+            self._initialise_weights()
+        if caller_rng is not None:
+            torch.random.set_rng_state(caller_rng)
 
     # ------------------------------------------------------------------
     @classmethod
