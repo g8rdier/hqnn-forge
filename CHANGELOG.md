@@ -71,6 +71,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   NumPy 1.x and fail to initialise NumPy 2; CI now installs every declared floor of the runtime
   dependencies and the `lightning` and `sklearn` extras (`test-lowest` job) and fails if one
   is unreachable, so a floor that stops working fails a PR instead of a user install
+- `PCANormalizer`'s fitted attributes (`mean_`, `components_`, `explained_variance_`,
+  `std_`) are absent before `fit`, as in scikit-learn, instead of set to `None`; reading one
+  on an unfitted instance raises `AttributeError`. Check `is_fitted_` instead of comparing an
+  attribute to `None`
 
 ### Fixed
 - Device fallback raised `AttributeError` on PennyLane 0.45, where `qml.DeviceError` no longer

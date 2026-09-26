@@ -15,10 +15,13 @@ init-strategy variance) stay in the per-model files.
 
 from __future__ import annotations
 
+from typing import TypedDict
+
 import pytest
 import torch
 import torch.nn as nn
 
+from hqnn_forge.encoding.angle_embedding import DeviceName, DiffMethod
 from hqnn_forge.models import (
     BinaryClassifierBase,
     HybridBinaryClassifier,
@@ -32,22 +35,33 @@ N_LAYERS = 2
 N_RAW_FEATURES = 12
 FIXTURE_SEED = 0
 
+# The concrete classes. Fixtures and tests are typed with these rather than
+# BinaryClassifierBase, which has no __init__ of its own (so mypy would accept any
+# constructor arguments) and declares no head, encoder or quantum layer.
+ConcreteClassifier = HybridBinaryClassifier | ParallelHybridClassifier
+
 CLASSIFIERS = [
     pytest.param(HybridBinaryClassifier, id="serial"),
     pytest.param(ParallelHybridClassifier, id="parallel"),
 ]
 
+
 # Constructor arguments common to both classes; CI-portable device and diff method.
-DEVICE_KWARGS = dict(device_name="default.qubit", diff_method="parameter-shift")
+class _DeviceKwargs(TypedDict):
+    device_name: DeviceName
+    diff_method: DiffMethod
+
+
+DEVICE_KWARGS: _DeviceKwargs = {"device_name": "default.qubit", "diff_method": "parameter-shift"}
 
 
 @pytest.fixture(scope="module", params=CLASSIFIERS)
-def model_cls(request: pytest.FixtureRequest) -> type[BinaryClassifierBase]:
+def model_cls(request: pytest.FixtureRequest) -> type[ConcreteClassifier]:
     return request.param
 
 
 @pytest.fixture(scope="module")
-def classifier(model_cls: type[BinaryClassifierBase]) -> BinaryClassifierBase:
+def classifier(model_cls: type[ConcreteClassifier]) -> ConcreteClassifier:
     """Small classifier of the parametrised class, with the classical encoder on."""
     torch.manual_seed(FIXTURE_SEED)
     return model_cls(
@@ -68,13 +82,11 @@ def random_raw_batch() -> torch.Tensor:
 
 
 class TestBaseClass:
-    def test_models_subclass_the_base(self, model_cls: type[BinaryClassifierBase]) -> None:
+    def test_models_subclass_the_base(self, model_cls: type[ConcreteClassifier]) -> None:
         assert issubclass(model_cls, BinaryClassifierBase)
         assert issubclass(model_cls, nn.Module)
 
-    def test_shared_methods_are_not_overridden(
-        self, model_cls: type[BinaryClassifierBase]
-    ) -> None:
+    def test_shared_methods_are_not_overridden(self, model_cls: type[ConcreteClassifier]) -> None:
         """A model that re-implements the shared API defeats the point of the base."""
         for name in ("predict_proba", "predict", "count_parameters"):
             assert getattr(model_cls, name) is getattr(BinaryClassifierBase, name), name
@@ -89,34 +101,32 @@ class TestBaseClass:
 
 class TestForwardShape:
     def test_output_shape(
-        self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor
+        self, classifier: ConcreteClassifier, random_raw_batch: torch.Tensor
     ) -> None:
         assert classifier(random_raw_batch).shape == (BATCH, 1)
 
-    def test_single_sample(self, classifier: BinaryClassifierBase) -> None:
+    def test_single_sample(self, classifier: ConcreteClassifier) -> None:
         assert classifier(torch.randn(1, N_RAW_FEATURES)).shape == (1, 1)
 
 
 class TestPredictProba:
     def test_output_in_zero_one(
-        self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor
+        self, classifier: ConcreteClassifier, random_raw_batch: torch.Tensor
     ) -> None:
         probs = classifier.predict_proba(random_raw_batch)
         assert probs.min().item() >= 0.0 - 1e-6
         assert probs.max().item() <= 1.0 + 1e-6
 
     def test_output_shape(
-        self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor
+        self, classifier: ConcreteClassifier, random_raw_batch: torch.Tensor
     ) -> None:
         assert classifier.predict_proba(random_raw_batch).shape == (BATCH,)
 
-    def test_no_grad(
-        self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor
-    ) -> None:
+    def test_no_grad(self, classifier: ConcreteClassifier, random_raw_batch: torch.Tensor) -> None:
         assert not classifier.predict_proba(random_raw_batch).requires_grad
 
     def test_is_sigmoid_of_forward(
-        self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor
+        self, classifier: ConcreteClassifier, random_raw_batch: torch.Tensor
     ) -> None:
         # predict_proba runs its forward under eval_mode, so the expectation has to
         # as well; a bare classifier.eval() would also leak eval mode into every later
@@ -128,20 +138,20 @@ class TestPredictProba:
 
 class TestPredict:
     def test_returns_binary(
-        self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor
+        self, classifier: ConcreteClassifier, random_raw_batch: torch.Tensor
     ) -> None:
         preds = classifier.predict(random_raw_batch)
         assert set(torch.unique(preds).tolist()) <= {0, 1}
 
     def test_output_shape_and_dtype(
-        self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor
+        self, classifier: ConcreteClassifier, random_raw_batch: torch.Tensor
     ) -> None:
         preds = classifier.predict(random_raw_batch)
         assert preds.shape == (BATCH,)
         assert preds.dtype == torch.long
 
     def test_threshold_is_applied(
-        self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor
+        self, classifier: ConcreteClassifier, random_raw_batch: torch.Tensor
     ) -> None:
         probs = classifier.predict_proba(random_raw_batch)
         torch.testing.assert_close(
@@ -158,7 +168,7 @@ class TestPredict:
         )
 
 
-def _dropout_classifier(model_cls: type[BinaryClassifierBase]) -> BinaryClassifierBase:
+def _dropout_classifier(model_cls: type[ConcreteClassifier]) -> ConcreteClassifier:
     """Classifier with active dropout, in train mode as left by construction."""
     torch.manual_seed(FIXTURE_SEED)
     return model_cls(
@@ -177,7 +187,7 @@ class TestInferenceMode:
     """
 
     def test_train_mode_matches_eval_forward(
-        self, model_cls: type[BinaryClassifierBase], random_raw_batch: torch.Tensor
+        self, model_cls: type[ConcreteClassifier], random_raw_batch: torch.Tensor
     ) -> None:
         """Repeated calls in train mode give the dropout-free eval probabilities."""
         model = _dropout_classifier(model_cls)
@@ -192,14 +202,14 @@ class TestInferenceMode:
 
 
 class TestParameterCount:
-    def test_positive_count(self, classifier: BinaryClassifierBase) -> None:
+    def test_positive_count(self, classifier: ConcreteClassifier) -> None:
         assert classifier.count_parameters() > 0
 
-    def test_matches_torch(self, classifier: BinaryClassifierBase) -> None:
+    def test_matches_torch(self, classifier: ConcreteClassifier) -> None:
         assert classifier.count_parameters() == sum(p.numel() for p in classifier.parameters())
         assert classifier.count_parameters(trainable_only=False) == classifier.count_parameters()
 
-    def test_trainable_only_excludes_frozen(self, model_cls: type[BinaryClassifierBase]) -> None:
+    def test_trainable_only_excludes_frozen(self, model_cls: type[ConcreteClassifier]) -> None:
         model = model_cls(
             n_input_features=N_RAW_FEATURES, n_qubits=N_QUBITS, n_layers=N_LAYERS, **DEVICE_KWARGS
         )
@@ -209,7 +219,7 @@ class TestParameterCount:
         assert model.count_parameters(trainable_only=False) == total
 
 
-def _circuit_input(model: nn.Module, x: torch.Tensor) -> torch.Tensor:
+def _circuit_input(model: ConcreteClassifier, x: torch.Tensor) -> torch.Tensor:
     """Run a forward pass and return the tensor handed to the quantum layer."""
     captured: list[torch.Tensor] = []
     handle = model.quantum_layer.register_forward_pre_hook(
@@ -223,13 +233,13 @@ def _circuit_input(model: nn.Module, x: torch.Tensor) -> torch.Tensor:
 
 
 class TestEncoderBypass:
-    def test_mismatched_dims_raises(self, model_cls: type[BinaryClassifierBase]) -> None:
+    def test_mismatched_dims_raises(self, model_cls: type[ConcreteClassifier]) -> None:
         with pytest.raises(ValueError, match="n_input_features"):
             model_cls(
                 n_input_features=10, n_qubits=4, use_classical_encoder=False, **DEVICE_KWARGS
             )
 
-    def test_matching_dims_works(self, model_cls: type[BinaryClassifierBase]) -> None:
+    def test_matching_dims_works(self, model_cls: type[ConcreteClassifier]) -> None:
         model = model_cls(
             n_input_features=4,
             n_qubits=4,
@@ -240,7 +250,7 @@ class TestEncoderBypass:
         assert model(torch.randn(2, 4)).shape == (2, 1)
 
     def test_bypassed_input_reaches_circuit_unscaled(
-        self, model_cls: type[BinaryClassifierBase]
+        self, model_cls: type[ConcreteClassifier]
     ) -> None:
         """Bypassed input is already in (-π, π); a second π factor aliases angles mod 2π."""
         model = model_cls(
@@ -254,7 +264,7 @@ class TestEncoderBypass:
         torch.testing.assert_close(_circuit_input(model, x), x)
 
     def test_encoder_output_scaled_by_pi(
-        self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor
+        self, classifier: ConcreteClassifier, random_raw_batch: torch.Tensor
     ) -> None:
         expected = classifier.classical_encoder(random_raw_batch).detach() * torch.pi
         torch.testing.assert_close(_circuit_input(classifier, random_raw_batch), expected)
@@ -263,7 +273,7 @@ class TestEncoderBypass:
 class TestEncodingTypes:
     @pytest.mark.parametrize("encoding_type", ["angle", "iqp"])
     def test_supported_encodings(
-        self, model_cls: type[BinaryClassifierBase], encoding_type: str
+        self, model_cls: type[ConcreteClassifier], encoding_type: str
     ) -> None:
         model = model_cls(
             n_input_features=4,
@@ -275,6 +285,6 @@ class TestEncodingTypes:
         )
         assert model(torch.randn(2, 4)).shape == (2, 1)
 
-    def test_invalid_encoding(self, model_cls: type[BinaryClassifierBase]) -> None:
+    def test_invalid_encoding(self, model_cls: type[ConcreteClassifier]) -> None:
         with pytest.raises(ValueError, match="Unsupported encoding_type"):
             model_cls(n_input_features=4, n_qubits=4, n_layers=1, encoding_type="unknown_encoding")

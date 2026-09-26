@@ -363,7 +363,8 @@ class TestErrors:
         ):
             pca.fit(X)
         # A rejected fit leaves no attribute populated
-        assert pca.mean_ is None and pca.explained_variance_ is None
+        for attr in ("mean_", "components_", "explained_variance_", "std_"):
+            assert not hasattr(pca, attr), attr
         assert pca.is_fitted_ is False
 
     @pytest.mark.filterwarnings("error")
@@ -465,7 +466,7 @@ class TestErrors:
     @pytest.mark.filterwarnings("error")
     @pytest.mark.parametrize("n_components", [2.5, 3.0, "4", None])
     def test_non_integer_n_components(self, n_components: object) -> None:
-        pca = PCANormalizer(n_components=n_components)
+        pca = PCANormalizer(n_components=n_components)  # type: ignore[arg-type]
         X = np.random.default_rng(0).standard_normal((N_SAMPLES, N_FEATURES))
         with pytest.raises(
             ValueError,

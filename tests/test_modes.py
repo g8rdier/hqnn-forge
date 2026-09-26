@@ -17,6 +17,13 @@ def _net() -> nn.Sequential:
     return nn.Sequential(nn.Linear(2, 2), nn.Sequential(nn.Dropout(0.5), nn.Linear(2, 1)))
 
 
+def _inner_dropout(net: nn.Sequential) -> nn.Module:
+    """The dropout nested two levels down, typed for the checker."""
+    inner = net[1]
+    assert isinstance(inner, nn.Sequential)
+    return inner[0]
+
+
 def _modes(module: nn.Module) -> list[bool]:
     return [submodule.training for submodule in module.modules()]
 
@@ -52,7 +59,7 @@ class TestEvalMode:
     def test_preserves_mixed_submodule_modes(self) -> None:
         """A blanket ``net.train(was_training)`` restore would re-enable dropout here."""
         net = _net()
-        net[1][0].eval()
+        _inner_dropout(net).eval()
         before = _modes(net)
         with eval_mode(net):
             pass
@@ -60,7 +67,7 @@ class TestEvalMode:
 
     def test_restores_modes_when_block_raises(self) -> None:
         net = _net()
-        net[1][0].eval()
+        _inner_dropout(net).eval()
         before = _modes(net)
         with pytest.raises(RuntimeError, match="boom"), eval_mode(net):
             raise RuntimeError("boom")
