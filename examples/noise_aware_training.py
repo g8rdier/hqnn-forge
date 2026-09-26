@@ -22,13 +22,14 @@ Run with:
 from __future__ import annotations
 
 import copy
-import math
 
 import torch
 import torch.nn as nn
 
+from hqnn_forge.evaluation import matthews_corrcoef
 from hqnn_forge.models import HybridBinaryClassifier
 from hqnn_forge.noise import noise_sweep
+from hqnn_forge.training import EpochRecord, train_model
 from hqnn_forge.utils import FocalLoss
 
 SEED = 0
@@ -56,34 +57,23 @@ def make_data(n: int, seed: int) -> tuple[torch.Tensor, torch.Tensor]:
     return X[perm], y[perm]
 
 
-def mcc(y_true: torch.Tensor, probs: torch.Tensor, threshold: float = 0.5) -> float:
-    """Matthews correlation coefficient of the thresholded probabilities."""
-    pred = (probs >= threshold).float()
-    tp = float(((pred == 1) & (y_true == 1)).sum())
-    tn = float(((pred == 0) & (y_true == 0)).sum())
-    fp = float(((pred == 1) & (y_true == 0)).sum())
-    fn = float(((pred == 0) & (y_true == 1)).sum())
-    denom = math.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
-    return (tp * tn - fp * fn) / denom if denom else 0.0
-
-
 def train(model: nn.Module, X: torch.Tensor, y: torch.Tensor, seed: int) -> None:
-    """Focal-loss Adam training; the batch order is fixed by ``seed``."""
-    g = torch.Generator().manual_seed(seed)
-    loss_fn = FocalLoss(alpha=0.25, gamma=2.0)
-    optimiser = torch.optim.Adam(model.parameters(), lr=0.05)
-    model.train()
-    for epoch in range(EPOCHS):
-        perm = torch.randperm(X.shape[0], generator=g)
-        total = 0.0
-        for start in range(0, X.shape[0], BATCH_SIZE):
-            idx = perm[start : start + BATCH_SIZE]
-            optimiser.zero_grad()
-            loss = loss_fn(model(X[idx]).squeeze(-1), y[idx])
-            loss.backward()
-            optimiser.step()
-            total += loss.item() * len(idx)
-        print(f"    epoch {epoch + 1:2d}/{EPOCHS}  loss {total / X.shape[0]:.4f}")
+    """Focal-loss Adam training for EPOCHS epochs; the batch order is fixed by ``seed``."""
+
+    def log(record: EpochRecord) -> None:
+        print(f"    epoch {record.epoch:2d}/{EPOCHS}  loss {record.train_loss:.4f}")
+
+    train_model(
+        model,
+        FocalLoss(alpha=0.25, gamma=2.0),
+        torch.optim.Adam(model.parameters(), lr=0.05),
+        X,
+        y,
+        max_epochs=EPOCHS,
+        batch_size=BATCH_SIZE,
+        generator=torch.Generator().manual_seed(seed),
+        on_epoch_end=log,
+    )
 
 
 def main() -> None:
@@ -104,7 +94,7 @@ def main() -> None:
     train(noisy, X_train, y_train, SEED)
 
     def score(y_true: torch.Tensor, probs: torch.Tensor) -> float:
-        return mcc(y_true, probs)
+        return matthews_corrcoef(y_true, probs >= 0.5)
 
     clean_points = noise_sweep(clean, X_test, SWEEP, y=y_test, score_fn=score)
     noisy_points = noise_sweep(noisy, X_test, SWEEP, y=y_test, score_fn=score)
