@@ -128,6 +128,25 @@ class TestTrainingNoise:
         with torch.no_grad():
             assert not torch.allclose(noisy(x), clean(x), atol=1e-3)
 
+    @pytest.mark.parametrize("cls", LAYERS)
+    @pytest.mark.parametrize("p", [0.05, 0.3])
+    def test_gate_noise_train_output_matches_the_post_hoc_channel(
+        self, cls: type, p: float, x: torch.Tensor
+    ) -> None:
+        """
+        The default position="all": train mode must equal the noiseless twin
+        run under apply_depolarizing_noise with the same p and position, which
+        pins where channels go and with what p, not only that the output moved.
+        """
+        noisy, clean = _pair(cls, noise_level=p)
+        noisy.train()
+        with torch.no_grad():
+            out = noisy(x)
+            with apply_depolarizing_noise(clean, p, position="all"):
+                expected = clean(x)
+        torch.testing.assert_close(out, expected, rtol=1e-6, atol=1e-7)
+        assert not torch.allclose(out, clean(x).detach(), atol=1e-3)
+
     def test_gradients_flow_through_the_noisy_circuit(self, x: torch.Tensor) -> None:
         noisy, clean = _pair(noise_level=0.2, noise_position="end")
         noisy.train()
