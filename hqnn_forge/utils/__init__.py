@@ -10,6 +10,7 @@ FocalLoss               nn.Module implementing Focal Loss (Lin et al. 2017).
 weighted_bce_loss       Functional helper: inverse-class-frequency weighted BCE.
 compute_class_weights   Computes inverse-frequency class weights from a label tensor.
 eval_mode               Context manager: eval mode for a block, submodule modes restored.
+train_mode              Context manager: train mode for a block, frozen submodules left frozen.
 save_checkpoint         Write a classifier's class, constructor arguments and weights.
 load_checkpoint         Rebuild a classifier from such a file.
 disable_quantum_layer   Context manager: replace the quantum layer's output with a constant.
@@ -22,7 +23,7 @@ from hqnn_forge.utils.imbalance import (
     compute_class_weights,
     weighted_bce_loss,
 )
-from hqnn_forge.utils.modes import eval_mode
+from hqnn_forge.utils.modes import eval_mode, train_mode
 
 __all__: list[str] = [
     "FocalLoss",
@@ -31,5 +32,6 @@ __all__: list[str] = [
     "eval_mode",
     "load_checkpoint",
     "save_checkpoint",
+    "train_mode",
     "weighted_bce_loss",
 ]
