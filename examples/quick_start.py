@@ -31,7 +31,11 @@ import torch
 import torch.optim as optim
 
 # ── hqnn-forge imports ────────────────────────────────────────────────────
-from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
+from hqnn_forge.models import (
+    BinaryClassifierBase,
+    HybridBinaryClassifier,
+    ParallelHybridClassifier,
+)
 from hqnn_forge.preprocessing import PCANormalizer
 from hqnn_forge.utils import FocalLoss, compute_class_weights
 
@@ -131,9 +135,7 @@ print()
 # ---------------------------------------------------------------------------
 # 3-5. Train and evaluate a model — shared by both architectures
 # ---------------------------------------------------------------------------
-def train_and_evaluate(
-    model: HybridBinaryClassifier | ParallelHybridClassifier, model_name: str, banner: str
-) -> dict:
+def train_and_evaluate(model: BinaryClassifierBase, model_name: str, banner: str) -> dict:
     """
     Train `model` for N_EPOCHS and report hold-out metrics.
 

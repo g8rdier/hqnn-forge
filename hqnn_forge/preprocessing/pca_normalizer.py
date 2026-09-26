@@ -70,11 +70,12 @@ class PCANormalizer:
         via ``tanh(x) * π`` before returning.  Ensures valid angle-embedding
         range without hard clipping.
 
+    The fitted arrays (``mean_``, ``components_``, ``explained_variance_`` and
+    ``std_``) are set by ``fit`` and absent until then, as in scikit-learn;
+    ``is_fitted_`` exists from construction.
+
     Attributes
     ----------
-    The arrays below are set by ``fit`` and absent until then, as in
-    scikit-learn; ``is_fitted_`` exists from construction.
-
     mean_ : np.ndarray, shape (n_features,)
         Per-feature mean computed during ``fit``.
     components_ : np.ndarray, shape (n_components, n_features)

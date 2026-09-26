@@ -363,7 +363,8 @@ class TestErrors:
         ):
             pca.fit(X)
         # A rejected fit leaves no attribute populated
-        assert not hasattr(pca, "mean_") and not hasattr(pca, "explained_variance_")
+        for attr in ("mean_", "components_", "explained_variance_", "std_"):
+            assert not hasattr(pca, attr), attr
         assert pca.is_fitted_ is False
 
     @pytest.mark.filterwarnings("error")

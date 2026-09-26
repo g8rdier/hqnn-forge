@@ -70,6 +70,10 @@ def _make_iqp_embedding_circuit(
 
         circuit(inputs: torch.Tensor, weights: torch.Tensor) -> list[ExpectationMP]
 
+    where ``inputs`` has shape ``(n_qubits,)`` (or ``(batch, n_qubits)`` when
+    broadcasted) and ``weights`` has shape ``(n_layers, n_qubits, 3)``: the
+    ``qml.Rot`` angles per layer and qubit.
+
     Called inside a QNode it records one ``qml.expval(PauliZ)`` measurement per
     readout wire; the QNode turns them into the expectation values.
 

@@ -15,7 +15,6 @@ from functools import partial
 
 import pytest
 import torch
-from conftest import _grad
 
 from hqnn_forge.encoding import DataReuploadingLayer, QuantumEncodingLayer
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
@@ -118,6 +117,7 @@ class TestBatchedMatchesPerSample:
         device_name: str,
         diff_method: str,
         batch: torch.Tensor,
+        grad_of: Callable[[torch.Tensor], torch.Tensor],
     ) -> None:
         layer = _build(layer_cls, device_name, diff_method)
         # Weight the outputs so the loss depends on every (sample, qubit) entry
@@ -126,11 +126,11 @@ class TestBatchedMatchesPerSample:
 
         layer.zero_grad()
         (layer(batch) * weights).sum().backward()
-        grads_batched = {n: _grad(p).clone() for n, p in layer.named_parameters()}
+        grads_batched = {n: grad_of(p).clone() for n, p in layer.named_parameters()}
 
         layer.zero_grad()
         (_per_sample(layer, batch) * weights).sum().backward()
-        grads_looped = {n: _grad(p).clone() for n, p in layer.named_parameters()}
+        grads_looped = {n: grad_of(p).clone() for n, p in layer.named_parameters()}
 
         # Every trainable tensor, e.g. the re-uploading layer's input_scaling too.
         for name, grad_batched in grads_batched.items():
@@ -173,6 +173,7 @@ class TestInputGradients:
         device_name: str,
         diff_method: str,
         batch: torch.Tensor,
+        grad_of: Callable[[torch.Tensor], torch.Tensor],
     ) -> None:
         """
         With a classical encoder upstream the loss needs d(out)/d(inputs), so
@@ -189,5 +190,5 @@ class TestInputGradients:
         x_looped = batch.clone().requires_grad_(True)
         (_per_sample(layer, x_looped) * weights).sum().backward()
 
-        assert _grad(x_batched).abs().sum() > 0
-        torch.testing.assert_close(_grad(x_batched), _grad(x_looped), rtol=1e-5, atol=1e-6)
+        assert grad_of(x_batched).abs().sum() > 0
+        torch.testing.assert_close(grad_of(x_batched), grad_of(x_looped), rtol=1e-5, atol=1e-6)

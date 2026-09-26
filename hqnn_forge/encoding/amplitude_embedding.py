@@ -126,8 +126,8 @@ def _make_amplitude_embedding_circuit(
     ``weights`` has shape ``(n_layers, n_qubits, 3)``.  ``diff_method`` is
     used only by the input-gradient check.
 
-    Called inside a QNode it records one ``qml.expval(PauliZ)`` measurement per
-    readout wire; the QNode turns them into the expectation values.
+    Called inside a QNode it records one ``qml.expval(PauliZ)`` measurement on
+    every wire; the QNode turns them into the expectation values.
 
     Circuit structure
     -----------------

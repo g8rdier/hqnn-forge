@@ -104,10 +104,13 @@ ignore = [
 python_version = "3.12"
 ignore_missing_imports = true
 strict = false
+# Flags an override below that no longer matches a module, e.g. after a rename
+warn_unused_configs = true
 
 # Test and example modules that still fail the type check (#232). Each is
-# checked again once removed from this list; new modules are checked from the
-# start, so the list can only get shorter.
+# checked again once removed from this list, and new modules are checked from
+# the start. An entry for a renamed or deleted module fails the CI type-check
+# step (warn_unused_configs); a module that passes but is still listed does not.
 [[tool.mypy.overrides]]
 module = [
     "noise_aware_training",  # examples/noise_aware_training.py
