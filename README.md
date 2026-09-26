@@ -19,6 +19,9 @@
 | **Imbalance-robust losses** | Focal Loss & inverse-frequency weighted BCE |
 | **Pure-NumPy pre-processing** | PCA + standardisation without scikit-learn runtime dependency |
 | **Three hybrid topologies** | Serial `HybridBinaryClassifier`, parallel `ParallelHybridClassifier` (classical MLP branch ‖ quantum branch) and multiclass `MulticlassHybridClassifier` (softmax or one-vs-rest heads on a shared quantum layer), with angle or IQP encoding |
+| **Data-driven decision threshold** | `find_optimal_threshold` picks the threshold that maximises MCC, F1 or balanced accuracy on validation probabilities, instead of the default 0.5 that is rarely the right operating point on imbalanced data; `parameter_efficiency` reports the score per thousand trainable parameters |
+| **Quantum ablation** | `disable_quantum_layer` replaces a trained model's quantum-layer output with a constant for the duration of a `with` block, so re-scoring it shows how much the circuit actually contributes |
+| **Checkpoints** | `save_checkpoint` / `load_checkpoint` store a classifier's class, constructor arguments and weights, and rebuild the model from the file alone |
 
 ---
 
@@ -179,14 +182,21 @@ Options shared by both models:
 
 ```
 hqnn_forge/
-├── encoding/        Quantum feature maps (angle embedding, IQP embedding)
+├── encoding/        Quantum feature maps (angle, IQP, amplitude, data re-uploading)
 ├── circuits/        Reusable VQC ansatz primitives
 ├── initializers/    Small-angle (restricted-variance) weight initialisation
-├── preprocessing/   Classical PCA + normalisation (no sklearn runtime dep)
+├── preprocessing/   PCA + normalisation, stratified folds, SMOTE (no sklearn runtime dep)
 ├── models/          Full hybrid architectures
-├── diagnostics/     Circuit depth, gate and parameter counts
-├── utils/           Imbalance-robust losses and helpers
-└── kernels.py       Quantum kernel matrices from the encoding layers (QSVM)
+├── training/        Train/validate loop with early stopping
+├── evaluation/      Decision threshold search, confusion metrics, score per parameter,
+│                    paired Wilcoxon tests, plots
+├── diagnostics/     Circuit cost (depth, gates, inert parameters), gradient variance,
+│                    Fisher information and effective dimension
+├── data/            Dataset loader (Kaggle credit-card fraud)
+├── utils/           Imbalance-robust losses, checkpoint save/load, quantum-layer ablation
+├── kernels.py       Quantum kernel matrices from the encoding layers (QSVM)
+├── noise.py         Depolarizing noise, post hoc for robustness sweeps or during training
+└── sklearn.py       scikit-learn estimator wrapper (cross_val_score, GridSearchCV, Pipeline)
 ```
 
 ---
