@@ -14,6 +14,9 @@ def pytest_configure(config: pytest.Config) -> None:
         "reproducibility: checks against the published benchmark configuration "
         "(deselect with -m 'not reproducibility')",
     )
+    config.addinivalue_line(
+        "markers", "slow: takes minutes to days; opt-in (deselect with -m 'not slow')"
+    )
 
 
 def _grad(tensor: torch.Tensor) -> torch.Tensor:
