@@ -48,7 +48,9 @@ particular gradient variance, and two caveats are worth stating outright:
   draw only for ``n_qubits * n_layers ≥ 4``.  At the library defaults (8 qubits ×
   2 layers) σ = π/4 ≈ 0.79 rad, 43% of the uniform spread; at the smallest
   circuit the encoders accept (2 qubits, 1 layer) σ ≈ 2.22 rad, 22% *wider*
-  than uniform.
+  than uniform.  Both initialisers emit a ``UserWarning`` naming the two
+  standard deviations whenever the σ they draw (for ``block_local_init_``,
+  that of layer 0, its widest) is not narrower than the uniform one.
 * Leaving the uniform regime is not by itself what avoids a plateau.  The
   2-design argument needs depth and structure too.  Nor is the default
   circuit in the shallow local-cost regime of Cerezo et al.: its readouts
@@ -163,8 +165,32 @@ References
 from __future__ import annotations
 
 import math
+import warnings
 
 import torch
+
+#: Standard deviation of an angle drawn uniformly from [0, 2π): 2π/sqrt(12).
+UNIFORM_STD = 2 * math.pi / math.sqrt(12)
+
+
+def _warn_if_not_restricting(std: float, name: str, n_qubits: int, n_layers: int) -> None:
+    """
+    Warn when ``std`` is not narrower than a uniform draw over [0, 2π).
+
+    The relative slack of 1e-9 makes the boundary case, σ equal to the uniform
+    std (``n_qubits * n_layers == 3`` at ``scale = π``), warn regardless of
+    how the two expressions round.
+    """
+    if std >= UNIFORM_STD * (1 - 1e-9):
+        warnings.warn(
+            f"{name}: σ = {std:.4f} rad at n_qubits={n_qubits}, n_layers={n_layers} is not "
+            f"narrower than a uniform draw over [0, 2π) (std {UNIFORM_STD:.4f} rad), so this "
+            f"initialisation restricts nothing.  With scale=π that happens for "
+            f"n_qubits * n_layers <= 3; see hqnn_forge.initializers.restricted_variance.",
+            UserWarning,
+            stacklevel=3,
+        )
+
 
 # ---------------------------------------------------------------------------
 # In-place initialiser: single call, shared σ across all parameters
@@ -215,6 +241,12 @@ def restricted_normal_init_(
     ValueError
         If ``n_qubits`` or ``n_layers`` is less than 1.
 
+    Warns
+    -----
+    UserWarning
+        If σ is not narrower than the uniform std 2π/sqrt(12) ≈ 1.81 rad,
+        i.e. ``n_qubits * n_layers <= 3`` at the default ``scale``.
+
     Examples
     --------
     >>> import torch
@@ -229,6 +261,7 @@ def restricted_normal_init_(
         )
 
     std = scale / math.sqrt(n_qubits * n_layers)
+    _warn_if_not_restricting(std, "restricted_normal_init_", n_qubits, n_layers)
     with torch.no_grad():
         tensor.normal_(mean=0.0, std=std)
     return tensor
@@ -279,6 +312,13 @@ def block_local_init_(
     torch.Tensor
         The initialised tensor (in-place).
 
+    Warns
+    -----
+    UserWarning
+        If layer 0's σ, the widest, is not narrower than the uniform std
+        2π/sqrt(12) ≈ 1.81 rad, i.e. ``n_qubits * L <= 3`` at the default
+        ``scale``.
+
     Examples
     --------
     >>> import torch
@@ -296,6 +336,10 @@ def block_local_init_(
         dtype=tensor.dtype,
         device=tensor.device,
     )
+    if n_layers:
+        _warn_if_not_restricting(
+            scale / math.sqrt(n_qubits * n_layers), "block_local_init_", n_qubits, n_layers
+        )
     with torch.no_grad():
         tensor.normal_(mean=0.0, std=1.0)
         tensor.mul_(stds.view(-1, *([1] * (tensor.dim() - 1))))

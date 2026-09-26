@@ -18,12 +18,14 @@ Run with:
 from __future__ import annotations
 
 import math
+import warnings
 
 import pytest
 import torch
 
 from hqnn_forge.encoding import QuantumEncodingLayer
 from hqnn_forge.initializers import block_local_init_, restricted_normal_init_
+from hqnn_forge.models import HybridBinaryClassifier
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -215,6 +217,56 @@ class TestRestrictedVarianceInit:
     def test_returns_same_tensor(self) -> None:
         tensor = torch.empty(2, 4, 3)
         assert restricted_normal_init_(tensor, n_qubits=4, n_layers=2) is tensor
+
+
+class TestWiderThanUniformWarning:
+    """
+    #167: the initialisers warn when the σ they draw is not narrower than a
+    uniform draw over [0, 2π), std 2π/sqrt(12) ≈ 1.8138.  At scale = π that
+    is n_qubits * n_layers <= 3, with n * L = 3 exactly on the boundary.
+    """
+
+    @pytest.mark.parametrize(("n_qubits", "n_layers"), [(1, 1), (2, 1), (3, 1), (1, 3)])
+    def test_restricted_warns_when_not_narrower(self, n_qubits: int, n_layers: int) -> None:
+        sigma = math.pi / math.sqrt(n_qubits * n_layers)
+        with pytest.warns(UserWarning, match="restricts nothing") as record:
+            restricted_normal_init_(torch.empty(n_layers, n_qubits, 3), n_qubits, n_layers)
+        message = str(record[0].message)
+        assert f"σ = {sigma:.4f}" in message and "std 1.8138" in message
+        assert record[0].filename == __file__, "stacklevel should point at the caller"
+
+    @pytest.mark.parametrize(("n_qubits", "n_layers"), [(3, 1), (1, 3), (2, 1)])
+    def test_block_local_warns_on_its_widest_layer(self, n_qubits: int, n_layers: int) -> None:
+        with pytest.warns(UserWarning, match="block_local_init_") as record:
+            block_local_init_(torch.empty(n_layers, n_qubits, 3), n_qubits=n_qubits)
+        assert record[0].filename == __file__
+
+    @pytest.mark.parametrize(("n_qubits", "n_layers"), [(4, 1), (2, 2), (8, 2)])
+    def test_silent_once_narrower(self, n_qubits: int, n_layers: int) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            restricted_normal_init_(torch.empty(n_layers, n_qubits, 3), n_qubits, n_layers)
+            block_local_init_(torch.empty(n_layers, n_qubits, 3), n_qubits=n_qubits)
+
+    def test_a_smaller_scale_moves_the_boundary(self) -> None:
+        """The check is on σ, not on n * L: scale = 1 is narrower even at 1 x 1."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            restricted_normal_init_(torch.empty(1, 1, 3), 1, 1, scale=1.0)
+
+    def test_classifier_surfaces_it_and_the_normal_strategy_does_not(self) -> None:
+        kwargs = dict(
+            n_input_features=2,
+            n_qubits=2,
+            n_layers=1,
+            device_name="default.qubit",
+            diff_method="backprop",
+        )
+        with pytest.warns(UserWarning, match="restricts nothing"):
+            HybridBinaryClassifier(**kwargs)  # type: ignore[arg-type]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            HybridBinaryClassifier(init_strategy="normal", **kwargs)  # type: ignore[arg-type]
 
 
 class TestBlockLocalInit:
