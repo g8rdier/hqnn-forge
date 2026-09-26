@@ -149,9 +149,9 @@ Options shared by both models:
 
 - `encoding_type="angle"` (default) or `"iqp"` (Havlíček-style feature map with pairwise
   `x_i x_j` phases).
-- `init_strategy="restricted"` (one σ for the whole circuit), `"block_local"` (σ narrowing
-  with layer depth) or `"normal"` (plain `N(0, init_std²)`, `init_std=0.1` by default); see
-  `hqnn_forge.initializers`.
+- `init_strategy="restricted"` (one σ for the whole circuit), `"block_local"` (the same σ in
+  the first layer, narrowing by up to √2 towards the last) or `"normal"` (plain
+  `N(0, init_std²)`, `init_std=0.1` by default); see `hqnn_forge.initializers`.
 - `embedding_rotation="X"` (default), `"Y"` or `"Z"`: the Pauli axis of the angle embedding
   (angle encoding only).
 - `entangler="ring"` (default: CNOT ring then per-qubit `Rot`) or `"strongly_entangling"`

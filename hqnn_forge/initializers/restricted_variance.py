@@ -24,15 +24,16 @@ The two initialisers here are **this library's own heuristics**; neither
 formula is taken from a paper:
 
     restricted_normal_init_:  σ   = scale / sqrt(n_qubits * n_layers)
-    block_local_init_:        σ_ℓ = scale / sqrt(n_qubits * (ℓ + 1))
+    block_local_init_:        σ_ℓ = scale / sqrt(n_qubits * (n_layers + ℓ))
 
-Only the first shrinks with depth, and only it is loosely in the spirit of
-Zhang et al.: σ² = scale²/(n L) carries their 1/L factor, with an extra 1/n
-the paper does not ask for.  The schedule of ``block_local_init_`` depends on
-the layer index alone, so σ_ℓ² is O(1) in the total depth L -- layer 0 of a
-64-layer circuit gets the same σ = π/sqrt(8) ≈ 1.11 rad (at 8 qubits) as
-layer 0 of a 2-layer one.  It orders the layers relative to each other; it is
-not a depth-dependent variance bound, and not the O(1/L) result above.
+Both shrink with the total depth L and are loosely in the spirit of Zhang et
+al.: σ² = scale²/(n L) carries their 1/L factor, with an extra 1/n the paper
+does not ask for.  ``block_local_init_`` starts at the same σ in layer 0 and
+tapers from there, to σ/sqrt((2L - 1)/L) -- just over σ/sqrt(2) at depth --
+in the last layer, so every σ_ℓ² lies in [scale²/(n(2L-1)), scale²/(nL)]
+and is O(1/L) as well.  Until #166 its schedule was scale/sqrt(n (ℓ + 1)),
+which depends on the layer index alone: layer 0 of a 64-layer circuit was as
+wide as layer 0 of a 2-layer one, sqrt(L) = 8x wider than the global scheme.
 
 What the σ are for is conditioning, not a plateau guarantee: small angles keep
 the initial state near the encoded product state, where the single-qubit ⟨Z_i⟩
@@ -105,7 +106,7 @@ so a change that alters them is noticed.
 Functions
 ---------
 restricted_normal_init_     In-place; fills a tensor with restricted-normal values.
-block_local_init_           Fills each block (layer slice) independently.
+block_local_init_           restricted_normal_init_ tapered by layer: sqrt(L/(L+ℓ)) on layer ℓ.
 
 References
 ----------
@@ -206,19 +207,22 @@ def block_local_init_(
     """
     Fill *tensor* **in-place** with per-block restricted-normal values.
 
-    For each layer ℓ the standard deviation is computed using *only that
-    layer's* depth contribution:
+    For a circuit of ``L = tensor.shape[0]`` layers, layer ℓ is drawn with
 
-        σ_ℓ = scale / sqrt(n_qubits * (ℓ + 1))
+        σ_ℓ = scale / sqrt(n_qubits * (L + ℓ))
 
-    A per-layer variant of :func:`restricted_normal_init_` for deeper circuits:
-    early layers keep a wider σ and only the later ones are narrowed, instead
-    of narrowing every layer by the full depth.  Because σ_ℓ depends on the
-    layer index alone, it does **not** shrink with the total depth: layer 0 of
-    a 64-layer circuit is initialised exactly as wide as layer 0 of a 2-layer
-    one.  The schedule is this library's heuristic -- neither the identity-block
-    scheme of Grant et al. (2019) nor the O(1/L) variance of Zhang et al.
-    (2022).
+    A tapered variant of :func:`restricted_normal_init_`: layer 0 gets its σ,
+    scale / sqrt(n_qubits * L), and each later layer a little less, down to
+    that σ divided by sqrt((2L - 1)/L) < sqrt(2) in the last layer.  Every
+    σ_ℓ² is therefore O(1/L) in the total depth, the scaling of Zhang et al.
+    (2022), and the layers are still ordered from widest to narrowest.  The
+    schedule itself is this library's heuristic -- neither the identity-block
+    scheme of Grant et al. (2019) nor a formula from Zhang et al.
+
+    The whole tensor is drawn from N(0, 1) in one call and each layer then
+    scaled by σ_ℓ, so for the same RNG state the result is exactly the
+    output of :func:`restricted_normal_init_` times ``sqrt(L / (L + ℓ))`` on
+    layer ℓ.
 
     Parameters
     ----------
@@ -241,14 +245,18 @@ def block_local_init_(
     >>> from hqnn_forge.initializers import block_local_init_
     >>> w = torch.empty(4, 8, 3)  # 4-layer circuit
     >>> block_local_init_(w, n_qubits=8)
-    >>> # Layer 0 has the largest variance; layer 3 the smallest.
+    >>> # σ_ℓ = π / sqrt(8 * (4 + ℓ)): 0.555 for layer 0 down to 0.420 for layer 3.
     """
     if n_qubits < 1:
         raise ValueError(f"n_qubits must be ≥ 1; got {n_qubits}.")
 
     n_layers: int = tensor.shape[0]
+    stds = torch.tensor(
+        [scale / math.sqrt(n_qubits * (n_layers + layer)) for layer in range(n_layers)],
+        dtype=tensor.dtype,
+        device=tensor.device,
+    )
     with torch.no_grad():
-        for layer_idx in range(n_layers):
-            std = scale / math.sqrt(n_qubits * (layer_idx + 1))
-            tensor[layer_idx].normal_(mean=0.0, std=std)
+        tensor.normal_(mean=0.0, std=1.0)
+        tensor.mul_(stds.view(-1, *([1] * (tensor.dim() - 1))))
     return tensor

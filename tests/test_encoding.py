@@ -154,27 +154,27 @@ class TestInputValidation:
 # seeds, so the tests hold for any seed rather than relying on INIT_SEED alone:
 #
 #   restricted std, relative error   worst 0.091  tolerance 0.20  (2.2x)
-#   log-std slope, either strategy   worst 0.160  tolerance 0.25  (1.56x)
-#   block-local intercept, log space worst 0.332  tolerance 0.5   (1.5x)
+#   log-std slope, restricted        worst 0.160  tolerance 0.25  (1.56x)
 #
-# The slope tolerance is two-sided.  For the same seed, block_local_init_ is
-# restricted_normal_init_ rescaled per layer, so its slope is exactly the flat
-# slope minus 0.5: the decay test and its flat-rejection power check measure
-# one statistic, from -0.5 and from 0 respectively.  SLOPE_TOLERANCE must stay
-# inside (0.160, 0.340); 0.25 leaves 1.56x on the decay side and 1.36x on the
-# power side.  Tightening or loosening it moves both tests at once.
+# block_local_init_ is pinned exactly instead: for the same seed it is
+# restricted_normal_init_ times sqrt(L / (L + l)) on layer l, which a test
+# checks to float precision.  The statistical tests below only confirm what
+# the draws look like, at sizes where they cannot flake.
 INIT_N_QUBITS = 16
 INIT_N_LAYERS = 16
 INIT_SEED = 0
 STD_TOLERANCE = 0.20  # relative
 SLOPE_TOLERANCE = 0.25  # in log-log space
-INTERCEPT_TOLERANCE = 0.5  # in log space
-# The first/last std ratio compares two single layers, so it needs far more
-# than 48 draws per layer: at 16 qubits rel=0.3 fails for ~4.5% of seeds.  At
-# 256 qubits (768 draws) the worst relative deviation over 5000 seeds is 0.136.
-# The ratio sqrt(L) does not depend on n_qubits.
+# One layer's std from 768 draws (256 qubits): worst relative error over 5000
+# seeds 0.100, so STD_TOLERANCE leaves 2x.
 RATIO_N_QUBITS = 256
-RATIO_TOLERANCE = 0.3  # relative
+# The first/last std ratio sqrt((2L - 1)/L) is only 1.39 at 16 layers, so it
+# needs 3072 draws per layer (1024 qubits): over 5000 seeds its worst relative
+# deviation is 0.063, and a flat tensor never comes closer than 0.236 to it.
+# TAPER_TOLERANCE = 0.14 leaves 2.2x on the taper side and 1.7x on the power
+# side.
+TAPER_N_QUBITS = 1024
+TAPER_TOLERANCE = 0.14  # relative
 
 
 def _log_std_fit(tensor: torch.Tensor) -> tuple[float, float]:
@@ -196,12 +196,6 @@ def _restricted() -> torch.Tensor:
     torch.manual_seed(INIT_SEED)
     tensor = torch.empty(INIT_N_LAYERS, INIT_N_QUBITS, 3)
     return restricted_normal_init_(tensor, n_qubits=INIT_N_QUBITS, n_layers=INIT_N_LAYERS)
-
-
-def _block_local() -> torch.Tensor:
-    torch.manual_seed(INIT_SEED)
-    tensor = torch.empty(INIT_N_LAYERS, INIT_N_QUBITS, 3)
-    return block_local_init_(tensor, n_qubits=INIT_N_QUBITS)
 
 
 class TestRestrictedVarianceInit:
@@ -226,32 +220,63 @@ class TestRestrictedVarianceInit:
 
 
 class TestBlockLocalInit:
-    def test_variance_decays_with_depth(self) -> None:
-        """
-        sigma_l = pi / sqrt(n_qubits * (l + 1)), i.e. log(sigma_l) =
-        log(pi / sqrt(n_qubits)) - 0.5 * log(l + 1): slope -0.5, intercept
-        log(pi / sqrt(n_qubits)).
-        """
-        slope, intercept = _log_std_fit(_block_local())
-        assert abs(slope + 0.5) < SLOPE_TOLERANCE
-        assert abs(intercept - math.log(math.pi / math.sqrt(INIT_N_QUBITS))) < INTERCEPT_TOLERANCE
+    """
+    sigma_l = pi / sqrt(n_qubits * (L + l)) (#166): the restricted sigma in
+    layer 0, tapering to it over sqrt((2L - 1)/L) in the last layer.
+    """
 
-    def test_decay_check_rejects_a_flat_tensor(self) -> None:
+    @pytest.mark.parametrize("shape", [(2, 3, 3), (7, 5, 3), (16, 16, 3), (1, 2, 3), (5,)])
+    def test_is_restricted_init_tapered_by_layer(self, shape: tuple[int, ...]) -> None:
+        """
+        Exact, not statistical: for the same RNG state, layer l is the
+        restricted draw times sqrt(L / (L + l)).  Together with the sigma
+        pinned in TestRestrictedVarianceInit this fixes the whole schedule,
+        including its dependence on the total depth L.
+        """
+        n_layers, n_qubits = shape[0], shape[1] if len(shape) > 1 else 4
+        torch.manual_seed(INIT_SEED)
+        restricted = restricted_normal_init_(torch.empty(shape), n_qubits, n_layers)
+        torch.manual_seed(INIT_SEED)
+        tapered = block_local_init_(torch.empty(shape), n_qubits=n_qubits)
+        factor = torch.tensor([math.sqrt(n_layers / (n_layers + l)) for l in range(n_layers)])
+        expected = restricted * factor.view(-1, *([1] * (len(shape) - 1)))
+        torch.testing.assert_close(tapered, expected, rtol=1e-6, atol=0)
+
+    def test_first_layer_narrows_with_total_depth(self) -> None:
+        """
+        Layer 0 is pi / sqrt(n * L): 4x narrower at 32 layers than at 2.  The
+        old schedule, pi / sqrt(n * (l + 1)), drew it at pi / sqrt(n) for
+        every depth and fails both bounds.
+        """
+        for n_layers in (2, 32):
+            torch.manual_seed(INIT_SEED)
+            tensor = block_local_init_(
+                torch.empty(n_layers, RATIO_N_QUBITS, 3), n_qubits=RATIO_N_QUBITS
+            )
+            expected = math.pi / math.sqrt(RATIO_N_QUBITS * n_layers)
+            assert tensor[0].std().item() == pytest.approx(expected, rel=STD_TOLERANCE)
+
+    def test_first_layer_wider_than_last(self) -> None:
+        """The documented ratio sigma_0 / sigma_{L-1} = sqrt((2L - 1) / L)."""
+        torch.manual_seed(INIT_SEED)
+        tensor = torch.empty(INIT_N_LAYERS, TAPER_N_QUBITS, 3)
+        block_local_init_(tensor, n_qubits=TAPER_N_QUBITS)
+        ratio = tensor[0].std().item() / tensor[-1].std().item()
+        expected = math.sqrt((2 * INIT_N_LAYERS - 1) / INIT_N_LAYERS)
+        assert ratio == pytest.approx(expected, rel=TAPER_TOLERANCE)
+
+    def test_taper_check_rejects_a_flat_tensor(self) -> None:
         """
         Power check for the assertion above: a constant-sigma tensor (what
         ``block_local_init_`` would produce if it silently degraded to
-        ``restricted_normal_init_``) must *fail* the slope criterion.
+        ``restricted_normal_init_``) must *fail* the ratio criterion.
         """
-        slope, _ = _log_std_fit(_restricted())
-        assert abs(slope + 0.5) > SLOPE_TOLERANCE
-
-    def test_first_layer_wider_than_last(self) -> None:
-        """The documented ratio sigma_0 / sigma_{L-1} = sqrt(L)."""
         torch.manual_seed(INIT_SEED)
-        tensor = torch.empty(INIT_N_LAYERS, RATIO_N_QUBITS, 3)
-        block_local_init_(tensor, n_qubits=RATIO_N_QUBITS)
+        tensor = torch.empty(INIT_N_LAYERS, TAPER_N_QUBITS, 3)
+        restricted_normal_init_(tensor, n_qubits=TAPER_N_QUBITS, n_layers=INIT_N_LAYERS)
         ratio = tensor[0].std().item() / tensor[-1].std().item()
-        assert ratio == pytest.approx(math.sqrt(INIT_N_LAYERS), rel=RATIO_TOLERANCE)
+        expected = math.sqrt((2 * INIT_N_LAYERS - 1) / INIT_N_LAYERS)
+        assert ratio != pytest.approx(expected, rel=TAPER_TOLERANCE)
 
     def test_returns_same_tensor(self) -> None:
         tensor = torch.empty(2, 4, 3)

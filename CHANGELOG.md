@@ -81,6 +81,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `std_`) are absent before `fit`, as in scikit-learn, instead of set to `None`; reading one
   on an unfitted instance raises `AttributeError`. Check `is_fitted_` instead of comparing an
   attribute to `None`
+- `block_local_init_` (and `init_strategy="block_local"`) draws layer ℓ of an L-layer circuit
+  with σ_ℓ = scale / sqrt(n_qubits · (L + ℓ)) instead of scale / sqrt(n_qubits · (ℓ + 1)), so
+  every σ_ℓ² is O(1/L): layer 0 gets the `restricted_normal_init_` σ and later layers taper
+  by up to √2. The old first layer did not shrink with depth, sqrt(L) wider than the global
+  scheme. Every `block_local` model now initialises differently
 
 ### Fixed
 - Device fallback raised `AttributeError` on PennyLane 0.45, where `qml.DeviceError` no longer
