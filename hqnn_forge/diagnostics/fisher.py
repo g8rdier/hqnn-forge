@@ -74,8 +74,8 @@ References
 ----------
 * Abbas et al. (2021) "The power of quantum neural networks", Nature
   Computational Science 1, 403.
-* Berezniuk et al. (2020) "A scale-dependent notion of effective dimension
-  for generalization", arXiv:2001.10872.
+* Berezniuk et al. (2020) "A scale-dependent notion of effective dimension",
+  arXiv:2001.10872.
 """
 
 from __future__ import annotations

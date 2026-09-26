@@ -229,15 +229,22 @@ and versioning policy this project follows.
 - McClean et al. (2018) — *Barren plateaus in quantum neural network training landscapes*
 - Zhang et al. (2022) — *Escaping from the barren plateau via Gaussian initializations in deep variational quantum circuits*
 - Grant et al. (2019) — *An initialization strategy for addressing barren plateaus in parametrized quantum circuits*
+- Abbas et al. (2021) — *The power of quantum neural networks*
+- Berezniuk et al. (2020) — *A scale-dependent notion of effective dimension*
 - Schuld et al. (2020) — *Circuit-centric quantum classifiers*
 - Sim et al. (2019) — *Expressibility and entangling capability of parameterized quantum circuits for hybrid quantum-classical algorithms*
 - Jones & Gacon (2020) — *Efficient calculation of gradients in classical simulations of variational quantum algorithms*
 - Kandala et al. (2017) — *Hardware-efficient variational quantum eigensolver for small molecules and quantum magnets*
 - Havlíček et al. (2019) — *Supervised learning with quantum-enhanced feature spaces*
+- Schuld & Killoran (2019) — *Quantum machine learning in feature Hilbert spaces*
+- Hubregtsen et al. (2022) — *Training quantum embedding kernels on near-term quantum computers*
 - Pérez-Salinas et al. (2020) — *Data re-uploading for a universal quantum classifier*
 - Schuld, Sweke & Meyer (2021) — *Effect of data encoding on the expressive power of variational quantum-machine-learning models*
 - Möttönen et al. (2005) — *Transformation of quantum states using uniformly controlled rotations*
 - Schuld & Petruccione (2018) — *Supervised Learning with Quantum Computers*
 - Lin et al. (2017) — *Focal Loss for Dense Object Detection*
 - King & Zeng (2001) — *Logistic Regression in Rare Events Data*
+- Chawla et al. (2002) — *SMOTE: Synthetic Minority Over-sampling Technique*
+- Wilcoxon (1945) — *Individual comparisons by ranking methods*
+- Kerby (2014) — *The simple difference formula: an approach to teaching nonparametric correlation*
 - Bergholm et al. (2022) — *PennyLane: Automatic differentiation of hybrid quantum-classical computations*
