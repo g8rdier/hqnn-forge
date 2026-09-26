@@ -10,6 +10,7 @@ the noise, and the post-hoc wrapper takes precedence.
 from __future__ import annotations
 
 import math
+import warnings
 
 import pennylane as qml
 import pytest
@@ -161,7 +162,9 @@ class TestTrainingNoise:
 
     @pytest.mark.parametrize("cls", LAYERS)
     def test_extra_repr_mentions_the_noise(self, cls: type) -> None:
-        assert "noise_level=0.1" in _layer(cls, noise_level=0.1).extra_repr()
+        assert "noise_level=0.1, noise_position='all'" in _layer(cls, noise_level=0.1).extra_repr()
+        end = _layer(cls, noise_level=0.1, noise_position="end").extra_repr()
+        assert "noise_position='end'" in end
         assert "noise_level" not in _layer(cls).extra_repr()
 
     @requires_lightning
@@ -323,16 +326,27 @@ class TestInteractions:
 class TestValidation:
     @pytest.mark.parametrize("p", [-0.1, 0.8])
     def test_noise_level_range(self, p: float) -> None:
-        with pytest.raises(ValueError, match="p must lie"):
+        with pytest.raises(ValueError, match="noise_level must lie"):
             _layer(noise_level=p)
 
     def test_noise_position(self) -> None:
-        with pytest.raises(ValueError, match="position"):
+        with pytest.raises(ValueError, match="noise_position must be"):
             _layer(noise_level=0.1, noise_position="middle")
 
     def test_classifier_validates_too(self) -> None:
-        with pytest.raises(ValueError, match="p must lie"):
+        with pytest.raises(ValueError, match="noise_level must lie"):
             HybridBinaryClassifier(n_input_features=4, n_qubits=N_QUBITS, noise_level=1.0, **CPU)
+
+    @pytest.mark.parametrize("cls", LAYERS)
+    def test_warns_above_the_practical_qubit_count(self, cls: type) -> None:
+        with pytest.warns(RuntimeWarning, match="n_qubits=7"):
+            cls(n_qubits=7, n_layers=1, noise_level=0.1, **CPU)
+
+    @pytest.mark.parametrize("kwargs", [{"n_qubits": 6, "noise_level": 0.1}, {"n_qubits": 7}])
+    def test_no_warning_at_the_limit_or_without_noise(self, kwargs: dict[str, object]) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            QuantumEncodingLayer(n_layers=1, **kwargs, **CPU)
 
     def test_training_noise_qnode_rejects_zero(self) -> None:
         layer = _layer()

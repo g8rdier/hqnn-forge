@@ -78,12 +78,19 @@ def _resolve_qlayer(target: nn.Module) -> tuple[qml.qnn.TorchLayer, int]:
     return qlayer, n_qubits
 
 
-def validate_noise(p: float, position: str) -> None:
-    """Raise ``ValueError`` unless ``0 <= p <= MAX_P`` and ``position`` is known."""
+def validate_noise(
+    p: float, position: str, *, p_name: str = "p", position_name: str = "position"
+) -> None:
+    """
+    Raise ``ValueError`` unless ``0 <= p <= MAX_P`` and ``position`` is known.
+
+    ``p_name`` / ``position_name`` are the argument names the messages use, so
+    a caller that exposes them under other names (``noise_level``) is quoted.
+    """
     if not 0.0 <= p <= MAX_P:
-        raise ValueError(f"p must lie in [0, {MAX_P}]; got {p}.")
+        raise ValueError(f"{p_name} must lie in [0, {MAX_P}]; got {p}.")
     if position not in ("all", "end"):
-        raise ValueError(f"position must be 'all' or 'end'; got {position!r}.")
+        raise ValueError(f"{position_name} must be 'all' or 'end'; got {position!r}.")
 
 
 def _noisy_qnode(qnode: qml.QNode, n_qubits: int, p: float, position: Position) -> qml.QNode:

@@ -720,12 +720,16 @@ class QuantumEncodingLayer(nn.Module):
         if self.readout != "all":
             options += f", readout={self.readout!r}"
         if self.noise_level:
-            options += f", noise_level={self.noise_level}"
+            options += f", noise_level={self.noise_level}, noise_position={self.noise_position!r}"
         return (
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "
             f"n_params={self.n_layers * self.n_qubits * 3}{options}"
         )
+
+
+MAX_TRAINING_NOISE_QUBITS = 6
+"""Above this many qubits, a layer built with ``noise_level > 0`` warns."""
 
 
 def _build_training_noise(
@@ -734,11 +738,23 @@ def _build_training_noise(
     """
     The train-mode QNode for ``noise_level > 0``, or ``None`` for the
     noiseless default.  Shared by every encoding layer; validation happens
-    here so a bad ``noise_level`` fails at construction.
+    here so a bad ``noise_level`` fails at construction, and a qubit count
+    past what mixed-state backprop can train in practice warns there too.
     """
-    validate_noise(noise_level, noise_position)
+    validate_noise(
+        noise_level, noise_position, p_name="noise_level", position_name="noise_position"
+    )
     if noise_level == 0.0:
         return None
+    if n_qubits > MAX_TRAINING_NOISE_QUBITS:
+        warnings.warn(
+            f"noise_level > 0 trains on default.mixed, which keeps a batch × 4^n density "
+            f"matrix per operation for backprop; at n_qubits={n_qubits} (practical limit "
+            f"about {MAX_TRAINING_NOISE_QUBITS}) a training step may run out of memory.  "
+            f"See hqnn_forge.noise and #229.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
     return training_noise_qnode(qnode, n_qubits, noise_level, noise_position)
 
 
