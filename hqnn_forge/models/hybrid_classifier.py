@@ -32,7 +32,10 @@ Design Notes
   input reaches the circuit unscaled, so it must already lie in (-π, π).
 
 * The quantum layer is initialised with ``restricted_normal_init_`` immediately
-  after construction to avoid barren plateaus.
+  after construction.  With the ``tanh(·)·π`` inputs this model feeds the
+  circuit, that gives no measurable gain in initial gradient variance over
+  uniform init, and it is not barren-plateau immunity: see
+  :mod:`hqnn_forge.initializers` for the measured behaviour.
 
 * The model exposes ``predict_proba(x)`` for inference (applies sigmoid).
 

@@ -1,7 +1,7 @@
 """
 hqnn_forge.initializers.restricted_variance
 =============================================
-Barren-plateau-aware weight initialisation for variational quantum circuits.
+Small-angle weight initialisation for variational quantum circuits.
 
 Theory
 ------
@@ -14,8 +14,9 @@ qubits n:
 
 Two published results bound that decay.  Cerezo et al. (2021) show that for
 *local* cost functions and shallow circuits (depth O(log n)) the decay is
-only polynomial -- the per-qubit ⟨Z_i⟩ readouts used throughout this library
-are local costs for that reason.  Zhang et al. (2022) show that drawing the
+only polynomial.  A single-qubit ⟨Z_i⟩ readout is a local observable, but
+whether it is a local *cost* in their sense depends on how far the circuit
+spreads it; for this library's default circuit it is not (measured below).  Zhang et al. (2022) show that drawing the
 parameters from N(0, σ²) with σ² = O(1/L) instead of uniformly bounds the
 gradient norm below by a polynomial in n and L, for deep circuits too.
 
@@ -34,7 +35,7 @@ layer 0 of a 2-layer one.  It orders the layers relative to each other; it is
 not a depth-dependent variance bound, and not the O(1/L) result above.
 
 What the σ are for is conditioning, not a plateau guarantee: small angles keep
-the initial state near the encoded product state, where the local ⟨Z_i⟩
+the initial state near the encoded product state, where the single-qubit ⟨Z_i⟩
 readouts are still informative.  Neither σ is derived to guarantee any
 particular gradient variance, and two caveats are worth stating outright:
 
@@ -46,14 +47,60 @@ particular gradient variance, and two caveats are worth stating outright:
   circuit the encoders accept (2 qubits, 1 layer) σ ≈ 2.22 rad, 22% *wider*
   than uniform.
 * Leaving the uniform regime is not by itself what avoids a plateau.  The
-  2-design argument needs depth and structure too, and at the defaults
-  (8 qubits, 2 layers, local ⟨Z_i⟩ readouts) the circuit already sits in the
-  shallow local-cost regime where Cerezo et al. predict polynomial decay.
+  2-design argument needs depth and structure too.  Nor is the default
+  circuit in the shallow local-cost regime of Cerezo et al.: its readouts
+  behave as global costs, as the next section measures.
 
 The initial circuit is therefore a *small-angle* one, not an identity one.
 Grant et al. (2019) is a different strategy (identity blocks: parameters
 chosen so that consecutive blocks compose to the identity) and is not
 implemented here; it is cited for contrast.
+
+What the initialiser does for this library's circuits (measured)
+----------------------------------------------------------------
+The local-cost argument above does not apply to the library's default
+circuit.  Its CNOT ring is a cascade, CNOT(0,1), CNOT(1,2), …, CNOT(n-1,0),
+so the backward light cone of ⟨Z_i⟩ through one ring covers qubits
+{0, …, i+1} for 0 < i < n-1 and all n qubits for i = 0 and i = n-1; through
+a second ring the closing CNOT(n-1,0) pulls in every qubit.  From 2 layers on
+(the default) every ⟨Z_i⟩ therefore depends on every input, and the readouts
+behave as global costs.  Measured with
+:func:`hqnn_forge.diagnostics.gradient_variance` on ``QuantumEncodingLayer``
+(2 layers, cost ⟨Z_0⟩, ``default.qubit``, mean
+per-weight gradient variance over 5 seeds × 300 draws of weights and inputs),
+the ratio of restricted-init to uniform-init variance is:
+
+    inputs uniform in   n=4    n=6    n=8
+    {0}                 1.09   1.52   1.75
+    ±π/4                1.00   1.20   1.53
+    ±π                  0.97   0.97   1.00     (5-seed range at n=8: 0.80–1.12)
+
+and the uniform-init variance itself at ±π falls 0.0153 → 0.00428 → 0.00166
+from 4 to 8 qubits, about 3x per two qubits, with the restricted init
+following the same curve (0.0149 → 0.0042 → 0.0017).
+
+So:
+
+* With inputs spread over (-π, π), which is what both classifiers feed the
+  circuit (``tanh(·)·π``) and what ``PCANormalizer(scale_to_pi=True)``
+  produces, the initialiser makes **no measurable difference**: the angle
+  embedding already randomises the state, and shrinking the weight angles
+  cannot bring it back near the identity.
+* With inputs near zero it keeps more gradient variance, by a factor that
+  grows over the measured range: 1.09x at 4 qubits, 1.75x at 8 (5-seed range
+  1.67–1.89).  Whether that growth continues past 8 qubits -- i.e. whether the
+  initialiser slows the decay for near-zero inputs rather than shifting it --
+  has not been measured.
+* With inputs spread over (-π, π) it does **not** change the exponential
+  decay with qubit count: both inits lose about 3x per two qubits.  That decay
+  is set by the circuit, not the initialisation.
+
+The initialisers are kept as the default because they are harmless and
+cheap, and because the ``scale`` argument gives a one-parameter handle on
+the initial angle spread.  They should not be relied on for trainability at
+larger qubit counts; a locality-preserving entangler is the lever for that
+(issue #161).  ``tests/test_gradient_variance.py`` pins the statements above
+so a change that alters them is noticed.
 
 Functions
 ---------
@@ -113,7 +160,9 @@ def restricted_normal_init_(
         Number of variational layers.
     scale:
         Numerator of the standard deviation formula.  Default: π.
-        Adjust downward (e.g. π/2) for deeper circuits if gradients still vanish.
+        Smaller values narrow the initial angle spread; per the module
+        docstring, that does not counter the decay of gradient variance with
+        qubit count for inputs spread over (-π, π).
 
     Returns
     -------

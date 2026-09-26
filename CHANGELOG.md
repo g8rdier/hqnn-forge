@@ -10,8 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Project scaffold and packaging setup
 - PCANormalizer (pure-NumPy) for quantum angle encoding
-- Small-angle restricted-variance initialiser (barren-plateau-aware; the σ formulas are
-  this library's own heuristics, not a published prescription)
+- Small-angle restricted-variance initialiser (the σ formulas are this library's own
+  heuristics, not a published prescription)
 - Angle-embedding quantum encoding layer with adjoint diff
 - Strongly-entangling and hardware-efficient VQC primitives
 - Focal loss and weighted BCE for imbalanced classification
@@ -58,6 +58,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RuntimeWarning` naming them, instead of refusing the file. A checkpoint written before the
   options added above still rebuilds the model it holds; a config missing anything else is
   still refused
+- The restricted-variance initialiser is no longer described as barren-plateau-safe or
+  -aware. Measured with `gradient_variance` (2 layers, ⟨Z_0⟩ cost), it gives no gain in initial
+  gradient variance for inputs spread over (-π, π), which both classifiers feed the circuit, and
+  a gain growing from 1.1x to 1.75x between 4 and 8 qubits near zero input; over (-π, π) the
+  ~3x decay per two qubits is the same under either init. README and docstrings now state that
 - Raised the `pennylane` and `pennylane-lightning` floors from `>=0.38` to `>=0.45`, the lowest
   version CI runs; 0.38 is incompatible with `autoray>=0.7`, and 0.42 was only tested on
   Python 3.10

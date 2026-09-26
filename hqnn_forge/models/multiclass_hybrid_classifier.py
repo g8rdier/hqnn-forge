@@ -257,7 +257,7 @@ class MulticlassHybridClassifier(nn.Module):
         # ── Class heads: one row per class ────────────────────────────────
         self.head = nn.Linear(n_qubits, n_classes)
 
-        # ── Barren-plateau-safe initialisation ────────────────────────────
+        # ── Small-angle restricted-variance initialisation ─────────────────
         self._initialise_weights()
 
     # ------------------------------------------------------------------

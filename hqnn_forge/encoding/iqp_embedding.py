@@ -13,7 +13,8 @@ Design Rationale
 * **Strongly-Entangling Ansatz** — after embedding, L layers of a CNOT ring
   followed by per-qubit SU(2) Rot(φ, θ, ω) gates are applied.
 * **Adjoint Differentiation** — the QNode is configured for the `adjoint` method.
-* **Barren Plateau Avoidance** — use `restricted_normal_init_` on the returned layer.
+* **Initialisation** — use `restricted_normal_init_` on the returned layer; see
+  `hqnn_forge.initializers` for what the small-angle init does and does not guarantee.
 
 References
 ----------
