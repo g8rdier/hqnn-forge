@@ -94,7 +94,7 @@ def is_circuit_layer(obj: object) -> TypeGuard[CircuitLayer]:
         isinstance(obj, nn.Module)
         and isinstance(getattr(obj, "qlayer", None), qml.qnn.TorchLayer)
         and isinstance(n_qubits, int)
-        and True
+        and not isinstance(n_qubits, bool)
     )
 
 
