@@ -13,6 +13,7 @@ invariant to the scale of the input.
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
 import pennylane as qml
@@ -379,26 +380,49 @@ class TestGradientFlow:
         atol = 1e-5 if diff_method == "finite-diff" else 1e-7
         torch.testing.assert_close(grads[1], grads[0], rtol=0, atol=atol)
 
-    def test_near_zero_amplitude_gradient_is_really_nan(self) -> None:
+    @pytest.mark.parametrize(
+        ("diff_method", "device_name"),
+        [
+            ("parameter-shift", "default.qubit"),
+            ("finite-diff", "default.qubit"),
+            pytest.param("adjoint", "lightning.qubit", marks=requires_lightning),
+        ],
+    )
+    def test_zero_amplitude_input_gradient_is_really_broken(
+        self, diff_method: str, device_name: str
+    ) -> None:
         """
-        Pins the PennyLane behaviour the guard exists for: in float32, an
-        amplitude 1e-5 of its partner (not zero) already gives a NaN input
-        gradient under parameter-shift.  If this starts failing, the guard
-        may be relaxable.
+        Pins the PennyLane behaviour the guard exists for: with an exactly
+        zero amplitude, as zero padding produces, the non-backprop input
+        gradient is NaN (PennyLane 0.45) or finite but wrong against
+        backprop (0.46).  If this starts failing on some version, the guard
+        may be relaxable there.
         """
-        dev = qml.device("default.qubit", wires=2)
+        n = 3
 
-        @qml.qnode(dev, interface="torch", diff_method="parameter-shift")
-        def circuit(inputs: torch.Tensor) -> torch.Tensor:
-            qml.AmplitudeEmbedding(inputs, wires=range(2))
-            qml.RX(0.3, wires=0)
-            return qml.expval(qml.PauliZ(0) @ qml.PauliX(1))
+        def make(method: str, device: str) -> Any:
+            @qml.qnode(qml.device(device, wires=n), interface="torch", diff_method=method)
+            def circuit(inputs: torch.Tensor) -> torch.Tensor:
+                qml.AmplitudeEmbedding(inputs, wires=range(n))
+                for q in range(n):
+                    qml.CNOT(wires=[q, (q + 1) % n])
+                for q in range(n):
+                    qml.Rot(0.4 + q, 1.1 - q, 0.7 * q, wires=q)
+                return qml.expval(qml.PauliZ(0) @ qml.PauliZ(1))
 
-        x = torch.tensor([1e-5, 1.0, 0.7, -0.4])
-        x = (x / x.norm()).requires_grad_(True)
-        circuit(x).backward()
-        assert x.grad is not None
-        assert torch.isnan(x.grad).any()
+            return circuit
+
+        x = torch.tensor([0.3, 0.1, 0.5, 0.2, 0.0, 0.6, 0.2, 0.1], dtype=torch.float64)
+        grads = []
+        for method, device in (("backprop", "default.qubit"), (diff_method, device_name)):
+            xi = x.clone().requires_grad_(True)
+            make(method, device)(xi / xi.norm()).backward()
+            assert xi.grad is not None
+            grads.append(xi.grad)
+        reference, grad = grads
+        assert torch.isfinite(reference).all()
+        broken = not torch.isfinite(grad).all() or (grad - reference).abs().max() > 1e-2
+        assert broken, f"{diff_method} input gradient matches backprop: {grad} vs {reference}"
 
     @pytest.mark.parametrize("diff_method", ["adjoint", "parameter-shift", "finite-diff"])
     def test_inference_under_no_grad_is_allowed(self, diff_method: str) -> None:

@@ -34,11 +34,21 @@ Design Rationale
   differentiate the Möttönen rotation-gate decomposition of the state
   preparation, whose angles are ``arcsin`` of amplitude ratios.  That
   derivative is infinite when an amplitude is zero and ill-conditioned when
-  it is merely small next to its partner, so PennyLane silently returns an
-  input gradient that is **NaN** (an exactly-zero amplitude, or in float32
-  one below about 1e-4 of its partner) or **finite but wrong** (near that
-  edge, and for ``finite-diff`` whenever an amplitude is smaller than its
-  step).  ``adjoint`` on ``default.qubit`` returns **zero** for every input.
+  it is merely small next to its partner.  How PennyLane fails there
+  depends on its version, but it never raises:
+
+  - Up to 0.45 the input gradient is **NaN** for an exactly-zero amplitude,
+    and in float32 already for one below about 1e-4 of its partner.
+  - From 0.46 small amplitudes differentiate correctly, but an exactly-zero
+    amplitude gives a **finite but wrong** gradient (off by 0.1 to 0.8 in
+    absolute terms on a three-qubit circuit) for ``parameter-shift``,
+    ``finite-diff`` and lightning's ``adjoint`` alike.  Zero padding puts
+    such an amplitude into every sample, and a silently wrong gradient is
+    worse than a NaN one.
+  - On every version ``finite-diff`` is also wrong whenever an amplitude is
+    smaller than its step, and ``adjoint`` on ``default.qubit`` returns
+    **zero** for every input.
+
   Which inputs are affected depends on the data, so no per-batch check can
   catch them reliably.
 
