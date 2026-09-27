@@ -58,9 +58,27 @@ jobs:
         else
           # --no-deps: only these two packages come from TestPyPI.  Anything
           # else resolved there would be whatever someone uploaded under that
-          # name, so their dependencies stay the PyPI ones installed above.
+          # name.
           uv pip install --upgrade --prerelease allow --no-deps \
             --index-url https://test.pypi.org/simple/ pennylane pennylane-lightning
+          # Their own requirements, which a nightly can add to (it gained jax),
+          # then come from PyPI: read from the installed metadata, without the
+          # two packages themselves, which PyPI would replace with a release.
+          uv run --no-sync python - > nightly-requirements.txt <<'PY'
+        from importlib.metadata import requires
+        from packaging.requirements import Requirement
+
+        own = {"pennylane", "pennylane-lightning"}
+        for dist in sorted(own):
+            for spec in requires(dist) or []:
+                req = Requirement(spec)
+                name = req.name.lower().replace("_", "-")
+                if name in own or (req.marker and not req.marker.evaluate({"extra": ""})):
+                    continue
+                print(req)
+        PY
+          cat nightly-requirements.txt
+          uv pip install --prerelease allow -r nightly-requirements.txt
         fi
     - name: Record the versions under test
       id: versions
