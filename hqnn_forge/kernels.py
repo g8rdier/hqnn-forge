@@ -158,18 +158,34 @@ def _prepare(X: torch.Tensor, prepare: PrepareInputs, name: str) -> torch.Tensor
     return prepare(X.detach().to(torch.float64))
 
 
+def _check_batch_size(batch_size: int | None) -> None:
+    if batch_size is not None and (isinstance(batch_size, bool) or batch_size < 1):
+        raise ValueError(f"batch_size must be a positive integer or None; got {batch_size!r}.")
+
+
 def _simulate(
     prepared: torch.Tensor,
     qlayer: qml.qnn.TorchLayer,
     n_qubits: int,
     differentiable: bool = False,
+    batch_size: int | None = None,
 ) -> torch.Tensor:
     """
     State vectors for inputs that have already been through ``_prepare``.
 
     With ``differentiable`` the layer's weights are not detached and the
-    replay runs under backprop, so the states carry gradients to them.
+    replay runs under backprop, so the states carry gradients to them.  With
+    ``batch_size`` the rows are replayed that many at a time and the states
+    joined, so the simulator's working memory scales with ``batch_size``
+    rather than with the number of rows.
     """
+    if batch_size is not None and batch_size < prepared.shape[0]:
+        return torch.cat(
+            [
+                _simulate(prepared[start : start + batch_size], qlayer, n_qubits, differentiable)
+                for start in range(0, prepared.shape[0], batch_size)
+            ]
+        )
     # One tape for the whole batch from the layer's own QNode (level=0: the
     # circuit as written, before any batching or gradient transform), with the
     # measurements swapped for the state and run on a state-vector device,
@@ -188,7 +204,11 @@ def _simulate(
 
 
 def encoded_states(
-    X: torch.Tensor, layer: nn.Module, *, differentiable: bool = False
+    X: torch.Tensor,
+    layer: nn.Module,
+    *,
+    differentiable: bool = False,
+    batch_size: int | None = None,
 ) -> torch.Tensor:
     """
     State vectors ``|Φ(x_i)⟩`` the layer prepares for each row of ``X``.
@@ -212,6 +232,15 @@ def encoded_states(
         Keep the graph to the layer's trainable parameters (its weights and
         any ``input_scaling``), simulating under backprop, so a loss on the
         states or the kernel can train them.  Default: ``False``, detached.
+    batch_size:
+        Replay the circuit on this many rows at a time and join the states.
+        ``default.qubit`` copies the broadcast state at every gate, so one
+        pass over ``M`` rows needs a multiple of ``M · 2**n_qubits · 16``
+        bytes while it runs; batches bound that working memory by
+        ``batch_size`` rows.  The returned states still take
+        ``M · 2**n_qubits · 16`` bytes.  All of ``X`` is validated before the
+        first batch runs.  ``None`` (default): one pass.  The result is the
+        same either way.
 
     Returns
     -------
@@ -233,8 +262,9 @@ def encoded_states(
         :func:`hqnn_forge.noise.apply_depolarizing_noise`: the replay would
         drop it, so it refuses rather than return the untransformed states.
     """
+    _check_batch_size(batch_size)
     qlayer, n_qubits, prepare = _resolve_layer(layer, "encoded_states")
-    return _simulate(_prepare(X, prepare, "X"), qlayer, n_qubits, differentiable)
+    return _simulate(_prepare(X, prepare, "X"), qlayer, n_qubits, differentiable, batch_size)
 
 
 def kernel_from_states(
@@ -317,6 +347,7 @@ def quantum_kernel_matrix(
     Y: torch.Tensor | None = None,
     *,
     differentiable: bool = False,
+    batch_size: int | None = None,
 ) -> torch.Tensor:
     """
     Pairwise state-fidelity kernel ``K[i, j] = |⟨Φ(x_i)|Φ(y_j)⟩|²``.
@@ -338,6 +369,10 @@ def quantum_kernel_matrix(
     differentiable:
         As for :func:`encoded_states`: the matrix carries gradients to the
         layer's trainable parameters.
+    batch_size:
+        As for :func:`encoded_states`: the states of ``X`` and ``Y`` are
+        simulated this many rows at a time.  Both sets are validated before
+        the first batch.
 
     Returns
     -------
@@ -377,22 +412,33 @@ def quantum_kernel_matrix(
     O(n² · 2^q).  Memory is O(n · 2^q) for the states plus O(n²) for the
     matrix: at peak the complex128 Gram product and the float64 kernel sit
     side by side, about ``24 n²`` bytes, which is 9.6 GB at ``n = 20,000``.
-    For larger training sets, compute :func:`encoded_states` once and build
-    the matrix in row blocks with :func:`kernel_from_states`.
+    The states take ``(n_x + n_y) · 2^q · 16`` bytes more, and simulating them
+    in one pass a multiple of that; ``batch_size`` bounds the simulation
+    part.  For larger training sets, compute :func:`encoded_states` once and
+    build the matrix in row blocks with :func:`kernel_from_states`, so the
+    full matrix is never held as a complex Gram product::
+
+        S = encoded_states(X_train, layer, batch_size=256)
+        K = torch.cat([kernel_from_states(S[i : i + 1000], S) for i in range(0, len(S), 1000)])
 
     ``|G|²`` with ``G = S S†`` is the Schur
     product of a positive semi-definite matrix with its conjugate, hence
     positive semi-definite itself; small negative eigenvalues of order 1e-15
     are rounding.
     """
+    _check_batch_size(batch_size)
     qlayer, n_qubits, prepare = _resolve_layer(layer, "quantum_kernel_matrix")
     # Validate both input sets before simulating either.
     prepared_x = _prepare(X, prepare, "X")
     if Y is None:
-        return kernel_from_states(_simulate(prepared_x, qlayer, n_qubits, differentiable))
+        return kernel_from_states(
+            _simulate(prepared_x, qlayer, n_qubits, differentiable, batch_size)
+        )
     prepared_y = _prepare(Y, prepare, "Y")
     # One replay for both sets: same circuit and weights, one tape and device.
-    states = _simulate(torch.cat([prepared_x, prepared_y]), qlayer, n_qubits, differentiable)
+    states = _simulate(
+        torch.cat([prepared_x, prepared_y]), qlayer, n_qubits, differentiable, batch_size
+    )
     n_x = prepared_x.shape[0]
     return kernel_from_states(states[:n_x], states[n_x:])
 
