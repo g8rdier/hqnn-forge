@@ -1035,8 +1035,15 @@ class TestNoisyKernel:
         full = quantum_kernel_matrix(torch.cat([X, Y]), layer, noise_level=0.1)
         rect = quantum_kernel_matrix(X, layer, Y, noise_level=0.1)
         torch.testing.assert_close(rect, full[:5, 5:], rtol=0, atol=1e-12)
+        # Not bit-exact: the density matrices of a batch are evolved together,
+        # so the batch size changes the contraction order and the last bits of
+        # the result (5.6e-17 seen on CI).  The state-vector kernel, which
+        # simulates every state on its own, is exact at any batch size.
         torch.testing.assert_close(
-            quantum_kernel_matrix(X, layer, Y, noise_level=0.1, batch_size=2), rect, rtol=0, atol=0
+            quantum_kernel_matrix(X, layer, Y, noise_level=0.1, batch_size=2),
+            rect,
+            rtol=0,
+            atol=1e-15,
         )
 
     @pytest.mark.parametrize(
