@@ -57,6 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   many more (12 of 24 for the ring ansatz at 4 qubits and 2 layers).  `n_effective_params`
   appears in `to_dict()` and the printed summary; templates are decomposed before counting
   and broadcast tapes are rejected
+- `bootstrap_ci` and `paired_bootstrap_ci` in `hqnn_forge.evaluation`: class-stratified
+  bootstrap intervals (BCa or percentile) for MCC, F1, balanced accuracy or any callable
+  metric, and for the difference between two models on the same samples; NumPy-only
 
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from

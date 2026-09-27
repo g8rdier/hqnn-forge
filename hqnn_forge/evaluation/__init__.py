@@ -14,11 +14,19 @@ parameter_efficiency     Score per thousand trainable parameters.
 wilcoxon_signed_rank     Paired signed-rank test with its attainable p-value floor.
 WilcoxonResult           Result of wilcoxon_signed_rank.
 rank_biserial_correlation  Effect size for the paired comparison.
+bootstrap_ci             Class-stratified bootstrap interval (BCa or percentile) for a metric.
+paired_bootstrap_ci      The same for the difference between two models on the same samples.
+BootstrapResult          Result of both.
 plots                    Submodule: confusion matrix, fold boxplot, efficiency
                          frontier (needs matplotlib; import it explicitly:
                          ``from hqnn_forge.evaluation import plots``).
 """
 
+from hqnn_forge.evaluation.bootstrap import (
+    BootstrapResult,
+    bootstrap_ci,
+    paired_bootstrap_ci,
+)
 from hqnn_forge.evaluation.statistics import (
     WilcoxonResult,
     rank_biserial_correlation,
@@ -36,12 +44,15 @@ from hqnn_forge.evaluation.thresholds import (
 
 __all__: list[str] = [
     "METRICS",
+    "BootstrapResult",
     "ThresholdSearchResult",
     "WilcoxonResult",
     "balanced_accuracy",
+    "bootstrap_ci",
     "f1_score",
     "find_optimal_threshold",
     "matthews_corrcoef",
+    "paired_bootstrap_ci",
     "parameter_efficiency",
     "rank_biserial_correlation",
     "wilcoxon_signed_rank",
