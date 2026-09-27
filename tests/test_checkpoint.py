@@ -13,7 +13,11 @@ import pytest
 import torch
 
 import hqnn_forge
-from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
+from hqnn_forge.models import (
+    HybridBinaryClassifier,
+    MulticlassHybridClassifier,
+    ParallelHybridClassifier,
+)
 from hqnn_forge.utils import checkpoint as ckpt
 from hqnn_forge.utils import load_checkpoint, save_checkpoint
 
@@ -40,6 +44,18 @@ MODELS = [
         ),
         id="serial-published",
     ),
+    pytest.param(
+        MulticlassHybridClassifier,
+        dict(
+            n_classes=4,
+            embedding_rotation="Y",
+            entangler="strongly_entangling",
+            readout="first",
+            encoder_activation="sigmoid",
+            init_strategy="normal",
+        ),
+        id="multiclass-published-trunk",
+    ),
 ]
 
 
@@ -48,10 +64,17 @@ def _trained(cls: type, extra: dict) -> torch.nn.Module:
     torch.manual_seed(0)
     model = cls(n_input_features=6, n_qubits=3, n_layers=2, **CPU, **extra)
     opt = torch.optim.SGD(model.parameters(), lr=0.5)
-    x, y = torch.randn(16, 6), torch.randint(0, 2, (16,)).float()
+    x, y = torch.randn(16, 6), torch.randint(0, 2, (16,))
     for _ in range(3):
         opt.zero_grad()
-        torch.nn.functional.binary_cross_entropy_with_logits(model(x).squeeze(-1), y).backward()
+        logits = model(x)
+        if isinstance(model, MulticlassHybridClassifier):
+            loss = torch.nn.functional.cross_entropy(logits, y)
+        else:
+            loss = torch.nn.functional.binary_cross_entropy_with_logits(
+                logits.squeeze(-1), y.float()
+            )
+        loss.backward()
         opt.step()
     return model
 
@@ -157,7 +180,9 @@ class TestCheckpointsOlderThanAnOption:
         return _save_payload(payload, out)
 
     @pytest.mark.parametrize(
-        "cls", [HybridBinaryClassifier, ParallelHybridClassifier], ids=["serial", "parallel"]
+        "cls",
+        [HybridBinaryClassifier, ParallelHybridClassifier, MulticlassHybridClassifier],
+        ids=["serial", "parallel", "multiclass"],
     )
     def test_it_loads_and_predicts_what_the_saved_model_predicted(
         self, cls: type, tmp_path: Path
@@ -196,7 +221,7 @@ class TestCheckpointsOlderThanAnOption:
     def test_the_table_only_names_real_constructor_arguments(self) -> None:
         # Guards the table against rot: an argument renamed or dropped would
         # otherwise leave an entry here that silently never matches.
-        for cls in (HybridBinaryClassifier, ParallelHybridClassifier):
+        for cls in (HybridBinaryClassifier, ParallelHybridClassifier, MulticlassHybridClassifier):
             assert set(ckpt._LEGACY_DEFAULTS) <= ckpt._init_parameter_names(cls)
 
     def test_re_saving_pins_the_filled_arguments(self, tmp_path: Path) -> None:

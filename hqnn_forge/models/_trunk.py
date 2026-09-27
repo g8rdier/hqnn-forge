@@ -1,0 +1,217 @@
+"""
+hqnn_forge.models._trunk
+========================
+The classical-encoder → quantum-layer → dropout trunk every hybrid classifier shares.
+
+:class:`HybridBinaryClassifier`, :class:`ParallelHybridClassifier`'s quantum
+branch and :class:`MulticlassHybridClassifier` all build the same trunk and
+differ only in what surrounds it (the head's width, the parallel model's
+classical branch).  :class:`QuantumTrunk` builds it once, so a circuit option
+or a fix reaches every model at the same time, instead of the multiclass model
+falling behind the binary one as it had (#226).
+
+The trunk's modules are assigned to the model itself (``classical_encoder``,
+``quantum_layer``, ``dropout``), not to a sub-module, so state-dict keys and
+therefore checkpoints are unchanged.  So is the order in which they are
+built, which fixes how many draws each takes from the global RNG: a seeded
+model has the same weights as before the refactor.
+"""
+
+from __future__ import annotations
+
+import torch
+import torch.nn as nn
+
+from hqnn_forge.encoding.angle_embedding import (
+    DeviceName,
+    DiffMethod,
+    Entangler,
+    QuantumEncodingLayer,
+    Readout,
+    RotationAxis,
+)
+from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
+from hqnn_forge.initializers.restricted_variance import (
+    block_local_init_,
+    restricted_normal_init_,
+)
+from hqnn_forge.noise import NoiseMethod, Position
+
+#: Constructor defaults that mark an option as "not asked for".  Both options
+#: are inert outside the configuration that uses them, so a non-default value
+#: there is a mistake worth naming rather than a setting to record and ignore.
+DEFAULT_ENCODER_ACTIVATION = "tanh"
+DEFAULT_INIT_STD = 0.1
+
+INIT_STRATEGIES = ("restricted", "block_local", "normal")
+
+
+def validate_init(init_strategy: str, init_std: float) -> None:
+    """Raise ``ValueError`` for an unknown ``init_strategy`` or an ``init_std`` it would ignore."""
+    if init_strategy not in INIT_STRATEGIES:
+        raise ValueError(
+            f"init_strategy must be 'restricted', 'block_local' or 'normal'; got {init_strategy!r}."
+        )
+    if init_std <= 0.0:
+        raise ValueError(f"init_std must be > 0; got {init_std}.")
+    if init_strategy != "normal" and init_std != DEFAULT_INIT_STD:
+        raise ValueError(
+            f"init_std applies to init_strategy='normal' only; "
+            f"'{init_strategy}' derives its own sigma from the circuit size, so "
+            f"init_std={init_std} would be recorded in the config and ignored."
+        )
+
+
+def validate_encoder_activation(encoder_activation: str) -> None:
+    """Raise ``ValueError`` unless ``encoder_activation`` is ``"tanh"`` or ``"sigmoid"``."""
+    if encoder_activation not in ("tanh", "sigmoid"):
+        raise ValueError(
+            f"encoder_activation must be 'tanh' or 'sigmoid'; got {encoder_activation!r}."
+        )
+
+
+class QuantumTrunk(nn.Module):
+    """
+    Mixin for a classifier built around the shared trunk.
+
+    A subclass validates its own options, calls :meth:`_build_trunk` where the
+    trunk belongs in its construction order, adds its head, and in ``forward``
+    calls :meth:`_quantum_features`.
+    """
+
+    classical_encoder: nn.Module
+    quantum_layer: QuantumEncodingLayer | IQPEncodingLayer
+    dropout: nn.Module
+    n_input_features: int
+    n_qubits: int
+    n_layers: int
+    init_strategy: str
+    init_std: float
+    use_classical_encoder: bool
+    encoder_activation: str
+
+    def _build_trunk(
+        self,
+        *,
+        n_input_features: int,
+        n_qubits: int,
+        n_layers: int,
+        use_classical_encoder: bool,
+        dropout_p: float,
+        device_name: DeviceName,
+        diff_method: DiffMethod,
+        init_strategy: str,
+        encoding_type: str,
+        embedding_rotation: RotationAxis,
+        entangler: Entangler,
+        readout: Readout,
+        encoder_activation: str,
+        init_std: float,
+        noise_level: float,
+        noise_position: Position,
+        noise_method: NoiseMethod,
+        noise_trajectories: int,
+    ) -> int:
+        """
+        Build ``classical_encoder``, ``quantum_layer`` and ``dropout`` on ``self``.
+
+        Returns the quantum layer's readout width, which the head reads.
+        Raises ``ValueError`` for an inconsistent option.
+        """
+        validate_encoder_activation(encoder_activation)
+        validate_init(init_strategy, init_std)
+        if not 0.0 <= dropout_p < 1.0:
+            raise ValueError(f"dropout_p must be in [0, 1); got {dropout_p}.")
+
+        self.n_input_features = n_input_features
+        self.n_qubits = n_qubits
+        self.n_layers = n_layers
+        self.init_strategy = init_strategy
+        self.use_classical_encoder = use_classical_encoder
+        self.encoder_activation = encoder_activation
+        self.init_std = init_std
+
+        # ── Classical encoder ─────────────────────────────────────────────
+        if use_classical_encoder:
+            self.classical_encoder = nn.Sequential(
+                nn.Linear(n_input_features, n_qubits),
+                nn.Tanh() if encoder_activation == "tanh" else nn.Sigmoid(),
+            )
+        else:
+            if n_input_features != n_qubits:
+                raise ValueError(
+                    f"When use_classical_encoder=False, n_input_features "
+                    f"({n_input_features}) must equal n_qubits ({n_qubits})."
+                )
+            if encoder_activation != DEFAULT_ENCODER_ACTIVATION:
+                raise ValueError(
+                    f"encoder_activation applies with use_classical_encoder=True only; "
+                    f"without the encoder the features enter the circuit as given, so "
+                    f"{encoder_activation!r} would be recorded in the config and ignored."
+                )
+            self.classical_encoder = nn.Identity()
+
+        # ── Quantum encoding layer ────────────────────────────────────────
+        if encoding_type == "angle":
+            self.quantum_layer = QuantumEncodingLayer(
+                n_qubits=n_qubits,
+                n_layers=n_layers,
+                rotation=embedding_rotation,
+                device_name=device_name,
+                diff_method=diff_method,
+                entangler=entangler,
+                readout=readout,
+                noise_level=noise_level,
+                noise_position=noise_position,
+                noise_method=noise_method,
+                noise_trajectories=noise_trajectories,
+            )
+        elif encoding_type == "iqp":
+            if embedding_rotation != "X":
+                raise ValueError(
+                    "embedding_rotation applies to encoding_type='angle' only; IQP embedding "
+                    "has no rotation axis."
+                )
+            self.quantum_layer = IQPEncodingLayer(
+                n_qubits=n_qubits,
+                n_layers=n_layers,
+                n_repeats=1,
+                device_name=device_name,
+                diff_method=diff_method,
+                entangler=entangler,
+                readout=readout,
+                noise_level=noise_level,
+                noise_position=noise_position,
+                noise_method=noise_method,
+                noise_trajectories=noise_trajectories,
+            )
+        else:
+            raise ValueError(f"Unsupported encoding_type: {encoding_type}")
+
+        # ── Dropout ───────────────────────────────────────────────────────
+        self.dropout = nn.Dropout(p=dropout_p) if dropout_p > 0.0 else nn.Identity()
+        return self.quantum_layer.n_outputs
+
+    # ------------------------------------------------------------------
+    def _initialise_quantum_weights(self) -> None:
+        """Draw the circuit weights with ``init_strategy`` (the models' classical init is their own)."""
+        weights = self.quantum_layer.qlayer.weights  # (n_layers, n_qubits, 3)
+        if self.init_strategy == "block_local":
+            block_local_init_(weights.data, n_qubits=self.n_qubits)
+        elif self.init_strategy == "normal":
+            # The published SHNN's init: N(0, init_std²), independent of size.
+            with torch.no_grad():
+                weights.normal_(mean=0.0, std=self.init_std)
+        else:
+            restricted_normal_init_(weights.data, n_qubits=self.n_qubits, n_layers=self.n_layers)
+
+    # ------------------------------------------------------------------
+    def _quantum_features(self, x: torch.Tensor) -> torch.Tensor:
+        """Encoder, angle scaling and circuit: ``x`` → ``(batch, n_outputs)`` ⟨Z⟩ values."""
+        x = self.classical_encoder(x)  # (B, n_qubits)
+        # Tanh output (-1, 1) → (-π, π), or sigmoid output (0, 1) → (0, π).
+        # Bypassed input is already in (-π, π); scaling it again would alias
+        # angles mod 2π.
+        if self.use_classical_encoder:
+            x = x * torch.pi
+        return self.quantum_layer(x)  # type: ignore[no-any-return]
