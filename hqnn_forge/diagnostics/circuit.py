@@ -28,6 +28,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from typing import Any
 
+import numpy as np
 import pennylane as qml
 import torch
 import torch.nn as nn
@@ -208,6 +209,78 @@ def _has_scalar_parameters(op: qml.operation.Operator) -> bool:
     return all(qml.math.ndim(value) == 0 for value in op.data)
 
 
+def _z_only(pauli_rep: Any) -> bool:
+    """Every Pauli word of a ``PauliSentence`` is a product of ``Z`` (or identity)."""
+    return all(set(word.values()) <= {"Z"} for word in pauli_rep)
+
+
+def _off_diagonal_zero(matrix: Any) -> bool:
+    """Every entry off the diagonal of a fixed (parameterless) matrix is zero."""
+    arr = np.asarray(qml.math.to_numpy(matrix))
+    return bool(np.all(np.abs(arr - np.diag(np.diag(arr))) < 1e-12))
+
+
+def _is_diagonal_gate(op: qml.operation.Operator) -> bool:
+    """
+    Whether ``op`` is diagonal in the computational basis for every value of
+    its parameters, decided structurally rather than by name:
+
+    * one of the known diagonal gates (``_DIAGONAL``);
+    * a symbolic wrapper (``Adjoint``, ``Controlled``, ``Conditional``,
+      ``Pow``, ``Exp``) of a diagonal gate, since each keeps diagonality;
+    * a gate whose generator has only ``Z``/identity Pauli words
+      (``CRZ``, ``ControlledPhaseShift``, ...), since then ``exp(-iθG)`` is
+      diagonal for every ``θ``;
+    * a gate without parameters whose matrix is diagonal (``S``, ``CCZ``).
+
+    A parametrised gate is never judged by its matrix: at a particular value
+    it can be diagonal by coincidence (``RX(0)`` is the identity), which says
+    nothing about the other values.  Anything undecided counts as mixing, so
+    the inert count stays a lower bound.
+    """
+    if op.name in _DIAGONAL:
+        return True
+    base = getattr(op, "base", None)
+    if isinstance(op, qml.ops.op_math.SymbolicOp) and isinstance(base, qml.operation.Operator):
+        return _is_diagonal_gate(base)
+    if op.num_params > 0:
+        try:
+            rep = op.generator().pauli_rep
+        except (qml.exceptions.GeneratorUndefinedError, NotImplementedError, AttributeError):
+            return False
+        return rep is not None and _z_only(rep)
+    try:
+        return _off_diagonal_zero(qml.matrix(op, wire_order=op.wires))
+    except (qml.exceptions.MatrixUndefinedError, NotImplementedError):
+        return False
+
+
+#: Measurements in the computational basis without an observable: they read
+#: only the diagonal of the state, so they count as Z content on their wires.
+#: ``state``/``density_matrix`` and the entropy-type measurements read
+#: coherences and stay X/Y content.
+_BASIS_MEASUREMENTS = (
+    qml.measurements.ProbabilityMP,
+    qml.measurements.SampleMP,
+    qml.measurements.CountsMP,
+)
+
+
+def _is_diagonal_measurement(measurement: qml.measurements.MeasurementProcess) -> bool:
+    obs = getattr(measurement, "obs", None)
+    if obs is None:
+        return isinstance(measurement, _BASIS_MEASUREMENTS) and not isinstance(
+            measurement, qml.measurements.StateMP
+        )
+    rep = obs.pauli_rep
+    if rep is not None:
+        return _z_only(rep)
+    try:
+        return _off_diagonal_zero(qml.matrix(obs, wire_order=obs.wires))
+    except (qml.exceptions.MatrixUndefinedError, NotImplementedError):
+        return False
+
+
 def count_inert_parameters(tape: qml.tape.QuantumScript) -> int:
     """
     Number of trainable gate parameters that cannot affect any measurement of
@@ -239,15 +312,23 @@ def count_inert_parameters(tape: qml.tape.QuantumScript) -> int:
     slot.  A parameter-broadcast tape is rejected, since one slot there
     stands for a whole batch of values.
 
-    A measurement counts as diagonal when its observable is ``PauliZ`` or a
-    flat product of ``PauliZ`` (``expval``, ``var``, ``sample(obs)``, ...);
-    any other measurement, including ``probs`` and ``sample`` without an
-    observable, marks its wires as ``X``/``Y`` content, and a measurement
+    A measurement counts as diagonal when every Pauli word of its observable
+    is a product of ``Z`` (``Z(0)``, ``2 * Z(0)``, ``Z(0) + Z(1)``, nested
+    products, ``Z(0) @ I(1)``; for an observable without a Pauli
+    representation, when its matrix is diagonal), and when it is a
+    computational-basis measurement without an observable (``probs``,
+    ``sample``, ``counts``).  ``state``, ``density_matrix`` and any other
+    measurement mark their wires as ``X``/``Y`` content, and a measurement
     without wires (``state``, ``probs`` over all wires) marks every wire.
     A mid-circuit measurement counts as a measurement of arbitrary content on
     its wire, since its outcome may drive a conditional gate or be returned.
-    Gates that are neither diagonal nor ``CNOT`` nor ``Rot`` are treated as
-    fully mixing, which keeps the count a lower bound for any gate.
+    Whether a gate is diagonal is decided structurally
+    (:func:`_is_diagonal_gate`: its generator, a symbolic wrapper of a
+    diagonal gate, or the matrix of a gate without parameters), so
+    ``CRZ``, ``ControlledPhaseShift``, ``Adjoint(RZ)`` or a conditional
+    ``RZ`` count as diagonal.  Gates that are neither diagonal nor ``CNOT``
+    nor ``Rot`` are treated as fully mixing, which keeps the count a lower
+    bound for any gate.
 
     Raises
     ------
@@ -270,12 +351,8 @@ def count_inert_parameters(tape: qml.tape.QuantumScript) -> int:
         )
     support: dict[Any, int] = dict.fromkeys(tape.wires, _NONE)
     for measurement in tape.measurements:
-        obs = getattr(measurement, "obs", None)
         wires = list(measurement.wires) if len(measurement.wires) else list(tape.wires)
-        diagonal = obs is not None and all(
-            getattr(term, "name", "") == "PauliZ"
-            for term in (obs.operands if hasattr(obs, "operands") else [obs])
-        )
+        diagonal = _is_diagonal_measurement(measurement)
         for wire in wires:
             support[wire] = max(support[wire], _Z if diagonal else _XY)
 
@@ -290,7 +367,7 @@ def count_inert_parameters(tape: qml.tape.QuantumScript) -> int:
         if all(support[w] == _NONE for w in wires):
             inert += n_trainable  # nothing measured downstream ever sees this gate
             continue
-        if op.name in _DIAGONAL:
+        if _is_diagonal_gate(op):
             if all(support[w] != _XY for w in wires):
                 inert += n_trainable  # commutes with every observable it meets
             elif len(wires) > 1:
