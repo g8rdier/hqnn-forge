@@ -85,6 +85,14 @@ Two methods, chosen with ``noise_method``:
     fresh draw every forward pass resembles.  ``noise_trajectories = k``
     averages ``k`` draws per sample, at ``k`` times the cost, to reduce it.
 
+    Measured (#311, ``docs/results/trajectory-noise-study.md``): at
+    ``p = 0.01``, and with noise only before measurement, trajectory
+    training matched the density channel; at ``p = 0.05`` after every gate
+    it collapsed in 3 of 20 runs (``k = 1`` twice, ``k = 4`` once), density
+    in none.  So keep ``"density"`` where it fits (up to about 6 qubits),
+    and beyond that use ``"trajectories"`` with ``noise_trajectories ≥ 4``
+    and check the runs.
+
     The Pauli at a site is applied as ``RZ(π·z)`` then ``RX(π·x)`` with bits
     ``(x, z)``: ``(0, 0)`` is ``I``, ``(1, 0)`` is ``X``, ``(0, 1)`` is ``Z``
     and ``(1, 1)`` is ``Y`` up to a global phase.  Every sample therefore
