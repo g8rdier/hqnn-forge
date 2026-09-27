@@ -15,12 +15,17 @@ Subclasses implement ``__init__`` and ``forward`` only.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 import torch.nn as nn
 
 from hqnn_forge.utils.modes import eval_mode
+
+if TYPE_CHECKING:
+    # Annotations only: the encoding modules are not needed at runtime here.
+    from hqnn_forge.encoding.angle_embedding import QuantumEncodingLayer
+    from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 
 
 class BinaryClassifierBase(nn.Module):
@@ -45,9 +50,28 @@ class BinaryClassifierBase(nn.Module):
         The constructor arguments, so ``type(model)(**model.get_config())``
         rebuilds an equivalent architecture.  Subclasses record them in
         ``self._config`` at the top of ``__init__``.
+
+    Attributes
+    ----------
+    Every subclass assigns these three in ``__init__``; they are declared here
+    so code that only reads them can be typed against this class instead of a
+    union of the concrete models.
+
+    classical_encoder : nn.Module
+        ``nn.Sequential`` (Linear + activation), or ``nn.Identity`` when the
+        encoder is bypassed.
+    quantum_layer : QuantumEncodingLayer or IQPEncodingLayer
+        The encoding layer with the variational circuit.
+    head : nn.Linear
+        The classification head producing the logit.
     """
 
     _config: dict[str, Any] | None = None
+    # Declarations only: nn.Module registers the submodules when a subclass
+    # assigns them, so these change neither state_dict keys nor checkpoints.
+    classical_encoder: nn.Module
+    quantum_layer: QuantumEncodingLayer | IQPEncodingLayer
+    head: nn.Linear
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # pragma: no cover - abstract
         raise NotImplementedError(

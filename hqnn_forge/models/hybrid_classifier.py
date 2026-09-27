@@ -252,7 +252,7 @@ class HybridBinaryClassifier(BinaryClassifierBase):
 
         # ── Classical encoder ─────────────────────────────────────────────
         if use_classical_encoder:
-            self.classical_encoder: nn.Module = nn.Sequential(
+            self.classical_encoder = nn.Sequential(
                 nn.Linear(n_input_features, n_qubits),
                 nn.Tanh() if encoder_activation == "tanh" else nn.Sigmoid(),
             )
@@ -272,7 +272,7 @@ class HybridBinaryClassifier(BinaryClassifierBase):
 
         # ── Quantum encoding layer ────────────────────────────────────────
         if encoding_type == "angle":
-            self.quantum_layer: QuantumEncodingLayer | IQPEncodingLayer = QuantumEncodingLayer(
+            self.quantum_layer = QuantumEncodingLayer(
                 n_qubits=n_qubits,
                 n_layers=n_layers,
                 rotation=embedding_rotation,

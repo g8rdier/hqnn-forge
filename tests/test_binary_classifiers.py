@@ -219,7 +219,7 @@ class TestParameterCount:
         assert model.count_parameters(trainable_only=False) == total
 
 
-def _circuit_input(model: ConcreteClassifier, x: torch.Tensor) -> torch.Tensor:
+def _circuit_input(model: BinaryClassifierBase, x: torch.Tensor) -> torch.Tensor:
     """Run a forward pass and return the tensor handed to the quantum layer."""
     captured: list[torch.Tensor] = []
     handle = model.quantum_layer.register_forward_pre_hook(
@@ -264,7 +264,7 @@ class TestEncoderBypass:
         torch.testing.assert_close(_circuit_input(model, x), x)
 
     def test_encoder_output_scaled_by_pi(
-        self, classifier: ConcreteClassifier, random_raw_batch: torch.Tensor
+        self, classifier: BinaryClassifierBase, random_raw_batch: torch.Tensor
     ) -> None:
         expected = classifier.classical_encoder(random_raw_batch).detach() * torch.pi
         torch.testing.assert_close(_circuit_input(classifier, random_raw_batch), expected)
