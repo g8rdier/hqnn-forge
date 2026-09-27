@@ -59,6 +59,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and broadcast tapes are rejected
 
 ### Changed
+- `device_name` and `diff_method` default to `"auto"` everywhere (encoding layers, QNode
+  factories, classifiers, the scikit-learn estimator): `default.qubit` with backprop up to
+  12 qubits, `lightning.qubit` with adjoint above, parameter-shift with `shots`, and backprop
+  for amplitude encoding behind the classical encoder. The default was `lightning.qubit` with
+  adjoint, about 15× slower for batched training at the default 8 qubits (#312, #349).
+  Checkpoints record their explicit names and load unchanged.
 - `load_checkpoint` fills constructor arguments a checkpoint predates from
   `checkpoint._LEGACY_DEFAULTS` — the behaviour from before each argument existed — with a
   `RuntimeWarning` naming them, instead of refusing the file. A checkpoint written before the

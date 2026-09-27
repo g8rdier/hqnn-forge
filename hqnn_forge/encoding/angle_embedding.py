@@ -66,6 +66,7 @@ from hqnn_forge.encoding._common import (
     is_out_of_memory,
     measure_z,
     readout_wires,
+    resolve_backend,
     resolve_device,
     shots_repr,
     validate_circuit_options,
@@ -227,8 +228,8 @@ def build_encoding_qnode(
     n_qubits: int = 8,
     n_layers: int = 2,
     rotation: RotationAxis = "X",
-    device_name: DeviceName = "lightning.qubit",
-    diff_method: DiffMethod = "adjoint",
+    device_name: DeviceName = "auto",
+    diff_method: DiffMethod = "auto",
     entangler: Entangler = "ring",
     readout: Readout = "all",
     shots: int | None = None,
@@ -250,13 +251,18 @@ def build_encoding_qnode(
     rotation:
         Pauli rotation axis for AngleEmbedding: ``"X"`` (default), ``"Y"``, or ``"Z"``.
     device_name:
-        PennyLane device string.  ``"lightning.qubit"`` is strongly preferred for
-        adjoint differentiation.  An unavailable backend falls back along
-        ``lightning.qubit → default.qubit`` with a warning per step.
+        PennyLane device name.  Default ``"auto"``: ``default.qubit`` up to
+        12 qubits, ``lightning.qubit`` above (see
+        :func:`~hqnn_forge.encoding.resolve_backend`).  The four simulators
+        fall back along ``lightning.qubit → default.qubit`` with a warning
+        when a backend cannot be initialised; any other name (a plugin or
+        hardware) is used as given.
     diff_method:
         Differentiation strategy:
 
-        - ``"adjoint"``         — exact, O(p) memory; requires lightning device.
+        - ``"auto"``            — the default; chosen by device, see
+          :func:`~hqnn_forge.encoding.resolve_backend`.
+        - ``"adjoint"``         — exact, O(p) memory; fastest on lightning.
         - ``"parameter-shift"`` — exact, hardware-compatible, O(p) circuit evals.
         - ``"backprop"``        — auto-diff through simulator; requires default.qubit.
         - ``"finite-diff"``     — approximate; avoid for training.
@@ -291,6 +297,7 @@ def build_encoding_qnode(
     if n_qubits < 2:
         raise ValueError(f"n_qubits must be ≥ 2 for the CNOT entangling ring; got {n_qubits}.")
 
+    device_name, diff_method = resolve_backend(device_name, diff_method, n_qubits, shots=shots)
     validate_shots(shots, diff_method)
     device = resolve_device(device_name, n_qubits)
     circuit_fn = _make_angle_embedding_circuit(n_qubits, n_layers, rotation, entangler, readout)
@@ -357,12 +364,17 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
     rotation:
         Pauli axis for AngleEmbedding: ``"X"`` | ``"Y"`` | ``"Z"``.
     device_name:
-        PennyLane device, one of :data:`DeviceName`.  An unavailable backend
-        falls back along ``lightning.qubit → default.qubit`` with a warning
-        per step.
+        PennyLane device name.  Default ``"auto"``: ``default.qubit`` up to
+        12 qubits, ``lightning.qubit`` above (see
+        :func:`~hqnn_forge.encoding.resolve_backend`).  The four simulators
+        fall back along ``lightning.qubit → default.qubit`` with a warning
+        when a backend cannot be initialised; any other name (a plugin or
+        hardware) is used as given.
     diff_method:
-        Gradient method.  Use ``"adjoint"`` with ``lightning.qubit`` for
-        exact, efficient gradients during state-vector simulation.
+        ``"auto"`` (default) picks by device: ``"backprop"`` on
+        ``default.qubit``, ``"adjoint"`` on lightning, ``"parameter-shift"``
+        with ``shots`` or on any other device.  Or one of ``"adjoint"``,
+        ``"parameter-shift"``, ``"backprop"``, ``"finite-diff"``.
     entangler:
         ``"ring"`` (default), ``"strongly_entangling"`` (the same parameter
         count) or ``"hardware_efficient"`` (a third of it: one ``RY`` angle
@@ -428,8 +440,8 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
         n_qubits: int = 8,
         n_layers: int = 2,
         rotation: RotationAxis = "X",
-        device_name: DeviceName = "lightning.qubit",
-        diff_method: DiffMethod = "adjoint",
+        device_name: DeviceName = "auto",
+        diff_method: DiffMethod = "auto",
         entangler: Entangler = "ring",
         readout: Readout = "all",
         noise_level: float = 0.0,

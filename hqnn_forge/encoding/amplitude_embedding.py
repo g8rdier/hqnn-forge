@@ -78,6 +78,7 @@ from hqnn_forge.encoding._common import (
     expand_batch_dimension,
     measure_z,
     readout_wires,
+    resolve_backend,
     resolve_device,
     shots_repr,
     validate_circuit_options,
@@ -177,8 +178,8 @@ def _make_amplitude_embedding_circuit(
 def build_amplitude_qnode(
     n_qubits: int = 8,
     n_layers: int = 2,
-    device_name: DeviceName = "lightning.qubit",
-    diff_method: DiffMethod = "adjoint",
+    device_name: DeviceName = "auto",
+    diff_method: DiffMethod = "auto",
     entangler: Entangler = "ring",
     readout: Readout = "all",
     shots: int | None = None,
@@ -213,6 +214,7 @@ def build_amplitude_qnode(
         raise ValueError(f"n_qubits must be ≥ 2 for the CNOT entangling ring; got {n_qubits}.")
     validate_circuit_options(n_qubits, entangler, readout)
 
+    device_name, diff_method = resolve_backend(device_name, diff_method, n_qubits, shots=shots)
     validate_shots(shots, diff_method)
     device = resolve_device(device_name, n_qubits)
     circuit_fn = _make_amplitude_embedding_circuit(
@@ -289,7 +291,11 @@ class AmplitudeEncodingLayer(TrainingNoiseMixin, nn.Module):
 
     The check only applies when a gradient will actually be computed:
     detached inputs, and any input under ``torch.no_grad()``, are fine with
-    every method.  With a classical encoder upstream, use ``backprop``.
+    every method.  With a classical encoder upstream, use ``backprop``.  The
+    default ``diff_method="auto"`` is ``backprop`` on ``default.qubit`` up to
+    12 qubits, where input gradients work; above that it is ``adjoint`` on
+    lightning, and input gradients are refused.  The hybrid classifiers pick
+    ``backprop`` whatever the size when their encoder feeds this layer.
 
     Parameters
     ----------
@@ -301,11 +307,15 @@ class AmplitudeEncodingLayer(TrainingNoiseMixin, nn.Module):
         Width of the input vectors, ``1 ≤ n_features ≤ 2**n_qubits``.
         Default: ``2**n_qubits`` (no padding).
     device_name:
-        PennyLane device, one of :data:`DeviceName`.  An unavailable backend
-        falls back along ``lightning.qubit → default.qubit`` with a warning
-        per step.
+        PennyLane device name.  Default ``"auto"``: ``default.qubit`` up to
+        12 qubits, ``lightning.qubit`` above (see
+        :func:`~hqnn_forge.encoding.resolve_backend`).  The four simulators
+        fall back along ``lightning.qubit → default.qubit`` with a warning
+        when a backend cannot be initialised; any other name (a plugin or
+        hardware) is used as given.
     diff_method:
-        Gradient method.  See *Differentiation methods* above.
+        Gradient method, ``"auto"`` by default.  See *Differentiation
+        methods* above.
     entangler:
         The variational block: ``"ring"`` (default), ``"strongly_entangling"``
         or ``"hardware_efficient"``; see
@@ -352,8 +362,8 @@ class AmplitudeEncodingLayer(TrainingNoiseMixin, nn.Module):
         n_qubits: int = 8,
         n_layers: int = 2,
         n_features: int | None = None,
-        device_name: DeviceName = "lightning.qubit",
-        diff_method: DiffMethod = "adjoint",
+        device_name: DeviceName = "auto",
+        diff_method: DiffMethod = "auto",
         entangler: Entangler = "ring",
         readout: Readout = "all",
         noise_level: float = 0.0,

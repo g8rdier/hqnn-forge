@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # Type aliases
 # ---------------------------------------------------------------------------
 RotationAxis = Literal["X", "Y", "Z"]
-DiffMethod = Literal["adjoint", "parameter-shift", "backprop", "finite-diff"]
+DiffMethod = Literal["auto", "adjoint", "parameter-shift", "backprop", "finite-diff"]
 #: The simulators the fallback chain knows.  Any other PennyLane device name
 #: (a plugin such as ``"qiskit.aer"``, or hardware) is accepted too, and
 #: constructed exactly as given: see :func:`resolve_device`.
@@ -46,6 +46,71 @@ Readout = Literal["all", "first"]
 #: subset of the previous one's requirements: ``lightning.qubit`` needs only
 #: the ``pennylane-lightning`` wheel, ``default.qubit`` ships with PennyLane.
 FALLBACK_CHAIN: tuple[str, ...] = ("lightning.qubit", "default.qubit")
+
+#: Largest circuit ``device_name="auto"`` simulates on ``default.qubit`` with
+#: backprop; larger ones go to ``lightning.qubit`` with adjoint.  Measured for
+#: one training step at batch 64 (``examples/benchmark_batching.py
+#: --crossover``, README): backprop is 15x faster at 8 qubits and still 2x at
+#: 12, while at 14 lightning is faster and backprop's memory, which grows
+#: fourfold per two qubits, has passed 1 GB against lightning's 22 MB.
+AUTO_BACKPROP_MAX_QUBITS = 12
+
+
+def resolve_backend(
+    device_name: DeviceName,
+    diff_method: DiffMethod,
+    n_qubits: int,
+    *,
+    shots: int | None = None,
+    require_backprop: bool = False,
+) -> tuple[DeviceName, DiffMethod]:
+    """
+    Resolve ``"auto"`` in ``device_name`` and ``diff_method`` to concrete names.
+
+    Anything other than ``"auto"`` is returned unchanged.  The rules:
+
+    * **Device.**  With ``require_backprop``, or an explicit
+      ``diff_method="backprop"``, ``"default.qubit"``: backprop needs it.  With
+      an explicit ``"adjoint"``, ``"lightning.qubit"``, whose adjoint is the
+      fast one.  Otherwise by size: ``"default.qubit"`` up to
+      :data:`AUTO_BACKPROP_MAX_QUBITS` qubits, ``"lightning.qubit"`` above.
+    * **Method.**  With ``shots``, ``"parameter-shift"``: the state-vector
+      methods cannot run on samples (see :func:`validate_shots`).  Otherwise by
+      the device: ``"backprop"`` on ``default.qubit`` and ``default.mixed``,
+      which vectorise a batch; ``"adjoint"`` on the lightning devices;
+      ``"parameter-shift"`` on any other device, the method every device and
+      hardware supports.
+
+    The rules look at names only.  If ``"lightning.qubit"`` is chosen but not
+    installed, :func:`resolve_device` still falls back to ``default.qubit``
+    with its warning, and the method stays ``"adjoint"``, which
+    ``default.qubit`` also supports.
+
+    ``require_backprop`` is for amplitude encoding behind a classical encoder,
+    which trains through the circuit's input gradient: only backprop gives it
+    correctly (:mod:`hqnn_forge.encoding.amplitude_embedding`).  It only steers
+    ``"auto"``; an explicit conflicting choice is the caller's to refuse.
+    """
+    if device_name == "auto":
+        if require_backprop or diff_method == "backprop":
+            device_name = "default.qubit"
+        elif diff_method == "adjoint":
+            device_name = "lightning.qubit"
+        else:
+            device_name = (
+                "default.qubit" if n_qubits <= AUTO_BACKPROP_MAX_QUBITS else "lightning.qubit"
+            )
+    if diff_method == "auto":
+        if shots is not None:
+            diff_method = "parameter-shift"
+        elif device_name in ("default.qubit", "default.mixed"):
+            diff_method = "backprop"
+        elif device_name.startswith("lightning."):
+            diff_method = "adjoint"
+        else:
+            diff_method = "parameter-shift"
+    return device_name, diff_method
+
 
 #: What creating a device raises when its plugin or hardware is missing:
 #: ``DeviceError`` for a device name no installed plugin registers,

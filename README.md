@@ -14,7 +14,7 @@
 | Feature | Detail |
 |---|---|
 | **Small-angle init** | Gaussian initialisation: global σ = π/√(n·L), or a per-layer schedule σ_ℓ = π/√(n·(ℓ+1)) that narrows with the layer index (this library's own heuristics, in the spirit of Zhang et al. 2022). Measured with `hqnn_forge.diagnostics.gradient_variance` on a 2-layer circuit with a ⟨Z_0⟩ cost: no gain over uniform init for inputs spread over (−π, π), which is what both classifiers feed the circuit, and a gain growing from 1.1x to 1.75x between 4 and 8 qubits only near zero input. Over (−π, π) the variance falls ~3x per two qubits under either init — see the module docstring |
-| **Adjoint differentiation** | Exact gradients via `lightning.qubit` — no finite-difference approximation |
+| **Automatic backend choice** | `device_name="auto"` (the default) trains on `default.qubit` with backprop up to 12 qubits and on `lightning.qubit` with exact adjoint gradients above; see *Which to train with* |
 | **Custom angle encoding** | 8-qubit angle-embedding feature map with strongly-entangled VQC ansatz |
 | **Imbalance-robust losses** | Focal Loss & inverse-frequency weighted BCE |
 | **Pure-NumPy pre-processing** | PCA + standardisation without scikit-learn runtime dependency |
@@ -51,9 +51,9 @@ installed or finds no usable hardware, the library falls back one step at a time
 The GPU backends pay off at larger qubit counts or batch sizes. Both accelerated devices support
 the same `diff_method="adjoint"` as `lightning.qubit`.
 
-**Which to train with.** `lightning.qubit` with adjoint, the default, runs a batch one sample
-at a time; `default.qubit` with `diff_method="backprop"` vectorises it. Measured for one
-training step at batch 64 (`examples/benchmark_batching.py --crossover`):
+**Which to train with.** `lightning.qubit` with adjoint runs a batch one sample at a time;
+`default.qubit` with `diff_method="backprop"` vectorises it. Measured for one training step at
+batch 64 (`examples/benchmark_batching.py --crossover`):
 
 | qubits | `lightning.qubit` / adjoint | `default.qubit` / backprop |
 |---|---|---|
@@ -62,10 +62,24 @@ training step at batch 64 (`examples/benchmark_batching.py --crossover`):
 | 14 | 1.42 s, +22 MB | 1.62 s, +1182 MB |
 | 16 | 10.1 s, +35 MB | 9.8 s, +3161 MB |
 
-So for batched training at up to about 12 qubits, pass
-`device_name="default.qubit", diff_method="backprop"`: it is several times faster (15× at 8
-qubits). From about 14 qubits backprop's memory grows fourfold per two qubits while adjoint's
-stays flat, and lightning is the better choice. For single samples lightning is faster.
+For batched training at up to about 12 qubits backprop is several times faster (15× at 8
+qubits). From about 14 qubits its memory grows fourfold per two qubits while adjoint's stays
+flat, and lightning is the better choice. For single samples lightning is faster.
+
+That is what the default, `device_name="auto", diff_method="auto"`, does:
+
+| | picks |
+|---|---|
+| up to 12 qubits | `default.qubit` / backprop |
+| above 12 qubits | `lightning.qubit` / adjoint (falling back to `default.qubit` / adjoint without the `lightning` extra) |
+| `shots` set | the size rule's device / parameter-shift |
+| amplitude encoding behind the classical encoder | `default.qubit` / backprop at any size, the only method whose input gradient is correct |
+| an explicit `device_name` | backprop on `default.qubit`, adjoint on lightning, parameter-shift on anything else |
+| an explicit `diff_method` | `default.qubit` for backprop, `lightning.qubit` for adjoint, else the size rule |
+
+`hqnn_forge.encoding.resolve_backend` shows the choice for given arguments. The model config,
+and so a checkpoint, records `"auto"`, so a model reloaded elsewhere picks for that machine.
+Pass both names explicitly to pin a backend.
 
 ---
 

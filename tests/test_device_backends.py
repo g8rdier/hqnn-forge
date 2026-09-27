@@ -16,11 +16,18 @@ import pytest
 import torch
 from pennylane.exceptions import AllocationError, DeviceError
 
-from hqnn_forge.encoding import QuantumEncodingLayer
+from hqnn_forge.encoding import (
+    AUTO_BACKPROP_MAX_QUBITS,
+    AmplitudeEncodingLayer,
+    DataReuploadingLayer,
+    QuantumEncodingLayer,
+    resolve_backend,
+)
 from hqnn_forge.encoding import angle_embedding as ae
 from hqnn_forge.encoding._common import KNOWN_DEVICES
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.models import HybridBinaryClassifier
+from hqnn_forge.utils import load_checkpoint, save_checkpoint
 
 GPU_BACKENDS = ("lightning.gpu", "lightning.kokkos")
 
@@ -222,3 +229,138 @@ class TestFallbackChain:
             )
         assert model.quantum_layer.qlayer.qnode.device.name == "default.qubit"
         assert model(torch.rand(3, 2)).shape == (3, 1)
+
+
+# ---------------------------------------------------------------------------
+# device_name="auto" / diff_method="auto" (#349)
+# ---------------------------------------------------------------------------
+
+requires_lightning = pytest.mark.skipif(
+    not _available("lightning.qubit"), reason="pennylane-lightning is not installed"
+)
+
+
+def _backend(layer: torch.nn.Module) -> tuple[str, str]:
+    qnode = layer.qlayer.qnode  # type: ignore[union-attr]
+    return qnode.device.name, str(qnode.diff_method)
+
+
+class TestAuto:
+    @pytest.mark.parametrize(
+        ("device_name", "diff_method", "n_qubits", "expected"),
+        [
+            ("auto", "auto", 2, ("default.qubit", "backprop")),
+            ("auto", "auto", AUTO_BACKPROP_MAX_QUBITS, ("default.qubit", "backprop")),
+            ("auto", "auto", AUTO_BACKPROP_MAX_QUBITS + 1, ("lightning.qubit", "adjoint")),
+            # An explicit method steers the device to the one it is fast on.
+            ("auto", "adjoint", 2, ("lightning.qubit", "adjoint")),
+            ("auto", "backprop", 20, ("default.qubit", "backprop")),
+            ("auto", "parameter-shift", 2, ("default.qubit", "parameter-shift")),
+            ("auto", "parameter-shift", 20, ("lightning.qubit", "parameter-shift")),
+            # An explicit device picks the method.
+            ("default.qubit", "auto", 20, ("default.qubit", "backprop")),
+            ("default.mixed", "auto", 2, ("default.mixed", "backprop")),
+            ("lightning.qubit", "auto", 2, ("lightning.qubit", "adjoint")),
+            ("lightning.gpu", "auto", 2, ("lightning.gpu", "adjoint")),
+            ("qiskit.aer", "auto", 2, ("qiskit.aer", "parameter-shift")),
+            # Explicit on both sides is left alone, even when it is slow.
+            ("default.qubit", "adjoint", 2, ("default.qubit", "adjoint")),
+        ],
+    )
+    def test_resolution_rules(
+        self, device_name: str, diff_method: str, n_qubits: int, expected: tuple[str, str]
+    ) -> None:
+        assert resolve_backend(device_name, diff_method, n_qubits) == expected  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("n_qubits", [2, 20])
+    def test_shots_pick_parameter_shift(self, n_qubits: int) -> None:
+        _, method = resolve_backend("auto", "auto", n_qubits, shots=100)
+        assert method == "parameter-shift"
+
+    def test_require_backprop_overrides_the_size_rule(self) -> None:
+        assert resolve_backend("auto", "auto", 20, require_backprop=True) == (
+            "default.qubit",
+            "backprop",
+        )
+
+    @pytest.mark.parametrize(
+        "layer_cls", [QuantumEncodingLayer, IQPEncodingLayer, DataReuploadingLayer]
+    )
+    def test_layers_default_to_auto(self, layer_cls: type[torch.nn.Module]) -> None:
+        layer = layer_cls(n_qubits=AUTO_BACKPROP_MAX_QUBITS, n_layers=1)
+        assert _backend(layer) == ("default.qubit", "backprop")
+
+    @requires_lightning
+    def test_switch_point_above_the_threshold(self) -> None:
+        layer = QuantumEncodingLayer(n_qubits=AUTO_BACKPROP_MAX_QUBITS + 1, n_layers=1)
+        assert _backend(layer) == ("lightning.qubit", "adjoint")
+
+    def test_missing_lightning_falls_back_and_keeps_adjoint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(ae.qml, "device", _failing_device({"lightning.qubit": DeviceError}))
+        with pytest.warns(RuntimeWarning, match="lightning.qubit"):
+            layer = QuantumEncodingLayer(n_qubits=AUTO_BACKPROP_MAX_QUBITS + 1, n_layers=1)
+        assert _backend(layer) == ("default.qubit", "adjoint")
+
+    def test_shots_layer_trains_with_parameter_shift(self) -> None:
+        layer = QuantumEncodingLayer(n_qubits=2, n_layers=1, shots=50)
+        assert _backend(layer) == ("default.qubit", "parameter-shift")
+        layer(torch.rand(3, 2)).sum().backward()
+        assert layer.qlayer.weights.grad is not None
+
+    def test_classifier_records_auto_and_round_trips(self, tmp_path) -> None:
+        model = HybridBinaryClassifier(n_input_features=3, n_qubits=2, n_layers=1)
+        config = model.get_config()
+        assert (config["device_name"], config["diff_method"]) == ("auto", "auto")
+        assert _backend(model.quantum_layer) == ("default.qubit", "backprop")
+        save_checkpoint(model, tmp_path / "m.pt")
+        loaded = load_checkpoint(tmp_path / "m.pt")
+        assert loaded.get_config() == config
+        x = torch.rand(4, 3)
+        torch.testing.assert_close(loaded.predict_proba(x), model.predict_proba(x))
+
+    def test_amplitude_with_encoder_gets_backprop_above_the_threshold(self) -> None:
+        n = AUTO_BACKPROP_MAX_QUBITS + 1
+        model = HybridBinaryClassifier(
+            n_input_features=3, n_qubits=n, n_layers=1, encoding_type="amplitude"
+        )
+        assert _backend(model.quantum_layer) == ("default.qubit", "backprop")
+
+    @requires_lightning
+    def test_amplitude_without_encoder_follows_the_size_rule(self) -> None:
+        n = AUTO_BACKPROP_MAX_QUBITS + 1
+        model = HybridBinaryClassifier(
+            n_input_features=3,
+            n_qubits=n,
+            n_layers=1,
+            encoding_type="amplitude",
+            use_classical_encoder=False,
+        )
+        assert _backend(model.quantum_layer) == ("lightning.qubit", "adjoint")
+
+    def test_amplitude_with_encoder_still_refuses_explicit_adjoint(self) -> None:
+        with pytest.raises(ValueError, match="only correct"):
+            HybridBinaryClassifier(
+                n_input_features=3,
+                n_qubits=2,
+                n_layers=1,
+                encoding_type="amplitude",
+                diff_method="adjoint",
+            )
+
+    def test_amplitude_layer_input_gradient_works_by_default(self) -> None:
+        layer = AmplitudeEncodingLayer(n_qubits=2, n_layers=1)
+        x = torch.rand(3, 4, requires_grad=True)
+        layer(x).sum().backward()
+        assert x.grad is not None and torch.isfinite(x.grad).all()
+
+    def test_explicit_choices_are_untouched(self) -> None:
+        model = HybridBinaryClassifier(
+            n_input_features=2,
+            n_qubits=2,
+            n_layers=1,
+            device_name="default.qubit",
+            diff_method="parameter-shift",
+        )
+        assert _backend(model.quantum_layer) == ("default.qubit", "parameter-shift")

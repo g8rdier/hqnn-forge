@@ -22,6 +22,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from hqnn_forge.encoding._common import resolve_backend
 from hqnn_forge.encoding.amplitude_embedding import AmplitudeEncodingLayer
 from hqnn_forge.encoding.angle_embedding import (
     DeviceName,
@@ -190,6 +191,16 @@ class QuantumTrunk(nn.Module):
         validate_init(init_strategy, init_std)
         if not 0.0 <= dropout_p < 1.0:
             raise ValueError(f"dropout_p must be in [0, 1); got {dropout_p}.")
+        # "auto" is resolved here rather than in the layer: amplitude encoding
+        # behind the classical encoder needs backprop at any size, and the
+        # layer alone cannot know what feeds it.
+        device_name, diff_method = resolve_backend(
+            device_name,
+            diff_method,
+            n_qubits,
+            shots=shots,
+            require_backprop=encoding_type == "amplitude" and use_classical_encoder,
+        )
         width = _check_encoding_options(
             encoding_type,
             n_input_features=n_input_features,

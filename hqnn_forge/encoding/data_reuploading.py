@@ -95,6 +95,7 @@ from hqnn_forge.encoding._common import (
     expand_batch_dimension,
     measure_z,
     readout_wires,
+    resolve_backend,
     resolve_device,
     shots_repr,
     validate_circuit_options,
@@ -209,8 +210,8 @@ def build_data_reuploading_qnode(
     n_qubits: int = 8,
     n_layers: int = 2,
     rotation: RotationAxis = "X",
-    device_name: DeviceName = "lightning.qubit",
-    diff_method: DiffMethod = "adjoint",
+    device_name: DeviceName = "auto",
+    diff_method: DiffMethod = "auto",
     trainable_input_scaling: bool = False,
     entangler: Entangler = "ring",
     readout: Readout = "all",
@@ -256,6 +257,7 @@ def build_data_reuploading_qnode(
             "global phase, so a single upload leaves the outputs independent of the inputs."
         )
 
+    device_name, diff_method = resolve_backend(device_name, diff_method, n_qubits, shots=shots)
     validate_shots(shots, diff_method)
     device = resolve_device(device_name, n_qubits)
     circuit_fn = _make_data_reuploading_circuit(
@@ -335,11 +337,17 @@ class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
         Pauli axis of the embedding rotations.  Default: ``"X"``.
         ``"Z"`` requires ``n_layers ≥ 2``.
     device_name:
-        PennyLane device, one of :data:`DeviceName`.  An unavailable backend
-        falls back along ``lightning.qubit → default.qubit`` with a warning
-        per step.
+        PennyLane device name.  Default ``"auto"``: ``default.qubit`` up to
+        12 qubits, ``lightning.qubit`` above (see
+        :func:`~hqnn_forge.encoding.resolve_backend`).  The four simulators
+        fall back along ``lightning.qubit → default.qubit`` with a warning
+        when a backend cannot be initialised; any other name (a plugin or
+        hardware) is used as given.
     diff_method:
-        Gradient method.  Default: ``"adjoint"``.
+        ``"auto"`` (default) picks by device: ``"backprop"`` on
+        ``default.qubit``, ``"adjoint"`` on lightning, ``"parameter-shift"``
+        with ``shots`` or on any other device.  Or one of ``"adjoint"``,
+        ``"parameter-shift"``, ``"backprop"``, ``"finite-diff"``.
     trainable_input_scaling:
         Add a trainable ``qlayer.input_scaling`` of shape
         ``(n_layers, n_qubits)``, initialised to ones, that multiplies the
@@ -388,8 +396,8 @@ class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
         n_qubits: int = 8,
         n_layers: int = 2,
         rotation: RotationAxis = "X",
-        device_name: DeviceName = "lightning.qubit",
-        diff_method: DiffMethod = "adjoint",
+        device_name: DeviceName = "auto",
+        diff_method: DiffMethod = "auto",
         trainable_input_scaling: bool = False,
         entangler: Entangler = "ring",
         readout: Readout = "all",

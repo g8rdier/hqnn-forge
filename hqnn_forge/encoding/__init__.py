@@ -13,12 +13,14 @@ AmplitudeEncodingLayer  nn.Module: up to 2**n_qubits features as state amplitude
 build_amplitude_qnode   Factory for the amplitude-embedding QNode.
 DataReuploadingLayer    nn.Module: angle embedding repeated before every layer.
 build_data_reuploading_qnode  Factory for the data re-uploading QNode.
+resolve_backend         What device_name="auto" and diff_method="auto" become.
 
 See Also
 --------
 hqnn_forge.encoding.iqp_embedding  IQP embedding (pairwise IsingZZ phases) + entangling ansatz.
 """
 
+from hqnn_forge.encoding._common import AUTO_BACKPROP_MAX_QUBITS, resolve_backend
 from hqnn_forge.encoding.amplitude_embedding import (
     AmplitudeEncodingLayer,
     build_amplitude_qnode,
@@ -34,6 +36,7 @@ from hqnn_forge.encoding.data_reuploading import (
 )
 
 __all__: list[str] = [
+    "AUTO_BACKPROP_MAX_QUBITS",
     "AmplitudeEncodingLayer",
     "AngleEmbeddingQNode",
     "DataReuploadingLayer",
@@ -41,4 +44,5 @@ __all__: list[str] = [
     "build_amplitude_qnode",
     "build_data_reuploading_qnode",
     "build_encoding_qnode",
+    "resolve_backend",
 ]
