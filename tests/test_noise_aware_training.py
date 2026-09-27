@@ -9,18 +9,25 @@ the noise, and the post-hoc wrapper takes precedence.
 
 from __future__ import annotations
 
+import inspect
 import math
 import warnings
+from functools import partial
 
 import pennylane as qml
 import pytest
 import torch
 
 from hqnn_forge.diagnostics import effective_dimension, gradient_variance
-from hqnn_forge.encoding import QuantumEncodingLayer
+from hqnn_forge.encoding import AmplitudeEncodingLayer, DataReuploadingLayer, QuantumEncodingLayer
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
-from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
+from hqnn_forge.models import (
+    HybridBinaryClassifier,
+    MulticlassHybridClassifier,
+    ParallelHybridClassifier,
+)
 from hqnn_forge.noise import (
+    TrainingNoiseMixin,
     apply_depolarizing_noise,
     noise_sweep,
     run_with_training_noise,
@@ -29,7 +36,17 @@ from hqnn_forge.noise import (
 
 N_QUBITS = 3
 CPU = {"device_name": "default.qubit", "diff_method": "backprop"}
-LAYERS = [QuantumEncodingLayer, IQPEncodingLayer]
+# Every encoding layer (#227).  The amplitude layer is built for N_QUBITS
+# features, padded to 2**N_QUBITS amplitudes, so it takes the same inputs.
+LAYERS = [
+    pytest.param(QuantumEncodingLayer, id="angle"),
+    pytest.param(IQPEncodingLayer, id="iqp"),
+    pytest.param(partial(AmplitudeEncodingLayer, n_features=N_QUBITS), id="amplitude"),
+    pytest.param(DataReuploadingLayer, id="reuploading"),
+    pytest.param(
+        partial(DataReuploadingLayer, trainable_input_scaling=True), id="reuploading-scaled"
+    ),
+]
 MODELS = [HybridBinaryClassifier, ParallelHybridClassifier]
 
 
@@ -90,7 +107,7 @@ class TestNoiselessDefault:
             explicit.qlayer.weights.grad, default.qlayer.weights.grad, rtol=0, atol=0
         )
 
-    @pytest.mark.parametrize("cls", MODELS)
+    @pytest.mark.parametrize("cls", [*MODELS, MulticlassHybridClassifier])
     def test_classifier_default_is_noiseless(self, cls: type) -> None:
         torch.manual_seed(0)
         model = cls(n_input_features=4, n_qubits=N_QUBITS, n_layers=1, **CPU)
@@ -281,7 +298,9 @@ class TestInteractions:
         torch.testing.assert_close(noisy(x), 0.6 * clean(x), rtol=1e-5, atol=1e-6)
         assert noisy.qlayer._hqnn_noise_depth == 0
 
-    @pytest.mark.parametrize("cls", LAYERS)
+    # gradient_variance measures one trainable tensor here, so not the layer
+    # with input_scaling.
+    @pytest.mark.parametrize("cls", [p for p in LAYERS if p.id != "reuploading-scaled"])
     def test_gradient_variance_measures_the_noiseless_circuit(self, cls: type) -> None:
         noisy, clean = _pair(cls, noise_level=0.3)
         noisy.train()
@@ -358,8 +377,10 @@ class TestValidation:
 
     @pytest.mark.parametrize("cls", LAYERS)
     def test_warns_above_the_practical_qubit_count(self, cls: type) -> None:
-        with pytest.warns(RuntimeWarning, match="n_qubits=7"):
+        with pytest.warns(RuntimeWarning, match="n_qubits=7") as record:
             cls(n_qubits=7, n_layers=1, noise_level=0.1, **CPU)
+        # Attributed to the line that built the layer, not to library code.
+        assert record[0].filename == __file__
 
     @pytest.mark.parametrize("kwargs", [{"n_qubits": 6, "noise_level": 0.1}, {"n_qubits": 7}])
     def test_no_warning_at_the_limit_or_without_noise(self, kwargs: dict[str, object]) -> None:
@@ -371,3 +392,32 @@ class TestValidation:
         layer = _layer()
         with pytest.raises(ValueError, match="p > 0"):
             training_noise_qnode(layer.qlayer.qnode, N_QUBITS, 0.0)
+
+
+class TestOneImplementation:
+    """#227: construction and dispatch live in hqnn_forge.noise, once."""
+
+    @pytest.mark.parametrize(
+        "cls",
+        [QuantumEncodingLayer, IQPEncodingLayer, AmplitudeEncodingLayer, DataReuploadingLayer],
+    )
+    def test_layers_inherit_the_mixin_and_copy_nothing(self, cls: type) -> None:
+        assert issubclass(cls, TrainingNoiseMixin)
+        for name in ("_init_training_noise", "_run_circuit", "_noise_repr"):
+            assert name not in vars(cls)
+        # No hand-written train-mode branch left in any forward.
+        assert "_training_noise_qnode" not in inspect.getsource(cls.forward)
+
+    @pytest.mark.parametrize(
+        "cls",
+        [QuantumEncodingLayer, IQPEncodingLayer, AmplitudeEncodingLayer, DataReuploadingLayer],
+    )
+    def test_every_layer_takes_the_same_noise_arguments(self, cls: type) -> None:
+        parameters = inspect.signature(cls).parameters
+        for name, default in (
+            ("noise_level", 0.0),
+            ("noise_position", "all"),
+            ("noise_method", "density"),
+            ("noise_trajectories", 1),
+        ):
+            assert parameters[name].default == default

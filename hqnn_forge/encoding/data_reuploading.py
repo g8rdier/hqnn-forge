@@ -98,6 +98,7 @@ from hqnn_forge.encoding.angle_embedding import (
     readout_wires,
     validate_circuit_options,
 )
+from hqnn_forge.noise import NoiseMethod, Position, TrainingNoiseMixin
 
 logger = logging.getLogger(__name__)
 
@@ -284,7 +285,7 @@ def build_data_reuploading_qnode(
 # ---------------------------------------------------------------------------
 
 
-class DataReuploadingLayer(nn.Module):
+class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
     """
     A PyTorch ``nn.Module`` wrapping the data re-uploading QNode.
 
@@ -346,6 +347,12 @@ class DataReuploadingLayer(nn.Module):
     readout:
         ``"all"`` (default): the layer returns ``(batch, n_qubits)``.
         ``"first"``: ⟨Z_0⟩ only, ``(batch, 1)``.
+    noise_level, noise_position, noise_method, noise_trajectories:
+        Training-time depolarizing noise, exactly as for
+        :class:`~hqnn_forge.encoding.QuantumEncodingLayer`: ``noise_level``
+        in ``[0, 0.75]`` (default 0, noiseless) applied in train mode only,
+        at ``"all"`` gates or at the ``"end"``, simulated exactly
+        (``"density"``) or by Pauli trajectories.  See :mod:`hqnn_forge.noise`.
 
     Attributes
     ----------
@@ -379,6 +386,10 @@ class DataReuploadingLayer(nn.Module):
         trainable_input_scaling: bool = False,
         entangler: Entangler = "ring",
         readout: Readout = "all",
+        noise_level: float = 0.0,
+        noise_position: Position = "all",
+        noise_method: NoiseMethod = "density",
+        noise_trajectories: int = 1,
     ) -> None:
         super().__init__()
 
@@ -413,6 +424,9 @@ class DataReuploadingLayer(nn.Module):
             # Start as the plain re-uploading circuit: every upload sees x.
             with torch.no_grad():
                 self.qlayer.input_scaling.fill_(1.0)
+        self._init_training_noise(
+            qnode, n_qubits, noise_level, noise_position, noise_method, noise_trajectories
+        )
 
     # ------------------------------------------------------------------
     def prepare_inputs(self, x: torch.Tensor) -> torch.Tensor:
@@ -452,7 +466,7 @@ class DataReuploadingLayer(nn.Module):
             If the last dimension of ``x`` is not ``n_qubits``.
         """
         # Whole batch in one call; see QuantumEncodingLayer.forward.
-        return self.qlayer(self.prepare_inputs(x))
+        return self._run_circuit(self.prepare_inputs(x))
 
     # ------------------------------------------------------------------
     def extra_repr(self) -> str:
@@ -464,6 +478,7 @@ class DataReuploadingLayer(nn.Module):
             options += f", entangler={self.entangler!r}"
         if self.readout != "all":
             options += f", readout={self.readout!r}"
+        options += self._noise_repr()
         return (
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "

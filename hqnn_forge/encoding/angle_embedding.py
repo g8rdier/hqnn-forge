@@ -53,15 +53,7 @@ import torch
 import torch.nn as nn
 from pennylane.exceptions import AllocationError, DeviceError
 
-from hqnn_forge.noise import (
-    NoiseMethod,
-    Position,
-    run_with_training_noise,
-    training_noise_qnode,
-    trajectory_noise_qnode,
-    validate_noise,
-    validate_noise_method,
-)
+from hqnn_forge.noise import NoiseMethod, Position, TrainingNoiseMixin
 
 logger = logging.getLogger(__name__)
 
@@ -549,7 +541,7 @@ def build_encoding_qnode(
 # ---------------------------------------------------------------------------
 
 
-class QuantumEncodingLayer(nn.Module):
+class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
     """
     A PyTorch ``nn.Module`` that wraps the angle-embedding QNode as a fully
     differentiable layer via ``pennylane.qnn.TorchLayer``.
@@ -669,10 +661,6 @@ class QuantumEncodingLayer(nn.Module):
         self.entangler = entangler
         self.readout = readout
         self.n_outputs = len(readout_wires(n_qubits, readout))
-        self.noise_level = noise_level
-        self.noise_position = noise_position
-        self.noise_method = noise_method
-        self.noise_trajectories = noise_trajectories
 
         # Build the QNode ─────────────────────────────────────────────────
         qnode = build_encoding_qnode(
@@ -698,7 +686,7 @@ class QuantumEncodingLayer(nn.Module):
         self.qlayer = qml.qnn.TorchLayer(qnode, weight_shapes)
 
         # Training-time depolarizing noise (see hqnn_forge.noise) ─────────
-        self._training_noise_qnode = _build_training_noise(
+        self._init_training_noise(
             qnode, n_qubits, noise_level, noise_position, noise_method, noise_trajectories
         )
 
@@ -752,11 +740,7 @@ class QuantumEncodingLayer(nn.Module):
         # broadcasted tape or split into one tape per sample is decided in
         # build_encoding_qnode (see _expand_batch_dimension); the outputs and
         # gradients are the same either way.
-        if self.training and self._training_noise_qnode is not None:
-            return run_with_training_noise(
-                self.qlayer, self._training_noise_qnode, x, self.noise_trajectories
-            )
-        return self.qlayer(x)
+        return self._run_circuit(x)
 
     # ------------------------------------------------------------------
     # Utility
@@ -768,60 +752,12 @@ class QuantumEncodingLayer(nn.Module):
             options += f", entangler={self.entangler!r}"
         if self.readout != "all":
             options += f", readout={self.readout!r}"
-        if self.noise_level:
-            options += f", noise_level={self.noise_level}, noise_position={self.noise_position!r}"
-            options += _noise_method_repr(self.noise_method, self.noise_trajectories)
+        options += self._noise_repr()
         return (
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "
             f"n_params={self.n_layers * self.n_qubits * 3}{options}"
         )
-
-
-MAX_TRAINING_NOISE_QUBITS = 6
-"""Above this many qubits, a layer built with ``noise_method="density"`` warns."""
-
-
-def _noise_method_repr(method: str, n_trajectories: int) -> str:
-    """The ``extra_repr`` fragment for a non-default noise method."""
-    if method == "density":
-        return ""
-    return f", noise_method={method!r}, noise_trajectories={n_trajectories}"
-
-
-def _build_training_noise(
-    qnode: qml.QNode,
-    n_qubits: int,
-    noise_level: float,
-    noise_position: Position,
-    noise_method: NoiseMethod = "density",
-    noise_trajectories: int = 1,
-) -> qml.QNode | None:
-    """
-    The train-mode QNode for ``noise_level > 0``, or ``None`` for the
-    noiseless default.  Shared by every encoding layer; validation happens
-    here so a bad ``noise_level`` fails at construction, and a qubit count
-    past what mixed-state backprop can train in practice warns there too.
-    """
-    validate_noise(
-        noise_level, noise_position, p_name="noise_level", position_name="noise_position"
-    )
-    validate_noise_method(noise_method, noise_trajectories)
-    if noise_level == 0.0:
-        return None
-    if noise_method == "trajectories":
-        return trajectory_noise_qnode(qnode, noise_level, noise_position)
-    if n_qubits > MAX_TRAINING_NOISE_QUBITS:
-        warnings.warn(
-            f"noise_level > 0 trains on default.mixed, which keeps a batch × 4^n density "
-            f"matrix per operation for backprop; at n_qubits={n_qubits} (practical limit "
-            f"about {MAX_TRAINING_NOISE_QUBITS}) a training step may run out of memory.  "
-            f"noise_method='trajectories' samples the same noise at pure-state cost; "
-            f"see hqnn_forge.noise.",
-            RuntimeWarning,
-            stacklevel=3,
-        )
-    return training_noise_qnode(qnode, n_qubits, noise_level, noise_position)
 
 
 # ---------------------------------------------------------------------------

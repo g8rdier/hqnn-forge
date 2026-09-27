@@ -19,6 +19,7 @@ import subprocess
 import sys
 import textwrap
 import warnings
+from functools import partial
 from typing import Any
 
 import pennylane as qml
@@ -26,7 +27,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from hqnn_forge.encoding import QuantumEncodingLayer
+from hqnn_forge.encoding import AmplitudeEncodingLayer, DataReuploadingLayer, QuantumEncodingLayer
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
 from hqnn_forge.noise import (
@@ -44,7 +45,13 @@ P = 0.2
 Z = 5.0
 FLOAT32_ATOL = 1e-6
 CPU: dict[str, Any] = {"device_name": "default.qubit", "diff_method": "backprop"}
-LAYERS = [QuantumEncodingLayer, IQPEncodingLayer]
+# Every encoding layer; the amplitude one takes N_QUBITS features, padded.
+LAYERS = [
+    pytest.param(QuantumEncodingLayer, id="angle"),
+    pytest.param(IQPEncodingLayer, id="iqp"),
+    pytest.param(partial(AmplitudeEncodingLayer, n_features=N_QUBITS), id="amplitude"),
+    pytest.param(partial(DataReuploadingLayer, trainable_input_scaling=True), id="reuploading"),
+]
 
 
 def _lightning_available() -> bool:
@@ -72,8 +79,9 @@ def _x() -> torch.Tensor:
 def _density(layer: Any, x: torch.Tensor, position: Position) -> torch.Tensor:
     """The exact channel's output for ``layer``'s weights, one sample at a time."""
     noisy = training_noise_qnode(layer.qlayer.qnode, N_QUBITS, P, position)
-    w = layer.qlayer.weights
-    return torch.stack([torch.stack(noisy(xi, w)) for xi in x]).detach()
+    weights = dict(layer.qlayer.qnode_weights)
+    prepared = layer.prepare_inputs(x)
+    return torch.stack([torch.stack(noisy(xi, **weights)) for xi in prepared]).detach()
 
 
 def _draws(layer: Any, x: torch.Tensor, n: int) -> torch.Tensor:
@@ -219,7 +227,9 @@ class TestMatchesTheDensityMatrix:
         x = _x()
         density = training_noise_qnode(layer.qlayer.qnode, N_QUBITS, P, position)
         w = layer.qlayer.weights
-        total = torch.stack([torch.stack(density(xi, w)).sum() for xi in x]).sum()
+        weights = dict(layer.qlayer.qnode_weights)
+        prepared = layer.prepare_inputs(x)
+        total = torch.stack([torch.stack(density(xi, **weights)).sum() for xi in prepared]).sum()
         exact = torch.autograd.grad(total, w)[0].detach()
         torch.manual_seed(3)
         chunks, per_chunk = 20, 150
@@ -431,7 +441,7 @@ def test_library_defaults_train_within_the_noiseless_memory() -> None:
     script = textwrap.dedent(
         """
         import json, resource, torch
-        from hqnn_forge.encoding import QuantumEncodingLayer
+        from hqnn_forge.encoding import AmplitudeEncodingLayer, DataReuploadingLayer, QuantumEncodingLayer
         torch.manual_seed(0)
         layer = QuantumEncodingLayer(
             n_qubits=8, n_layers=2, noise_level=0.1, noise_method="trajectories"

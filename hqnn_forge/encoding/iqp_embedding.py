@@ -38,9 +38,7 @@ from hqnn_forge.encoding.angle_embedding import (
     DiffMethod,
     Entangler,
     Readout,
-    _build_training_noise,
     _expand_batch_dimension,
-    _noise_method_repr,
     _resolve_device,
     apply_variational_layers,
     check_inputs,
@@ -48,7 +46,7 @@ from hqnn_forge.encoding.angle_embedding import (
     readout_wires,
     validate_circuit_options,
 )
-from hqnn_forge.noise import NoiseMethod, Position, run_with_training_noise
+from hqnn_forge.noise import NoiseMethod, Position, TrainingNoiseMixin
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +141,7 @@ def build_iqp_qnode(
     return _expand_batch_dimension(qnode, diff_method)
 
 
-class IQPEncodingLayer(nn.Module):
+class IQPEncodingLayer(TrainingNoiseMixin, nn.Module):
     """
     A PyTorch nn.Module wrapping the IQP-embedding QNode.
 
@@ -177,10 +175,6 @@ class IQPEncodingLayer(nn.Module):
         self.entangler = entangler
         self.readout = readout
         self.n_outputs = len(readout_wires(n_qubits, readout))
-        self.noise_level = noise_level
-        self.noise_position = noise_position
-        self.noise_method = noise_method
-        self.noise_trajectories = noise_trajectories
 
         qnode = build_iqp_qnode(
             n_qubits=n_qubits,
@@ -198,7 +192,7 @@ class IQPEncodingLayer(nn.Module):
 
         self.qlayer = qml.qnn.TorchLayer(qnode, weight_shapes)
         # Training-time depolarizing noise; see QuantumEncodingLayer.
-        self._training_noise_qnode = _build_training_noise(
+        self._init_training_noise(
             qnode, n_qubits, noise_level, noise_position, noise_method, noise_trajectories
         )
 
@@ -218,22 +212,12 @@ class IQPEncodingLayer(nn.Module):
         """Embed a batch of feature vectors."""
         # Whole batch in one call; see QuantumEncodingLayer.forward.
         x = self.prepare_inputs(x)
-        if self.training and self._training_noise_qnode is not None:
-            return run_with_training_noise(
-                self.qlayer, self._training_noise_qnode, x, self.noise_trajectories
-            )
-        return self.qlayer(x)
+        return self._run_circuit(x)
 
     def extra_repr(self) -> str:
-        noise = (
-            f", noise_level={self.noise_level}, noise_position={self.noise_position!r}"
-            f"{_noise_method_repr(self.noise_method, self.noise_trajectories)}"
-            if self.noise_level
-            else ""
-        )
         return (
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "
             f"n_repeats={self.n_repeats}, "
-            f"n_params={self.n_layers * self.n_qubits * 3}{noise}"
+            f"n_params={self.n_layers * self.n_qubits * 3}{self._noise_repr()}"
         )
