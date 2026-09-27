@@ -57,6 +57,7 @@ import pennylane as qml
 import torch
 import torch.nn as nn
 
+from hqnn_forge.diagnostics.circuit import input_width
 from hqnn_forge.initializers import block_local_init_, restricted_normal_init_
 from hqnn_forge.utils.modes import eval_mode
 
@@ -243,8 +244,11 @@ def gradient_variance(
         ``"restricted"``, ``"block_local"``, or a callable that fills the
         weight tensor in place.
     input_scale:
-        Inputs are uniform in ``[-input_scale, input_scale]``.  ``π`` matches
-        what the classifiers feed the circuit; ``0`` feeds zeros.
+        Inputs are uniform in ``[-input_scale, input_scale]``, one per input
+        feature (``n_features`` for the amplitude encoder, else one per
+        qubit), and go through the layer's ``prepare_inputs``.  ``π`` matches
+        what the classifiers feed the circuit; ``0`` feeds zeros, which the
+        amplitude encoder refuses (no state has zero norm).
     cost_fn:
         Maps the layer output of shape ``(1, n_qubits)`` to a scalar.
         Default: ⟨Z_0⟩.
@@ -261,6 +265,9 @@ def gradient_variance(
     if input_scale < 0:
         raise ValueError(f"input_scale must be >= 0; got {input_scale}.")
     layer, weights, n_qubits, n_layers = _resolve_weights(target)
+    # One value per input feature, which is not one per qubit for the
+    # amplitude encoder; forward's prepare_inputs pads and normalises them.
+    width = input_width(layer)
     gen = generator if generator is not None else torch.Generator().manual_seed(0)
     init_name, init_fn = _make_init(init, n_qubits, n_layers, gen)
     cost = cost_fn if cost_fn is not None else _local_z0
@@ -273,7 +280,7 @@ def gradient_variance(
             for s in range(n_samples):
                 with torch.no_grad():
                     init_fn(weights)
-                x = (torch.rand(1, n_qubits, generator=gen) * 2 - 1) * input_scale
+                x = (torch.rand(1, width, generator=gen) * 2 - 1) * input_scale
                 weights.grad = None
                 value = cost(layer(x))
                 if not isinstance(value, torch.Tensor):

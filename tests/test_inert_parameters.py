@@ -129,7 +129,7 @@ class TestAgainstAutograd:
         layer = QuantumEncodingLayer(
             n_qubits=3, n_layers=2, entangler=entangler, readout=readout, **CPU
         )
-        tape = _logical_tape(layer.qlayer, layer.n_qubits)
+        tape = _logical_tape(layer)
         slots = sum(1 for op in tape.operations for v in op.data if qml.math.requires_grad(v))
         assert slots == circuit_summary(layer).n_trainable_params
 
