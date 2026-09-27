@@ -58,7 +58,7 @@ import os
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 import numpy.typing as npt
@@ -66,6 +66,8 @@ import torch
 import torch.nn as nn
 
 from hqnn_forge.evaluation import (
+    brier_score,
+    expected_calibration_error,
     matthews_corrcoef,
     parameter_efficiency,
     rank_biserial_correlation,
@@ -97,6 +99,8 @@ COLUMNS: tuple[str, ...] = (
     "n_seeds",
     "mcc_seed_std",
     "mcc_per_kparam",
+    "brier_mean",
+    "ece_mean",
     "fold_mcc",
     "train_seconds",
     "wilcoxon_p",
@@ -148,6 +152,10 @@ class FoldResult:
     """The training settings tuning chose for this fold and model; empty without tuning."""
     noise_mcc: dict[float, float] = field(default_factory=dict)
     """Hybrid only: test MCC under depolarising noise of each swept probability."""
+    brier: float = math.nan
+    """Brier score of the test probabilities (#319)."""
+    ece: float = math.nan
+    """Expected calibration error of the test probabilities, ``ECE_BINS`` quantile bins."""
 
 
 @dataclass(frozen=True)
@@ -229,6 +237,29 @@ def _seeds(root: np.random.SeedSequence, n: int) -> list[int]:
     return [int(s.generate_state(1)[0]) for s in root.spawn(n)]
 
 
+#: Bins of the per-fold expected calibration error.  Equal-count
+#: ("quantile") bins: on imbalanced data equal-width ones put nearly every
+#: sample in the bin nearest 0 and leave the rest near-empty.
+ECE_BINS = 10
+
+
+class FitScore(NamedTuple):
+    """One trained model scored on its test rows."""
+
+    mcc: float
+    threshold: float
+    seconds: float
+    epochs: int
+    brier: float
+    ece: float
+
+
+def _mean_of(folds: list[FoldResult], dataset: str, model: str, attr: str) -> float:
+    """Mean of a per-fold attribute over every fold and seed of ``model`` on ``dataset``."""
+    values = [getattr(f, attr) for f in folds if f.dataset == dataset and f.model == model]
+    return float(np.mean(values))
+
+
 def _fit_and_score(
     model: BinaryClassifierBase,
     loss: LossBuilder,
@@ -244,8 +275,8 @@ def _fit_and_score(
     batch_size: int,
     patience: int | None,
     batch_seed: int,
-) -> tuple[float, float, float, int]:
-    """Train, then score the test rows at the validation threshold: (mcc, threshold, s, epochs)."""
+) -> FitScore:
+    """Train, then score the test rows at the validation threshold."""
     as_tensor = torch.from_numpy
     start = time.perf_counter()
     history = train_model(
@@ -266,7 +297,14 @@ def _fit_and_score(
     threshold = history.best_threshold if history.best_threshold is not None else 0.5
     prob = model.predict_proba(as_tensor(X_test.astype(np.float32)))
     mcc = matthews_corrcoef(y_test, (prob >= threshold).long())
-    return float(mcc), float(threshold), seconds, history.n_epochs
+    return FitScore(
+        float(mcc),
+        float(threshold),
+        seconds,
+        history.n_epochs,
+        brier_score(y_test, prob),
+        expected_calibration_error(y_test, prob, ECE_BINS, "quantile"),
+    )
 
 
 #: Training settings a search space may vary.  The architecture is not
@@ -382,7 +420,7 @@ def _evaluate_config(
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(seed)
         model = _build(model_name, hybrid, X.shape[1])
-        mcc, _, _, _ = _fit_and_score(
+        mcc = _fit_and_score(
             model,
             loss,
             X_fit,
@@ -396,7 +434,7 @@ def _evaluate_config(
             batch_size=settings["batch_size"],
             patience=settings["patience"],
             batch_seed=seed,
-        )
+        ).mcc
     return mcc
 
 
@@ -733,7 +771,7 @@ def run_benchmark(
                                 f"{model.get_config()['init_seed']}, which gives "
                                 f"every seed the same initial weights."
                             )
-                        mcc, threshold, secs, epochs = _fit_and_score(
+                        fit = _fit_and_score(
                             model,
                             loss,
                             X_train,
@@ -747,6 +785,12 @@ def run_benchmark(
                             batch_size=train_settings["batch_size"],
                             patience=train_settings["patience"],
                             batch_seed=batch_seed,
+                        )
+                        mcc, threshold, secs, epochs = (
+                            fit.mcc,
+                            fit.threshold,
+                            fit.seconds,
+                            fit.epochs,
                         )
                         noisy: dict[float, float] = {}
                         if noise_levels is not None and model_name == "hybrid":
@@ -788,6 +832,8 @@ def run_benchmark(
                             seed_index,
                             dict(chosen[model_name]),
                             noisy,
+                            fit.brier,
+                            fit.ece,
                         )
                     )
                 scores[model_name].append(float(np.mean(seed_scores)))
@@ -828,6 +874,8 @@ def run_benchmark(
                         float(np.mean(seed_stds[model_name])) if n_seeds > 1 else None
                     ),
                     "mcc_per_kparam": parameter_efficiency(n_parameters[model_name], mean),
+                    "brier_mean": _mean_of(folds, name, model_name, "brier"),
+                    "ece_mean": _mean_of(folds, name, model_name, "ece"),
                     "fold_mcc": tuple(float(s) for s in fold_scores),
                     "train_seconds": seconds[model_name],
                     "wilcoxon_p": p,

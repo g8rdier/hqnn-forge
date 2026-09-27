@@ -15,11 +15,22 @@ parameter_efficiency     Score per thousand trainable parameters.
 wilcoxon_signed_rank     Paired signed-rank test with its attainable p-value floor.
 WilcoxonResult           Result of wilcoxon_signed_rank.
 rank_biserial_correlation  Effect size for the paired comparison.
+brier_score, expected_calibration_error, reliability_curve
+                         Calibration of the probabilities (#319).
+TemperatureScaler, PlattScaler
+                         Post-hoc calibration fitted on a validation split.
 plots                    Submodule: confusion matrix, fold boxplot, efficiency
                          frontier (needs matplotlib; import it explicitly:
                          ``from hqnn_forge.evaluation import plots``).
 """
 
+from hqnn_forge.evaluation.calibration import (
+    PlattScaler,
+    TemperatureScaler,
+    brier_score,
+    expected_calibration_error,
+    reliability_curve,
+)
 from hqnn_forge.evaluation.statistics import (
     WilcoxonResult,
     rank_biserial_correlation,
@@ -38,14 +49,19 @@ from hqnn_forge.evaluation.thresholds import (
 
 __all__: list[str] = [
     "METRICS",
+    "PlattScaler",
+    "TemperatureScaler",
     "ThresholdSearchResult",
     "WilcoxonResult",
     "balanced_accuracy",
+    "brier_score",
+    "expected_calibration_error",
     "f1_score",
     "find_optimal_threshold",
     "matthews_corrcoef",
     "parameter_efficiency",
     "pr_auc",
     "rank_biserial_correlation",
+    "reliability_curve",
     "wilcoxon_signed_rank",
 ]

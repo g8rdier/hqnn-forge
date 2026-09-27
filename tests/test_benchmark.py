@@ -263,7 +263,11 @@ class TestReportedStatistics:
             )
 
     def test_all_folds_tied_gives_nan_not_an_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(benchmark, "_fit_and_score", lambda *a, **k: (0.3, 0.5, 0.01, 1))
+        monkeypatch.setattr(
+            benchmark,
+            "_fit_and_score",
+            lambda *a, **k: benchmark.FitScore(0.3, 0.5, 0.01, 1, 0.2, 0.1),
+        )
         hybrid, control = _run({"a": _data()}).records
         assert math.isnan(hybrid["wilcoxon_p"]) and math.isnan(control["wilcoxon_min_p"])
         assert hybrid["rank_biserial"] == 0.0
@@ -272,7 +276,9 @@ class TestReportedStatistics:
         # The limit the module docstring warns about: the hybrid wins every fold.
         scores = iter([0.9, 0.1] * 5)
         monkeypatch.setattr(
-            benchmark, "_fit_and_score", lambda *a, **k: (next(scores), 0.5, 0.01, 1)
+            benchmark,
+            "_fit_and_score",
+            lambda *a, **k: benchmark.FitScore(next(scores), 0.5, 0.01, 1, 0.2, 0.1),
         )
         hybrid, _ = _run({"a": _data()}, n_splits=5).records
         assert hybrid["wilcoxon_p"] == hybrid["wilcoxon_min_p"] == 0.0625

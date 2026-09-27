@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 import torch
 import torch.nn as nn
 
-from hqnn_forge.evaluation import METRICS, find_optimal_threshold
+from hqnn_forge.evaluation import METRICS, TemperatureScaler, find_optimal_threshold
 from hqnn_forge.utils.modes import _modes, _restore, eval_mode, train_mode
 
 LossFn = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
@@ -71,6 +71,13 @@ class TrainingHistory:
         Decision threshold at ``best_epoch`` (metric monitors only).
     stopped_early:
         ``True`` if patience ran out before ``max_epochs``.
+    temperature:
+        The :class:`~hqnn_forge.evaluation.TemperatureScaler` temperature fitted
+        on the validation split for the returned weights, or ``None`` without a
+        validation split, for a multiclass model, or when it cannot be fitted
+        (one class, non-finite logits).  ``T > 1`` means the model is
+        over-confident on held-out data; ``σ(logits / T)`` is the calibrated
+        probability (#319).
     restored_best:
         ``True`` if the model's weights were rolled back to ``best_epoch``.
     """
@@ -82,6 +89,7 @@ class TrainingHistory:
     best_threshold: float | None = None
     stopped_early: bool = False
     restored_best: bool = False
+    temperature: float | None = None
 
     @property
     def train_loss(self) -> list[float]:
@@ -307,4 +315,18 @@ def train_model(
         if restore_best and best_state is not None and history.best_epoch != history.n_epochs:
             model.load_state_dict(best_state)
             history.restored_best = True
+        if val is not None:
+            history.temperature = _validation_temperature(model, val)
     return history
+
+
+def _validation_temperature(
+    model: nn.Module, val: tuple[torch.Tensor, torch.Tensor]
+) -> float | None:
+    """The temperature fitted on the validation logits of the final weights, if it can be."""
+    x_v, y_v = val
+    with torch.no_grad(), eval_mode(model):
+        logits = _logits(model, x_v)
+    if logits.ndim != 1 or not torch.isfinite(logits).all() or torch.unique(y_v).numel() < 2:
+        return None
+    return TemperatureScaler.fit(logits, y_v).temperature
