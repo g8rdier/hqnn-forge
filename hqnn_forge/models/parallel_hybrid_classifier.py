@@ -81,7 +81,8 @@ init_strategy:
     ``"restricted"`` (default) — global restricted-normal init.
     ``"block_local"``           — per-layer decreasing variance.
 encoding_type:
-    Type of quantum embedding to use: ``"angle"`` or ``"iqp"``. Default: ``"angle"``.
+    ``"angle"`` (default), ``"iqp"``, ``"reuploading"`` or ``"amplitude"``; see
+    the class docstring.
 """
 
 from __future__ import annotations
@@ -145,10 +146,25 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
         ``"restricted"`` (default), ``"block_local"``, or ``"normal"``
         (``N(0, init_std²)``, the published SHNN's init).
     encoding_type:
-        Type of quantum embedding to use: ``"angle"`` or ``"iqp"``. Default: ``"angle"``.
+        The quantum embedding.  Default: ``"angle"``.
+
+        * ``"angle"``: one rotation per feature (:class:`~hqnn_forge.encoding.QuantumEncodingLayer`).
+        * ``"iqp"``: Hadamards, ``RZ(x_i)`` and pairwise ``x_i x_j`` phases
+          (:class:`~hqnn_forge.encoding.iqp_embedding.IQPEncodingLayer`).
+        * ``"reuploading"``: the angle embedding repeated before every
+          variational layer (:class:`~hqnn_forge.encoding.DataReuploadingLayer`),
+          optionally with ``trainable_input_scaling``.
+        * ``"amplitude"``: the features as the ``2**n_qubits`` amplitudes of
+          the state (:class:`~hqnn_forge.encoding.AmplitudeEncodingLayer`).  The
+          classical encoder then maps to ``2**n_qubits`` features, and the
+          ``·π`` scaling is irrelevant because the layer normalises.  Its
+          input gradient is only correct under backprop, so with a classical
+          encoder it requires ``diff_method="backprop"`` (on
+          ``default.qubit``) and raises otherwise.  Without one, 1 to
+          ``2**n_qubits`` raw features are zero-padded.
     embedding_rotation:
         Pauli axis of the angle embedding, ``"X"`` (default), ``"Y"`` or ``"Z"``.
-        Angle encoding only.
+        Angle and re-uploading encodings only.
     entangler:
         ``"ring"`` (default: CNOT ring then ``Rot``), ``"strongly_entangling"``
         (``qml.StronglyEntanglingLayers``: ``Rot`` then a CNOT ring of growing
@@ -186,6 +202,9 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
         :class:`~hqnn_forge.encoding.QuantumEncodingLayer`.
     noise_trajectories:
         Draws averaged per sample with ``"trajectories"``.  Default: 1.
+    trainable_input_scaling:
+        With ``encoding_type="reuploading"`` only: a trainable per-upload
+        scale on the features, initialised to 1.  Default: ``False``.
 
     Attributes
     ----------
@@ -227,6 +246,7 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
         noise_position: Position = "all",
         noise_method: NoiseMethod = "density",
         noise_trajectories: int = 1,
+        trainable_input_scaling: bool = False,
     ) -> None:
         super().__init__()
         self._config = dict(
@@ -249,6 +269,7 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
             noise_position=noise_position,
             noise_method=noise_method,
             noise_trajectories=noise_trajectories,
+            trainable_input_scaling=trainable_input_scaling,
         )
 
         # Validated before the classical branch is built, as before the shared
@@ -285,6 +306,7 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
             noise_position=noise_position,
             noise_method=noise_method,
             noise_trajectories=noise_trajectories,
+            trainable_input_scaling=trainable_input_scaling,
         )
 
         # ── Classical head ────────────────────────────────────────────────

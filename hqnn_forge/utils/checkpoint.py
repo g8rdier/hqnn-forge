@@ -90,6 +90,7 @@ _LEGACY_DEFAULTS: dict[str, Any] = {
     "noise_position": "all",
     "noise_method": "density",  # the only method before Pauli trajectories
     "noise_trajectories": 1,
+    "trainable_input_scaling": False,  # added with encoding_type="reuploading"
 }
 
 #: Set by ``load_checkpoint`` on a model it rebuilt under a forced
