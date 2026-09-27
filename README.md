@@ -24,16 +24,23 @@
 
 ## Installation
 
-```bash
-pip install -e ".[lightning,dev]"
-```
-
-Adjoint differentiation needs `pennylane-lightning`, which the `lightning` extra above
-installs. To add it to an existing install:
+To use the package, install it from a clone of the repository with pip:
 
 ```bash
 pip install -e ".[lightning]"
 ```
+
+The extras add optional parts; combine them as needed, e.g. `".[lightning,sklearn]"`:
+
+| Extra | Installs | Needed for |
+|---|---|---|
+| `lightning` | `pennylane-lightning` | the `lightning.qubit` backend and adjoint differentiation, the library defaults |
+| `sklearn` | `scikit-learn` | the scikit-learn estimator in `hqnn_forge.sklearn` |
+| `examples` | `scikit-learn`, `matplotlib` | the scripts in `examples/` and the plots in `hqnn_forge.evaluation` |
+| `dev` | test and lint tools | development; see [Development Setup](#development-setup) |
+
+pip installs the newest versions that `pyproject.toml` allows. To work on the project in the
+environment CI tests against, use the uv setup under [Development Setup](#development-setup).
 
 ### Device backends
 
@@ -191,10 +198,22 @@ hqnn_forge/
 
 ## Development Setup
 
+The project is managed with [uv](https://docs.astral.sh/uv/getting-started/installation/):
+
 ```bash
-pip install -e ".[lightning,dev]"
+uv sync --all-extras
 uvx pre-commit install
 ```
+
+`uv sync --all-extras` creates `.venv` with the project installed in editable mode and every
+extra (`lightning`, `sklearn`, `examples`, `dev`) at the versions pinned in `uv.lock`. It is
+the environment the `test-locked` CI job builds with `uv sync --locked --all-extras`; `--locked`
+additionally fails instead of updating a `uv.lock` that no longer matches `pyproject.toml`.
+Run tools inside it with `uv run`, e.g. `uv run pytest`, or activate `.venv`.
+
+Without uv, `pip install -e ".[lightning,sklearn,examples,dev]"` installs the same extras at
+the newest versions `pyproject.toml` allows, as the pip-based `test` CI job does. The pre-commit
+hooks below still need uv.
 
 The `dev` extra brings `ruff`, `mypy` and `pytest`. `uvx pre-commit install` registers the hooks
 in `.pre-commit-config.yaml`, which run `ruff check --fix` and `ruff format` on every commit with
