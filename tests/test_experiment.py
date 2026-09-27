@@ -88,6 +88,8 @@ class TestContents:
             "datasets",
             "folds",
             "metrics",
+            "noise",
+            "noise_summary",
         }
         assert record["format_version"] == RECORD_FORMAT_VERSION
 
@@ -315,4 +317,28 @@ class TestTuningInTheRecord:
         assert [f.mcc for f in again.folds] == [f["mcc"] for f in record["folds"]]
         assert [f.hyperparameters for f in again.folds] == [
             f["hyperparameters"] for f in record["folds"]
+        ]
+
+
+class TestNoiseInTheRecord:
+    def test_noise_results_are_recorded_and_rerun(self, tmp_path: Path) -> None:
+        path = tmp_path / "noise.json"
+        data = {"first": _data(0)}
+        run_benchmark(
+            data,
+            _hybrid,
+            record_path=path,
+            noise_levels=[0.0, 0.3],
+            noise_position="end",
+            **SETTINGS,
+        )
+        record, _ = load_record(path)
+        assert record["config"]["settings"]["noise_levels"] == [0.0, 0.3]
+        assert [row["noise_level"] for row in record["noise"]] == [0.0, 0.3]
+        assert set(record["noise_summary"]) == {"first"}
+        hybrid = [f for f in record["folds"] if f["model"] == "hybrid"]
+        assert all(set(f["noise_mcc"]) == {"0.0", "0.3"} for f in hybrid)
+        again = rerun_benchmark(record, data)
+        assert [row["hybrid_mcc_mean"] for row in again.noise] == [
+            row["hybrid_mcc_mean"] for row in record["noise"]
         ]
