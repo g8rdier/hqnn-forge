@@ -214,6 +214,15 @@ before pushing changes to `hqnn_forge/`:
 uv run --frozen --extra dev mypy hqnn_forge
 ```
 
+The full test suite takes a few minutes. For the edit–test loop, leave out the tests marked
+`slow` (end-to-end training, the gradient-variance physics checks, parameter-shift batching),
+which account for most of that time; CI always runs everything:
+
+```bash
+pytest -m "not slow"   # about a minute
+pytest                 # the full suite, as CI runs it
+```
+
 ---
 
 ## Contributing

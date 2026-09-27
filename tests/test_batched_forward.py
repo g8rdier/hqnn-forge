@@ -36,7 +36,13 @@ def _lightning_available() -> bool:
 
 
 DEVICE_CONFIGS = [
-    pytest.param("default.qubit", "parameter-shift", id="default.qubit/parameter-shift"),
+    # Two circuit runs per parameter per sample: the slow path wherever it appears.
+    pytest.param(
+        "default.qubit",
+        "parameter-shift",
+        id="default.qubit/parameter-shift",
+        marks=pytest.mark.slow,
+    ),
     pytest.param("default.qubit", "backprop", id="default.qubit/backprop"),
     pytest.param(
         "lightning.qubit",

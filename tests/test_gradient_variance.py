@@ -115,6 +115,7 @@ class TestMeasuredInitClaims:
     def _ratio(measured: dict, n: int, scale: float) -> float:
         return measured["restricted", n, scale] / measured["uniform", n, scale]
 
+    @pytest.mark.slow
     def test_no_benefit_with_inputs_spread_over_pi(self, measured: dict) -> None:
         """What the classifiers feed the circuit: restricted ≈ uniform."""
         ratio = self._ratio(measured, 8, math.pi)
@@ -141,6 +142,7 @@ class TestMeasuredInitClaims:
 
 
 class TestPhysics:
+    @pytest.mark.slow
     def test_uniform_init_variance_decays_with_qubits(self) -> None:
         small = gradient_variance(_layer(2), n_samples=100, generator=_gen())
         large = gradient_variance(_layer(6), n_samples=100, generator=_gen())

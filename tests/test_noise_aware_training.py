@@ -301,6 +301,7 @@ class TestInteractions:
             a.per_parameter, (1 - 4 * 0.3 / 3) ** 2 * b.per_parameter, rtol=1e-4, atol=1e-10
         )
 
+    @pytest.mark.slow
     def test_effective_dimension_measures_the_noiseless_circuit(self) -> None:
         """Agrees with gradient_variance: a train-mode noisy model is measured noiselessly."""
         torch.manual_seed(0)
