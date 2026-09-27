@@ -4,9 +4,10 @@ hqnn_forge.training.trainer
 Mini-batch training with per-epoch validation and early stopping.
 
 The loop is deliberately small and makes no assumption about the model beyond
-``model(x) -> logits`` of shape ``(batch,)`` or ``(batch, 1)``, so it works for
-the hybrid classifiers and for any classical baseline alike.  Loss and
-optimiser are passed in.
+``model(x) -> logits`` of shape ``(batch,)`` or ``(batch, 1)`` (binary), or
+``(batch, n_classes)`` (multiclass, with integer labels), so it works for the
+hybrid classifiers and for any classical baseline alike.  Loss and optimiser
+are passed in.
 
 Monitoring
 ----------
@@ -21,6 +22,11 @@ Monitoring
 
 The threshold found at the best epoch is recorded, so the operating point that
 produced the best score travels with the history instead of being re-derived.
+
+A multiclass model has no single threshold: the metric monitors score its
+argmax labels with the multiclass version of the same metric
+(:data:`hqnn_forge.evaluation.MULTICLASS_METRICS`: Gorodkin's ``R_K`` for
+``"mcc"``, macro-F1 for ``"f1"``), and no threshold is recorded.
 """
 
 from __future__ import annotations
@@ -33,7 +39,7 @@ from dataclasses import dataclass, field
 import torch
 import torch.nn as nn
 
-from hqnn_forge.evaluation import METRICS, find_optimal_threshold
+from hqnn_forge.evaluation import METRICS, MULTICLASS_METRICS, find_optimal_threshold
 from hqnn_forge.utils.modes import eval_mode
 
 LossFn = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
@@ -92,14 +98,21 @@ class TrainingHistory:
 
 
 def _logits(model: nn.Module, x: torch.Tensor) -> torch.Tensor:
+    """``(batch,)`` logits of a binary model, or ``(batch, n_classes)`` of a multiclass one."""
     out = model(x)
     if out.ndim == 2 and out.shape[-1] == 1:
         out = out.squeeze(-1)
-    if out.ndim != 1:
+    if out.ndim != 1 and not (out.ndim == 2 and out.shape[-1] >= 2):
         raise ValueError(
-            f"model output must have shape (batch,) or (batch, 1); got {tuple(out.shape)}."
+            f"model output must have shape (batch,) or (batch, 1) for a binary model, or "
+            f"(batch, n_classes) for a multiclass one; got {tuple(out.shape)}."
         )
     return out
+
+
+def _target(logits: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    """Labels as the loss expects them: class indices for multiclass logits, else float."""
+    return y.long() if logits.ndim == 2 else y.float()
 
 
 def _check_pair(x: torch.Tensor, y: torch.Tensor, name: str) -> None:
@@ -191,11 +204,13 @@ def train_model(
         raise ValueError("pass both X_val and y_val, or neither.")
 
     X_train = torch.as_tensor(X_train)
-    y_train = torch.as_tensor(y_train).reshape(-1).float()
+    # Cast per loss call (_target): float for a binary model's BCE-style loss,
+    # class indices for a multiclass model's cross-entropy.
+    y_train = torch.as_tensor(y_train).reshape(-1)
     _check_pair(X_train, y_train, "train")
     val: tuple[torch.Tensor, torch.Tensor] | None = None
     if X_val is not None and y_val is not None:
-        val = (torch.as_tensor(X_val), torch.as_tensor(y_val).reshape(-1).float())
+        val = (torch.as_tensor(X_val), torch.as_tensor(y_val).reshape(-1))
         _check_pair(*val, "val")
         # A single-class split scores the same degenerate value at every
         # threshold, so epoch 1 wins, patience expires and restore_best hands
@@ -234,9 +249,16 @@ def train_model(
             x_v, y_v = val
             with torch.no_grad(), eval_mode(model):
                 val_logits = _logits(model, x_v)
-                val_loss = float(loss_fn(val_logits, y_v))
+                val_loss = float(loss_fn(val_logits, _target(val_logits, y_v)))
             if lower_is_better:
                 value, threshold = val_loss, None
+            elif val_logits.ndim == 2:
+                # Multiclass: no threshold to search; score the argmax labels.
+                if torch.any(torch.isnan(val_logits)):
+                    value, threshold = math.nan, None
+                else:
+                    value = MULTICLASS_METRICS[monitor](y_v.long(), val_logits.argmax(dim=-1))
+                    threshold = None
             else:
                 val_prob = torch.sigmoid(val_logits)
                 if torch.any(torch.isnan(val_prob)):

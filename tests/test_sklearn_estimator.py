@@ -178,10 +178,11 @@ class TestErrors:
         with pytest.raises(ValueError, match="features"):
             est.predict(X[:, :2])
 
-    def test_multiclass_rejected(self, data: tuple) -> None:
+    def test_one_class_rejected(self, data: tuple) -> None:
+        # More than two classes are supported since #309; one is not.
         X, _ = data
-        with pytest.raises(ValueError, match="binary classifier; got 3 classes"):
-            HybridClassifierEstimator(**FAST).fit(X, np.arange(80) % 3)
+        with pytest.raises(ValueError, match="needs at least two classes; got 1"):
+            HybridClassifierEstimator(**FAST).fit(X, np.zeros(80, dtype=int))
 
     @pytest.mark.parametrize(
         "params, match",

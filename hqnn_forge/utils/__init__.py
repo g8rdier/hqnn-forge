@@ -6,6 +6,7 @@ Imbalance-robust loss functions and training helpers.
 Exported symbols
 ----------------
 FocalLoss               nn.Module implementing Focal Loss (Lin et al. 2017).
+SoftmaxFocalLoss        Its K-class softmax version.
 weighted_bce_loss       Functional helper: inverse-class-frequency weighted BCE.
 compute_class_weights   Computes inverse-frequency class weights from a label tensor.
 eval_mode               Context manager: eval mode for a block, submodule modes restored.
@@ -18,6 +19,7 @@ from hqnn_forge.utils.ablation import disable_quantum_layer
 from hqnn_forge.utils.checkpoint import load_checkpoint, save_checkpoint
 from hqnn_forge.utils.imbalance import (
     FocalLoss,
+    SoftmaxFocalLoss,
     compute_class_weights,
     weighted_bce_loss,
 )
@@ -25,6 +27,7 @@ from hqnn_forge.utils.modes import eval_mode
 
 __all__: list[str] = [
     "FocalLoss",
+    "SoftmaxFocalLoss",
     "compute_class_weights",
     "disable_quantum_layer",
     "eval_mode",
