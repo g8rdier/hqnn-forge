@@ -143,7 +143,10 @@ def train_model(
         training is unaffected but ``train_loss`` is comparable neither
         across batch sizes nor with the full-batch ``val_loss``.
     optimizer:
-        Optimiser already bound to the parameters to train.
+        Optimiser already bound to the parameters to train.  A gradient-free
+        one (``optimizer.gradient_free``, e.g.
+        :class:`~hqnn_forge.training.SPSA`) gets ``step(closure)`` with a
+        closure that evaluates the batch loss, and no ``backward`` pass.
     X_train, y_train:
         Training split.
     X_val, y_val:
@@ -221,11 +224,22 @@ def train_model(
         total, seen = 0.0, 0
         for start in range(0, n, batch_size):
             idx = perm[start : start + batch_size]
-            optimizer.zero_grad()
-            loss = loss_fn(_logits(model, X_train[idx]), y_train[idx])
-            loss.backward()
-            optimizer.step()
-            total += loss.item() * idx.numel()
+            if getattr(optimizer, "gradient_free", False):
+                # SPSA and the like evaluate the loss themselves, twice, with
+                # no backward pass (see hqnn_forge.training.spsa).
+                def closure(
+                    x_b: torch.Tensor = X_train[idx], y_b: torch.Tensor = y_train[idx]
+                ) -> float:
+                    return float(loss_fn(_logits(model, x_b), y_b))
+
+                batch_loss = float(optimizer.step(closure))
+            else:
+                optimizer.zero_grad()
+                loss = loss_fn(_logits(model, X_train[idx]), y_train[idx])
+                loss.backward()
+                optimizer.step()
+                batch_loss = loss.item()
+            total += batch_loss * idx.numel()
             seen += idx.numel()
         record = EpochRecord(epoch=epoch, train_loss=total / seen)
 
