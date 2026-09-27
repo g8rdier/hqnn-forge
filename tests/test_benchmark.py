@@ -451,3 +451,119 @@ class TestSeveralSeeds:
     def test_rejected(self) -> None:
         with pytest.raises(ValueError, match="n_seeds must be >= 1"):
             _run({"a": _data()}, n_seeds=0)
+
+
+# ---------------------------------------------------------------------------
+# The same tuning budget for both models (#207)
+# ---------------------------------------------------------------------------
+
+SPACES: dict[str, dict[str, list[Any]]] = {
+    "hybrid": {"lr": [0.01, 0.05, 0.1], "batch_size": [16, 32]},
+    "control": {"lr": [0.01, 0.05, 0.1], "batch_size": [16, 32]},
+}
+
+
+def _tuned(**kwargs: Any) -> BenchmarkResult:
+    tuning = benchmark.Tuning(n_trials=3, search_spaces=SPACES, inner_folds=2)
+    return _run({"a": _data()}, n_splits=3, tuning=tuning, **kwargs)
+
+
+class TestTuning:
+    def test_outer_test_rows_are_never_seen_during_search(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[tuple[str, np.ndarray, np.ndarray]] = []
+        real = benchmark._evaluate_config
+
+        def spy(
+            model_name: str, hybrid: Any, X: Any, y: Any, fit: Any, val: Any, *a: Any, **k: Any
+        ) -> float:
+            calls.append((model_name, np.asarray(fit), np.asarray(val)))
+            return real(model_name, hybrid, X, y, fit, val, *a, **k)
+
+        monkeypatch.setattr(benchmark, "_evaluate_config", spy)
+        result = _tuned()
+        per_fold = len(calls) // 3
+        assert per_fold == 2 * 3 * 2  # models x trials x inner folds
+        for k in range(3):
+            fold = next(f for f in result.folds if f.fold == k)
+            train_part = np.concatenate([fold.train_idx, fold.val_idx])
+            for _, fit, val in calls[k * per_fold : (k + 1) * per_fold]:
+                seen = np.concatenate([fit, val])
+                assert not np.intersect1d(seen, fold.test_idx).size
+                assert np.isin(seen, train_part).all()
+
+    def test_both_models_get_the_same_budget_and_inner_folds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[tuple[str, tuple[int, ...], tuple[int, ...]]] = []
+        real = benchmark._evaluate_config
+
+        def spy(
+            model_name: str, hybrid: Any, X: Any, y: Any, fit: Any, val: Any, *a: Any, **k: Any
+        ) -> float:
+            calls.append((model_name, tuple(np.sort(fit)), tuple(np.sort(val))))
+            return real(model_name, hybrid, X, y, fit, val, *a, **k)
+
+        monkeypatch.setattr(benchmark, "_evaluate_config", spy)
+        _tuned()
+        hybrid = [c[1:] for c in calls if c[0] == "hybrid"]
+        control = [c[1:] for c in calls if c[0] == "control"]
+        assert len(hybrid) == len(control) == 3 * 3 * 2  # folds x trials x inner
+        assert sorted(set(hybrid)) == sorted(set(control))
+
+    def test_the_best_configuration_is_chosen_and_used(
+        self, monkeypatch: pytest.MonkeyPatch, captured: list[dict[str, Any]]
+    ) -> None:
+        # A scoring stand-in whose best configuration is known: lr 0.05, batch 16.
+        def score(
+            model_name: str,
+            hybrid: Any,
+            X: Any,
+            y: Any,
+            fit: Any,
+            val: Any,
+            settings: Any,
+            **k: Any,
+        ) -> float:
+            return -abs(settings["lr"] - 0.05) - 0.001 * settings["batch_size"]
+
+        monkeypatch.setattr(benchmark, "_evaluate_config", score)
+        tuning = benchmark.Tuning(
+            n_trials=6, search_spaces=SPACES, inner_folds=2
+        )  # the whole 3 x 2 grid
+        result = _run({"a": _data()}, n_splits=3, tuning=tuning)
+        for fold in result.folds:
+            assert fold.hyperparameters == {"batch_size": 16, "lr": 0.05}
+        # The final training runs with the chosen settings.
+        assert all(c["options"]["batch_size"] == 16 for c in captured)
+
+    def test_trials_are_drawn_from_the_space(self) -> None:
+        configs = benchmark._sample_configs({"lr": [1, 2, 3], "batch_size": [4, 5]}, 4, seed=0)
+        assert len(configs) == 4 and len({tuple(sorted(c.items())) for c in configs}) == 4
+        assert all(c["lr"] in (1, 2, 3) and c["batch_size"] in (4, 5) for c in configs)
+        # A space smaller than the budget is tried in full, once each.
+        assert len(benchmark._sample_configs({"lr": [1, 2]}, 5, seed=0)) == 2
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"n_trials": 0, "search_spaces": SPACES}, "n_trials must be >= 1"),
+            (
+                {"n_trials": 2, "search_spaces": SPACES, "inner_folds": 1},
+                "inner_folds must be >= 2",
+            ),
+            ({"n_trials": 2, "search_spaces": {"hybrid": {}}}, "exactly the keys"),
+            (
+                {"n_trials": 2, "search_spaces": {"hybrid": {"n_layers": [1]}, "control": {}}},
+                "cannot be tuned",
+            ),
+            (
+                {"n_trials": 2, "search_spaces": {"hybrid": {"lr": []}, "control": {}}},
+                "no values to draw from",
+            ),
+        ],
+    )
+    def test_rejected(self, kwargs: dict[str, Any], match: str) -> None:
+        with pytest.raises(ValueError, match=match):
+            benchmark.Tuning(**kwargs)

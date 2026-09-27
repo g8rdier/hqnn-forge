@@ -52,11 +52,12 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import itertools
 import math
 import os
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -142,6 +143,8 @@ class FoldResult:
     """PennyLane device the circuit actually ran on (after any fallback); ``None`` for the control."""
     seed_index: int = 0
     """Which of the ``n_seeds`` initialisations of this fold (``init_seed`` is its seed)."""
+    hyperparameters: dict[str, Any] = field(default_factory=dict)
+    """The training settings tuning chose for this fold and model; empty without tuning."""
 
 
 @dataclass(frozen=True)
@@ -249,6 +252,182 @@ def _fit_and_score(
     return float(mcc), float(threshold), seconds, history.n_epochs
 
 
+#: Training settings a search space may vary.  The architecture is not
+#: tunable: the control's size is matched to the hybrid's, and tuning one
+#: model's architecture would break that match.
+TUNABLE: frozenset[str] = frozenset({"lr", "batch_size", "max_epochs", "patience"})
+
+
+@dataclass(frozen=True)
+class Tuning:
+    """
+    The same random-search budget for the hybrid model and its control.
+
+    Per outer fold, each model gets ``n_trials`` configurations drawn from its
+    own search space (all of them if the space has fewer), and each is scored
+    by the mean MCC over the same ``inner_folds`` stratified folds of the outer
+    training part -- never the outer test rows.  The best configuration is
+    then trained as usual.  The budget is counted in trials, not seconds, so
+    the slower simulated model gets as many configurations as the control.
+
+    Attributes
+    ----------
+    n_trials:
+        Configurations per model and outer fold.
+    search_spaces:
+        ``{"hybrid": {...}, "control": {...}}``, each mapping a setting in
+        :data:`TUNABLE` to the values to draw from.
+    inner_folds:
+        Stratified folds of the outer training part a configuration is scored
+        on.  Default 3.
+    """
+
+    n_trials: int
+    search_spaces: Mapping[str, Mapping[str, Sequence[Any]]]
+    inner_folds: int = 3
+
+    def __post_init__(self) -> None:
+        if self.n_trials < 1:
+            raise ValueError(f"n_trials must be >= 1; got {self.n_trials}.")
+        if self.inner_folds < 2:
+            raise ValueError(f"inner_folds must be >= 2; got {self.inner_folds}.")
+        if set(self.search_spaces) != set(MODELS):
+            raise ValueError(
+                f"search_spaces needs exactly the keys {sorted(MODELS)}; "
+                f"got {sorted(self.search_spaces)}."
+            )
+        for model, space in self.search_spaces.items():
+            unknown = sorted(set(space) - TUNABLE)
+            if unknown:
+                raise ValueError(
+                    f"{model}: {unknown} cannot be tuned; choose from {sorted(TUNABLE)}."
+                )
+            empty = sorted(name for name, values in space.items() if len(values) == 0)
+            if empty:
+                raise ValueError(f"{model}: no values to draw from for {empty}.")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "n_trials": self.n_trials,
+            "inner_folds": self.inner_folds,
+            "search_spaces": {
+                m: {k: list(v) for k, v in sp.items()} for m, sp in self.search_spaces.items()
+            },
+        }
+
+
+def _sample_configs(
+    space: Mapping[str, Sequence[Any]], n_trials: int, seed: int
+) -> list[dict[str, Any]]:
+    """``n_trials`` distinct configurations from the grid of ``space`` (all if fewer)."""
+    keys = sorted(space)
+    grid = [dict(zip(keys, values)) for values in itertools.product(*(space[k] for k in keys))]
+    if len(grid) <= n_trials:
+        return grid
+    chosen = np.random.default_rng(seed).choice(len(grid), size=n_trials, replace=False)
+    return [grid[int(i)] for i in sorted(chosen)]
+
+
+def _build(model_name: str, hybrid: HybridBuilder, n_features: int) -> BinaryClassifierBase:
+    built = hybrid(n_features)
+    model = classical_baseline(built) if model_name == "control" else built
+    if not isinstance(model, BinaryClassifierBase):
+        raise TypeError(f"hybrid must return a hybrid classifier; got {type(model).__name__}.")
+    return model
+
+
+def _evaluate_config(
+    model_name: str,
+    hybrid: HybridBuilder,
+    X: npt.NDArray[np.float64],
+    y: npt.NDArray[np.int64],
+    fit_rows: npt.NDArray[np.intp],
+    val_rows: npt.NDArray[np.intp],
+    settings: Mapping[str, Any],
+    *,
+    loss: LossBuilder,
+    seed: int,
+    oversample: bool,
+    smote_options: Mapping[str, Any],
+) -> float:
+    """
+    MCC of one tuning trial on one inner fold: fitted on ``fit_rows``,
+    scored on ``val_rows``.  The only place tuning touches data, and it gets
+    row indices, so what it sees can be checked.  Early stopping and the
+    threshold use ``val_rows`` too; that favours neither model.
+    """
+    X_fold = _standardise(X, fit_rows)
+    if oversample:
+        fold = oversample_fold(X_fold, y, fit_rows, val_rows, random_state=seed, **smote_options)
+        X_fit, y_fit = fold.X_train, np.asarray(fold.y_train, dtype=np.int64)
+    else:
+        X_fit, y_fit = X_fold[fit_rows], y[fit_rows]
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(seed)
+        model = _build(model_name, hybrid, X.shape[1])
+        mcc, _, _, _ = _fit_and_score(
+            model,
+            loss,
+            X_fit,
+            y_fit,
+            X_fold[val_rows],
+            y[val_rows],
+            X_fold[val_rows],
+            y[val_rows],
+            lr=settings["lr"],
+            max_epochs=settings["max_epochs"],
+            batch_size=settings["batch_size"],
+            patience=settings["patience"],
+            batch_seed=seed,
+        )
+    return mcc
+
+
+def _tune(
+    model_name: str,
+    tuning: Tuning,
+    hybrid: HybridBuilder,
+    X: npt.NDArray[np.float64],
+    y: npt.NDArray[np.int64],
+    train_part: npt.NDArray[np.intp],
+    defaults: Mapping[str, Any],
+    *,
+    loss: LossBuilder,
+    seed: int,
+    oversample: bool,
+    smote_options: Mapping[str, Any],
+) -> dict[str, Any]:
+    """The configuration with the best mean inner-fold MCC (the first, on ties)."""
+    inner = stratified_kfold(y[train_part], tuning.inner_folds, random_state=seed)
+    best: tuple[float, dict[str, Any]] | None = None
+    for config in _sample_configs(tuning.search_spaces[model_name], tuning.n_trials, seed):
+        settings = {**defaults, **config}
+        score = float(
+            np.mean(
+                [
+                    _evaluate_config(
+                        model_name,
+                        hybrid,
+                        X,
+                        y,
+                        train_part[fit],
+                        train_part[val],
+                        settings,
+                        loss=loss,
+                        seed=seed,
+                        oversample=oversample,
+                        smote_options=smote_options,
+                    )
+                    for fit, val in inner
+                ]
+            )
+        )
+        if best is None or score > best[0]:
+            best = (score, config)
+    assert best is not None
+    return best[1]
+
+
 def run_benchmark(
     datasets: Mapping[str, tuple[npt.ArrayLike, npt.ArrayLike]],
     hybrid: HybridBuilder = default_hybrid,
@@ -265,6 +444,7 @@ def run_benchmark(
     smote_kwargs: Mapping[str, Any] | None = None,
     record_path: str | os.PathLike[str] | None = None,
     n_seeds: int = 1,
+    tuning: Tuning | None = None,
 ) -> BenchmarkResult:
     """
     Compare ``hybrid`` with its matched classical control on every dataset.
@@ -309,6 +489,10 @@ def run_benchmark(
         build its model with ``init_seed=None`` (a model's own seed would
         override the runner's and repeat the same weights); a ``ValueError``
         is raised otherwise.
+    tuning:
+        Tune both models' training settings with the same budget in every
+        outer fold before training them; see :class:`Tuning`.  Default: no
+        tuning, the settings above for both.
     record_path:
         Also write an experiment record (config, seeds, fold indices,
         dependency versions, devices, metrics) there as JSON; see
@@ -340,6 +524,7 @@ def run_benchmark(
         "smote_kwargs": smote_options,
         "hybrid_builder": _import_path(hybrid),
         "n_seeds": n_seeds,
+        "tuning": None if tuning is None else tuning.as_dict(),
     }
 
     records: list[dict[str, Any]] = []
@@ -397,18 +582,37 @@ def run_benchmark(
             else:
                 X_train, y_train, n_synthetic = X_fold[train_idx], y[train_idx], 0
 
+            defaults = {
+                "lr": lr,
+                "max_epochs": max_epochs,
+                "batch_size": batch_size,
+                "patience": patience,
+            }
+            chosen: dict[str, dict[str, Any]] = {m: {} for m in MODELS}
+            if tuning is not None:
+                (tune_seed,) = _seeds(fold_root, 1)
+                for model_name in MODELS:
+                    chosen[model_name] = _tune(
+                        model_name,
+                        tuning,
+                        hybrid,
+                        X,
+                        y,
+                        train_part,
+                        defaults,
+                        loss=loss,
+                        seed=tune_seed,
+                        oversample=oversample,
+                        smote_options=smote_options,
+                    )
+
             for model_name in MODELS:
+                train_settings = {**defaults, **chosen[model_name]}
                 seed_scores: list[float] = []
                 for seed_index, seed in enumerate(init_seeds):
                     with torch.random.fork_rng(devices=[]):
                         torch.manual_seed(seed)
-                        built = hybrid(X.shape[1])
-                        model = classical_baseline(built) if model_name == "control" else built
-                        if not isinstance(model, BinaryClassifierBase):
-                            raise TypeError(
-                                f"hybrid must return a hybrid classifier; "
-                                f"got {type(model).__name__}."
-                            )
+                        model = _build(model_name, hybrid, X.shape[1])
                         if n_seeds > 1 and model.get_config().get("init_seed") is not None:
                             # The model's own seed overrides the runner's, so
                             # every repeat would start from the same weights.
@@ -427,10 +631,10 @@ def run_benchmark(
                             y[val_idx],
                             X_fold[test_idx],
                             y[test_idx],
-                            lr=lr,
-                            max_epochs=max_epochs,
-                            batch_size=batch_size,
-                            patience=patience,
+                            lr=train_settings["lr"],
+                            max_epochs=train_settings["max_epochs"],
+                            batch_size=train_settings["batch_size"],
+                            patience=train_settings["patience"],
                             batch_seed=batch_seed,
                         )
                     n_parameters[model_name] = model.count_parameters()
@@ -461,6 +665,7 @@ def run_benchmark(
                             epochs,
                             _device_name(model),
                             seed_index,
+                            dict(chosen[model_name]),
                         )
                     )
                 scores[model_name].append(float(np.mean(seed_scores)))
