@@ -86,6 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `hqnn_forge.utils.permute_quantum_layer`: the permutation null for quantum ablation, which
   runs the circuit and shuffles its readouts across the batch with a seedable generator, so
   they keep their distribution and lose only their link to the input
+- `examples/does_the_quantum_layer_help.py`: a step-by-step hybrid-versus-control comparison on
+  one's own data, with a plain-words verdict from the paired Wilcoxon test
 
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from
