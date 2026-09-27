@@ -57,6 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   many more (12 of 24 for the ring ansatz at 4 qubits and 2 layers).  `n_effective_params`
   appears in `to_dict()` and the printed summary; templates are decomposed before counting
   and broadcast tapes are rejected
+- Comparing several models over several datasets (Demšar 2006) in `hqnn_forge.evaluation`:
+  `friedman_test` with the Iman–Davenport F, `nemenyi_critical_difference`,
+  `compare_to_control` and `holm_correction`, NumPy-only
 
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from
