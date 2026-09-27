@@ -57,6 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   many more (12 of 24 for the ring ansatz at 4 qubits and 2 layers).  `n_effective_params`
   appears in `to_dict()` and the printed summary; templates are decomposed before counting
   and broadcast tapes are rejected
+- Trainable quantum kernels: `differentiable=True` on `encoded_states` and
+  `quantum_kernel_matrix`, `kernel_target_alignment` (centred) and `train_kernel_alignment`
+  to fit a `DataReuploadingLayer`'s weights to a task before the SVM
 
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from

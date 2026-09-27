@@ -31,7 +31,13 @@ from hqnn_forge.encoding import (
     QuantumEncodingLayer,
 )
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
-from hqnn_forge.kernels import encoded_states, kernel_from_states, quantum_kernel_matrix
+from hqnn_forge.kernels import (
+    encoded_states,
+    kernel_from_states,
+    kernel_target_alignment,
+    quantum_kernel_matrix,
+    train_kernel_alignment,
+)
 
 N_QUBITS = 3
 M = 7  # samples
@@ -532,3 +538,145 @@ class TestUsage:
         monkeypatch.setattr(kernels, "_simulate", lambda *a: calls.append(1) or real(*a))
         quantum_kernel_matrix(_angles(3, seed=0), _angle_layer(), Y=_angles(4, seed=1))
         assert calls == [1]
+
+
+# ---------------------------------------------------------------------------
+# Trainable kernel: kernel-target alignment (#214)
+# ---------------------------------------------------------------------------
+
+
+def _reuploading(scaling: bool = True, n_layers: int = 3) -> DataReuploadingLayer:
+    torch.manual_seed(0)
+    layer = DataReuploadingLayer(
+        n_qubits=N_QUBITS,
+        n_layers=n_layers,
+        trainable_input_scaling=scaling,
+        device_name="default.qubit",
+        diff_method="backprop",
+    )
+    return layer.to(torch.float64)
+
+
+def _toy_task(n: int = 12) -> tuple[torch.Tensor, torch.Tensor]:
+    """Two classes that differ in the sign of feature 0 only."""
+    g = torch.Generator().manual_seed(5)
+    X = torch.rand(n, N_QUBITS, generator=g, dtype=torch.float64) * 2 - 1
+    y = (X[:, 0] > 0).to(torch.float64)
+    y[0], y[1] = 1.0, 0.0
+    return X, y
+
+
+class TestKernelTargetAlignment:
+    def test_ideal_kernel_has_alignment_one(self) -> None:
+        y = torch.tensor([1.0, -1, -1, 1, -1])
+        assert float(kernel_target_alignment(torch.outer(y, y), y)) == pytest.approx(1.0)
+        assert float(kernel_target_alignment(-torch.outer(y, y), y)) == pytest.approx(-1.0)
+
+    def test_label_encodings_agree_and_centring_ignores_offsets(self) -> None:
+        K = quantum_kernel_matrix(_angles(M), _angle_layer())
+        y01 = torch.tensor([1, 0, 0, 1, 1, 0, 0])
+        a = kernel_target_alignment(K, y01)
+        assert float(a) == pytest.approx(float(kernel_target_alignment(K, 2 * y01 - 1)))
+        # Centred alignment does not see a constant added to every entry.
+        assert float(kernel_target_alignment(K + 3.0, y01)) == pytest.approx(float(a))
+
+    @pytest.mark.parametrize(
+        ("K", "y", "match"),
+        [
+            (torch.eye(3), torch.tensor([0, 1]), "3 labels"),
+            (torch.eye(3), torch.tensor([1, 1, 1]), "both classes"),
+            (torch.eye(3), torch.tensor([0, 1, 2]), "both classes"),
+            (torch.ones(2, 3), torch.tensor([0, 1]), "square"),
+        ],
+    )
+    def test_rejected(self, K: torch.Tensor, y: torch.Tensor, match: str) -> None:
+        with pytest.raises(ValueError, match=match):
+            kernel_target_alignment(K, y)
+
+
+class TestDifferentiableKernel:
+    def test_values_equal_the_detached_path(self) -> None:
+        layer = _reuploading()
+        X = _angles(M)
+        torch.testing.assert_close(
+            quantum_kernel_matrix(X, layer, differentiable=True).detach(),
+            quantum_kernel_matrix(X, layer),
+            rtol=0,
+            atol=1e-12,
+        )
+        assert not quantum_kernel_matrix(X, layer).requires_grad
+
+    def test_alignment_gradient_matches_finite_differences(self) -> None:
+        layer = _reuploading()
+        X, y = _toy_task(8)
+
+        def alignment() -> torch.Tensor:
+            return kernel_target_alignment(quantum_kernel_matrix(X, layer, differentiable=True), y)
+
+        alignment().backward()
+        eps = 1e-6
+        for name, param in layer.named_parameters():
+            assert param.grad is not None, name
+            flat, grad = param.data.view(-1), param.grad.view(-1)
+            for i in (0, flat.numel() // 2, flat.numel() - 1):
+                old = float(flat[i])
+                with torch.no_grad():
+                    flat[i] = old + eps
+                    up = float(alignment())
+                    flat[i] = old - eps
+                    down = float(alignment())
+                    flat[i] = old
+                assert float(grad[i]) == pytest.approx((up - down) / (2 * eps), abs=1e-7), (
+                    name,
+                    i,
+                )
+
+    @pytest.mark.parametrize("build", _layers("angle", "iqp", "amplitude"))
+    def test_single_upload_ansatz_cancels(self, build) -> None:
+        layer = build().to(torch.float64)
+        X = _inputs_for(layer)
+        y = torch.tensor([1, 0, 1, 0, 0, 1, 0])
+        kernel_target_alignment(quantum_kernel_matrix(X, layer, differentiable=True), y).backward()
+        for name, param in layer.named_parameters():
+            assert param.grad is not None and param.grad.abs().max() < 1e-10, name
+
+    def test_only_the_last_reuploading_block_cancels(self) -> None:
+        layer = _reuploading(scaling=False)
+        X, y = _toy_task(8)
+        kernel_target_alignment(quantum_kernel_matrix(X, layer, differentiable=True), y).backward()
+        grad = layer.qlayer.weights.grad
+        assert grad is not None
+        assert grad[-1].abs().max() < 1e-10
+        assert grad[:-1].abs().max() > 1e-4
+
+
+class TestTrainKernelAlignment:
+    def test_alignment_increases(self) -> None:
+        layer = _reuploading()
+        X, y = _toy_task(12)
+        before = float(kernel_target_alignment(quantum_kernel_matrix(X, layer), y))
+        history = train_kernel_alignment(layer, X, y, steps=15, lr=0.1)
+        after = float(kernel_target_alignment(quantum_kernel_matrix(X, layer), y))
+        assert len(history) == 15 and history[0] == pytest.approx(before)
+        assert after > before + 0.05, (before, after)
+
+    def test_subsets_keep_both_classes(self) -> None:
+        # 2 positives out of 12: an unstratified subset of 4 would often hold
+        # none, and the alignment would refuse it.
+        layer = _reuploading()
+        X, _ = _toy_task(12)
+        y = torch.zeros(12, dtype=torch.float64)
+        y[:2] = 1.0
+        history = train_kernel_alignment(
+            layer, X, y, steps=10, subset_size=4, generator=torch.Generator().manual_seed(0)
+        )
+        assert len(history) == 10
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [({"steps": 0}, "steps must be >= 1"), ({"subset_size": 1}, "subset_size must lie")],
+    )
+    def test_rejected(self, kwargs: dict, match: str) -> None:
+        X, y = _toy_task(6)
+        with pytest.raises(ValueError, match=match):
+            train_kernel_alignment(_reuploading(), X, y, **kwargs)
