@@ -364,7 +364,7 @@ class DataReuploadingLayer(nn.Module):
     >>> from hqnn_forge.encoding import DataReuploadingLayer
     >>> from hqnn_forge.initializers import restricted_normal_init_
     >>> layer = DataReuploadingLayer(n_qubits=4, n_layers=3)
-    >>> restricted_normal_init_(layer.qlayer.weights, n_qubits=4, n_layers=3)
+    >>> _ = restricted_normal_init_(layer.qlayer.weights, n_qubits=4, n_layers=3)
     >>> layer(torch.rand(2, 4)).shape
     torch.Size([2, 4])
     """

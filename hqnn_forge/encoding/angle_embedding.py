@@ -625,7 +625,7 @@ class QuantumEncodingLayer(nn.Module):
     >>> from hqnn_forge.initializers import restricted_normal_init_
     >>>
     >>> layer = QuantumEncodingLayer(n_qubits=8, n_layers=2)
-    >>> restricted_normal_init_(layer.qlayer.weights, n_qubits=8, n_layers=2)
+    >>> _ = restricted_normal_init_(layer.qlayer.weights, n_qubits=8, n_layers=2)
     >>>
     >>> x = torch.randn(4, 8)   # batch of 4 samples
     >>> out = layer(x)           # shape: (4, 8)

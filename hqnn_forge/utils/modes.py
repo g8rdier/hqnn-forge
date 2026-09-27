@@ -33,8 +33,16 @@ def eval_mode(module: nn.Module) -> Iterator[None]:
 
     Examples
     --------
+    >>> import torch
+    >>> from torch import nn
+    >>> from hqnn_forge.utils import eval_mode
+    >>> model = nn.Sequential(nn.Linear(4, 1), nn.Dropout(0.5))
     >>> with eval_mode(model):
-    ...     logits = model(x)
+    ...     logits = model(torch.ones(2, 4))  # dropout off
+    ...     model.training, model[1].training
+    (False, False)
+    >>> model.training, model[1].training  # train mode is back
+    (True, True)
     """
     modes = [(submodule, submodule.training) for submodule in module.modules()]
     module.eval()

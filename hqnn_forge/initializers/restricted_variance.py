@@ -176,11 +176,14 @@ def restricted_normal_init_(
 
     Examples
     --------
+    >>> import math
     >>> import torch
     >>> from hqnn_forge.initializers import restricted_normal_init_
     >>> w = torch.empty(2, 8, 3)  # (n_layers=2, n_qubits=8, 3 Euler angles)
-    >>> restricted_normal_init_(w, n_qubits=8, n_layers=2)
-    >>> w.std().item()  # ≈ π / sqrt(16) ≈ 0.785
+    >>> restricted_normal_init_(w, n_qubits=8, n_layers=2) is w  # filled in place
+    True
+    >>> round(math.pi / math.sqrt(8 * 2), 3)  # the σ w was drawn with
+    0.785
     """
     if n_qubits < 1 or n_layers < 1:
         raise ValueError(
@@ -237,11 +240,14 @@ def block_local_init_(
 
     Examples
     --------
+    >>> import math
     >>> import torch
     >>> from hqnn_forge.initializers import block_local_init_
     >>> w = torch.empty(4, 8, 3)  # 4-layer circuit
-    >>> block_local_init_(w, n_qubits=8)
-    >>> # Layer 0 has the largest variance; layer 3 the smallest.
+    >>> block_local_init_(w, n_qubits=8) is w  # filled in place
+    True
+    >>> [round(math.pi / math.sqrt(8 * (layer + 1)), 3) for layer in range(4)]  # σ_ℓ of w[ℓ]
+    [1.111, 0.785, 0.641, 0.555]
     """
     if n_qubits < 1:
         raise ValueError(f"n_qubits must be ≥ 1; got {n_qubits}.")
