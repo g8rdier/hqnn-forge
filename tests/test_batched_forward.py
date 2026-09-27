@@ -38,6 +38,15 @@ def _lightning_available() -> bool:
 DEVICE_CONFIGS = [
     pytest.param("default.qubit", "parameter-shift", id="default.qubit/parameter-shift"),
     pytest.param("default.qubit", "backprop", id="default.qubit/backprop"),
+    # The input-gradient tests feed float32 inputs, for which PennyLane warns
+    # that finite differences may be inaccurate; they still agree within
+    # those tests' tolerances, so the warning is filtered here only.
+    pytest.param(
+        "default.qubit",
+        "finite-diff",
+        id="default.qubit/finite-diff",
+        marks=pytest.mark.filterwarnings("ignore:Finite differences with float32:UserWarning"),
+    ),
     pytest.param(
         "lightning.qubit",
         "adjoint",
