@@ -40,6 +40,7 @@ from hqnn_forge.encoding.angle_embedding import (
     Readout,
     _build_training_noise,
     _expand_batch_dimension,
+    _noise_method_repr,
     _resolve_device,
     apply_variational_layers,
     check_inputs,
@@ -47,7 +48,7 @@ from hqnn_forge.encoding.angle_embedding import (
     readout_wires,
     validate_circuit_options,
 )
-from hqnn_forge.noise import Position, run_with_training_noise
+from hqnn_forge.noise import NoiseMethod, Position, run_with_training_noise
 
 logger = logging.getLogger(__name__)
 
@@ -149,8 +150,9 @@ class IQPEncodingLayer(nn.Module):
     ``entangler`` and ``readout`` are the options of
     :class:`~hqnn_forge.encoding.QuantumEncodingLayer`; the output width is
     ``n_outputs`` (``n_qubits``, or 1 with ``readout="first"``).
-    ``noise_level`` / ``noise_position`` add training-time depolarizing
-    noise exactly as in :class:`~hqnn_forge.encoding.QuantumEncodingLayer`.
+    ``noise_level`` / ``noise_position`` / ``noise_method`` /
+    ``noise_trajectories`` add training-time depolarizing noise exactly as in
+    :class:`~hqnn_forge.encoding.QuantumEncodingLayer`.
     """
 
     def __init__(
@@ -164,6 +166,8 @@ class IQPEncodingLayer(nn.Module):
         readout: Readout = "all",
         noise_level: float = 0.0,
         noise_position: Position = "all",
+        noise_method: NoiseMethod = "density",
+        noise_trajectories: int = 1,
     ) -> None:
         super().__init__()
 
@@ -175,6 +179,8 @@ class IQPEncodingLayer(nn.Module):
         self.n_outputs = len(readout_wires(n_qubits, readout))
         self.noise_level = noise_level
         self.noise_position = noise_position
+        self.noise_method = noise_method
+        self.noise_trajectories = noise_trajectories
 
         qnode = build_iqp_qnode(
             n_qubits=n_qubits,
@@ -193,7 +199,7 @@ class IQPEncodingLayer(nn.Module):
         self.qlayer = qml.qnn.TorchLayer(qnode, weight_shapes)
         # Training-time depolarizing noise; see QuantumEncodingLayer.
         self._training_noise_qnode = _build_training_noise(
-            qnode, n_qubits, noise_level, noise_position
+            qnode, n_qubits, noise_level, noise_position, noise_method, noise_trajectories
         )
 
     def prepare_inputs(self, x: torch.Tensor) -> torch.Tensor:
@@ -213,12 +219,15 @@ class IQPEncodingLayer(nn.Module):
         # Whole batch in one call; see QuantumEncodingLayer.forward.
         x = self.prepare_inputs(x)
         if self.training and self._training_noise_qnode is not None:
-            return run_with_training_noise(self.qlayer, self._training_noise_qnode, x)
+            return run_with_training_noise(
+                self.qlayer, self._training_noise_qnode, x, self.noise_trajectories
+            )
         return self.qlayer(x)
 
     def extra_repr(self) -> str:
         noise = (
             f", noise_level={self.noise_level}, noise_position={self.noise_position!r}"
+            f"{_noise_method_repr(self.noise_method, self.noise_trajectories)}"
             if self.noise_level
             else ""
         )

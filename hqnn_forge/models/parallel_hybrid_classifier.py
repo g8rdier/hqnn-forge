@@ -108,7 +108,7 @@ from hqnn_forge.models.hybrid_classifier import (
     _DEFAULT_INIT_STD,
     _PUBLISHED_SHNN,
 )
-from hqnn_forge.noise import Position
+from hqnn_forge.noise import NoiseMethod, Position
 
 
 class ParallelHybridClassifier(BinaryClassifierBase):
@@ -175,11 +175,18 @@ class ParallelHybridClassifier(BinaryClassifierBase):
     noise_level:
         Training-time depolarizing probability for the quantum layer, in
         ``[0, 0.75]``.  Default: ``0.0`` (noiseless).  Applied in train mode
-        only, on ``default.mixed`` with backprop, whose memory grows as
-        ``batch × 4^n_qubits`` per operation: practical up to about 6 qubits.
-        See :mod:`hqnn_forge.noise`.
+        only.  With the default ``noise_method`` it runs on ``default.mixed``
+        with backprop, whose memory grows as ``batch × 4^n_qubits`` per
+        operation: practical up to about 6 qubits.  See :mod:`hqnn_forge.noise`.
     noise_position:
         ``"all"`` (default) or ``"end"``; where the channel is inserted.
+    noise_method:
+        ``"density"`` (default, exact) or ``"trajectories"`` (Pauli-trajectory
+        sampling on the layer's own device, at pure-state memory; equal to
+        ``"density"`` on average).  See
+        :class:`~hqnn_forge.encoding.QuantumEncodingLayer`.
+    noise_trajectories:
+        Draws averaged per sample with ``"trajectories"``.  Default: 1.
 
     Attributes
     ----------
@@ -219,6 +226,8 @@ class ParallelHybridClassifier(BinaryClassifierBase):
         init_std: float = 0.1,
         noise_level: float = 0.0,
         noise_position: Position = "all",
+        noise_method: NoiseMethod = "density",
+        noise_trajectories: int = 1,
     ) -> None:
         super().__init__()
         self._config = dict(
@@ -239,6 +248,8 @@ class ParallelHybridClassifier(BinaryClassifierBase):
             init_std=init_std,
             noise_level=noise_level,
             noise_position=noise_position,
+            noise_method=noise_method,
+            noise_trajectories=noise_trajectories,
         )
 
         if encoder_activation not in ("tanh", "sigmoid"):
@@ -308,6 +319,8 @@ class ParallelHybridClassifier(BinaryClassifierBase):
                 readout=readout,
                 noise_level=noise_level,
                 noise_position=noise_position,
+                noise_method=noise_method,
+                noise_trajectories=noise_trajectories,
             )
         elif encoding_type == "iqp":
             if embedding_rotation != "X":
@@ -325,6 +338,8 @@ class ParallelHybridClassifier(BinaryClassifierBase):
                 readout=readout,
                 noise_level=noise_level,
                 noise_position=noise_position,
+                noise_method=noise_method,
+                noise_trajectories=noise_trajectories,
             )
         else:
             raise ValueError(f"Unsupported encoding_type: {encoding_type}")
