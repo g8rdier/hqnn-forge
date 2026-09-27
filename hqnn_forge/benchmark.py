@@ -49,6 +49,7 @@ a lower threshold.
 from __future__ import annotations
 
 import csv
+import hashlib
 import math
 import os
 import time
@@ -127,6 +128,8 @@ class FoldResult:
     mcc: float
     train_seconds: float
     epochs: int
+    device: str | None
+    """PennyLane device the circuit actually ran on (after any fallback); ``None`` for the control."""
 
 
 @dataclass(frozen=True)
@@ -139,10 +142,45 @@ class BenchmarkResult:
         ``fold_mcc`` is a tuple of the per-fold scores.
     folds:
         Every :class:`FoldResult`, in dataset, fold, model order.
+    settings:
+        The ``run_benchmark`` arguments other than the datasets and the
+        builder, with ``loss`` as its import path.
+    models:
+        Per dataset: ``{"hybrid": {"class": ..., "config": ...}, "control":
+        {...}}``, each model's class name and ``get_config()``.
+    datasets:
+        Per dataset: ``n_samples``, ``n_features``, ``n_positives`` and the
+        SHA-256 of the float64 features and int64 labels, so a re-run can
+        check it was given the same data.
     """
 
     records: list[dict[str, Any]]
     folds: list[FoldResult]
+    settings: dict[str, Any]
+    models: dict[str, dict[str, dict[str, Any]]]
+    datasets: dict[str, dict[str, Any]]
+
+
+def fingerprint(X: npt.NDArray[np.float64], y: npt.NDArray[np.int64]) -> str:
+    """SHA-256 over the shape and bytes of ``X`` (float64) and ``y`` (int64)."""
+    digest = hashlib.sha256()
+    for array, dtype in ((X, np.float64), (y, np.int64)):
+        contiguous = np.ascontiguousarray(array, dtype=dtype)
+        digest.update(repr(contiguous.shape).encode())
+        digest.update(contiguous.tobytes())
+    return digest.hexdigest()
+
+
+def _device_name(model: nn.Module) -> str | None:
+    """The device the model's QNode is bound to, or ``None`` without one."""
+    layer = getattr(model, "quantum_layer", None)
+    qnode = getattr(getattr(layer, "qlayer", None), "qnode", None)
+    device = getattr(qnode, "device", None)
+    return None if device is None else str(device.name)
+
+
+def _import_path(obj: object) -> str:
+    return f"{getattr(obj, '__module__', '?')}.{getattr(obj, '__qualname__', repr(obj))}"
 
 
 def _standardise(
@@ -213,6 +251,7 @@ def run_benchmark(
     patience: int | None = 10,
     random_state: int = 0,
     smote_kwargs: Mapping[str, Any] | None = None,
+    record_path: str | os.PathLike[str] | None = None,
 ) -> BenchmarkResult:
     """
     Compare ``hybrid`` with its matched classical control on every dataset.
@@ -246,6 +285,10 @@ def run_benchmark(
         Root seed.  Every fold split, SMOTE draw, initialisation and batch
         order derives from it, so a run is repeatable; the seeds used are in
         :attr:`BenchmarkResult.folds`.
+    record_path:
+        Also write an experiment record (config, seeds, fold indices,
+        dependency versions, devices, metrics) there as JSON; see
+        :func:`hqnn_forge.experiment.save_record`.
 
     Returns
     -------
@@ -258,9 +301,24 @@ def run_benchmark(
     if not datasets:
         raise ValueError("datasets is empty.")
     smote_options = dict(smote_kwargs or {})
+    settings: dict[str, Any] = {
+        "n_splits": n_splits,
+        "validation_folds": validation_folds,
+        "oversample": oversample,
+        "loss": _import_path(loss),
+        "lr": lr,
+        "max_epochs": max_epochs,
+        "batch_size": batch_size,
+        "patience": patience,
+        "random_state": random_state,
+        "smote_kwargs": smote_options,
+        "hybrid_builder": _import_path(hybrid),
+    }
 
     records: list[dict[str, Any]] = []
     folds: list[FoldResult] = []
+    models: dict[str, dict[str, dict[str, Any]]] = {}
+    data_info: dict[str, dict[str, Any]] = {}
     for d, (name, (X_raw, y_raw)) in enumerate(datasets.items()):
         X = np.asarray(X_raw, dtype=np.float64)
         y = np.asarray(y_raw)
@@ -274,6 +332,12 @@ def run_benchmark(
         y = y.astype(np.int64)
         if not np.isfinite(X).all():
             raise ValueError(f"{name}: X contains NaN or infinite values.")
+        data_info[name] = {
+            "n_samples": int(y.size),
+            "n_features": int(X.shape[1]),
+            "n_positives": int(y.sum()),
+            "sha256": fingerprint(X, y),
+        }
 
         root = np.random.SeedSequence([random_state, d])
         split_seed, *fold_roots = root.spawn(n_splits + 1)
@@ -323,6 +387,10 @@ def run_benchmark(
                         batch_seed=batch_seed,
                     )
                 n_parameters[model_name] = model.count_parameters()
+                models.setdefault(name, {})[model_name] = {
+                    "class": type(model).__name__,
+                    "config": model.get_config(),
+                }
                 architecture[model_name] = type(model).__name__
                 scores[model_name].append(mcc)
                 seconds[model_name] += secs
@@ -341,6 +409,7 @@ def run_benchmark(
                         mcc,
                         secs,
                         epochs,
+                        _device_name(model),
                     )
                 )
 
@@ -374,7 +443,12 @@ def run_benchmark(
                     "rank_biserial": effect,
                 }
             )
-    return BenchmarkResult(records, folds)
+    result = BenchmarkResult(records, folds, settings, models, data_info)
+    if record_path is not None:
+        from hqnn_forge.experiment import save_record  # imports this module
+
+        save_record(result, record_path)
+    return result
 
 
 def write_csv(records: Sequence[Mapping[str, Any]], path: str | os.PathLike[str]) -> None:

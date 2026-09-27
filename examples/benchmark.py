@@ -14,6 +14,7 @@ Usage
 -----
     python examples/benchmark.py
     python examples/benchmark.py --credit-card --max-rows 20000 --csv results.csv
+    python examples/benchmark.py --record run.json   # see hqnn_forge.experiment
 
 The default run takes about four minutes on a laptop CPU, nearly all of it
 simulating the circuit; the control trains in under a second.
@@ -69,6 +70,9 @@ def main() -> None:
     parser.add_argument("--qubits", type=int, default=4)
     parser.add_argument("--layers", type=int, default=2)
     parser.add_argument("--csv", help="also write the table to this file")
+    parser.add_argument(
+        "--record", help="write an experiment record (JSON) for reproducing the run here"
+    )
     args = parser.parse_args()
 
     datasets = {"synthetic": synthetic()}
@@ -79,7 +83,9 @@ def main() -> None:
     def hybrid(n_input_features: int) -> HybridBinaryClassifier:
         return HybridBinaryClassifier(n_input_features, args.qubits, args.layers)
 
-    result = run_benchmark(datasets, hybrid, n_splits=args.folds, max_epochs=args.epochs)
+    result = run_benchmark(
+        datasets, hybrid, n_splits=args.folds, max_epochs=args.epochs, record_path=args.record
+    )
 
     print(f"{'dataset':<12} {'model':<8} {'params':>6} {'MCC':>14} {'MCC/kP':>7} {'train s':>8}")
     for r in result.records:
