@@ -109,6 +109,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one's own data, with a plain-words verdict from the paired Wilcoxon test
 - `batch_size` on `encoded_states` and `quantum_kernel_matrix`: the kernel states are simulated
   that many rows at a time, bounding the simulator's working memory; results are unchanged
+- Quantum kernels under depolarising noise: `noise_level`/`noise_position` on
+  `quantum_kernel_matrix` give the Hilbert–Schmidt kernel `Tr[ρ(x)ρ(y)]` with the same channel
+  insertion as `hqnn_forge.noise`; `encoded_density_matrices` and `kernel_from_density_matrices`
 
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from

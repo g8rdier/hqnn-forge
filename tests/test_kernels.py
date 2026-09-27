@@ -18,6 +18,7 @@ from ``encoded_states`` must equal what the layer's own forward returns.
 
 from __future__ import annotations
 
+import itertools
 import math
 
 import pennylane as qml
@@ -918,3 +919,147 @@ class TestBatchedSimulation:
             encoded_states(_angles(3), _angle_layer(), batch_size=batch_size)
         with pytest.raises(ValueError, match="batch_size must be a positive integer"):
             quantum_kernel_matrix(_angles(3), _angle_layer(), batch_size=batch_size)
+
+
+# ---------------------------------------------------------------------------
+# Under depolarising noise (#221)
+# ---------------------------------------------------------------------------
+
+_PAULIS = [
+    torch.eye(2, dtype=torch.complex128),
+    torch.tensor([[0, 1], [1, 0]], dtype=torch.complex128),
+    torch.tensor([[0, -1j], [1j, 0]], dtype=torch.complex128),
+    torch.tensor([[1, 0], [0, -1]], dtype=torch.complex128),
+]
+
+
+def _z_on(wire: int, n: int) -> torch.Tensor:
+    op = torch.ones(1, 1, dtype=torch.complex128)
+    for w in range(n):
+        op = torch.kron(op, _PAULIS[3] if w == wire else _PAULIS[0])
+    return op
+
+
+class TestNoisyKernel:
+    @pytest.mark.parametrize("build", ALL_LAYERS)
+    def test_zero_noise_density_path_equals_the_noiseless_kernel(self, build) -> None:
+        layer = build()
+        X = _inputs_for(layer)
+        rho = kernels.encoded_density_matrices(X, layer, noise_level=0.0)
+        states = encoded_states(X, layer)
+        torch.testing.assert_close(
+            rho, torch.einsum("ia,ib->iab", states, states.conj()), rtol=0, atol=1e-12
+        )
+        torch.testing.assert_close(
+            kernels.kernel_from_density_matrices(rho),
+            quantum_kernel_matrix(X, layer),
+            rtol=0,
+            atol=1e-12,
+        )
+        # noise_level=0 on quantum_kernel_matrix is the state-vector path itself.
+        assert torch.equal(
+            quantum_kernel_matrix(X, layer, noise_level=0.0), quantum_kernel_matrix(X, layer)
+        )
+
+    @pytest.mark.parametrize("position", ["all", "end"])
+    def test_the_models_noise_is_the_kernels_noise(self, position: str) -> None:
+        # <Z_i> read off the kernel's density matrices equals the layer's own
+        # output inside apply_depolarizing_noise: the same channels, inserted
+        # the same way.
+        from hqnn_forge.noise import apply_depolarizing_noise
+
+        layer = _angle_layer()
+        X = _angles(4)
+        rho = kernels.encoded_density_matrices(
+            X,
+            layer,
+            noise_level=0.1,
+            noise_position=position,  # type: ignore[arg-type]
+        )
+        from_rho = torch.stack(
+            [torch.einsum("iab,ba->i", rho, _z_on(w, N_QUBITS)).real for w in range(N_QUBITS)],
+            dim=1,
+        )
+        with apply_depolarizing_noise(layer, 0.1, position=position), torch.no_grad():  # type: ignore[arg-type]
+            expected = layer(X).to(torch.float64)
+        torch.testing.assert_close(from_rho, expected, rtol=0, atol=1e-6)
+
+    @pytest.mark.parametrize("p", [0.03, 0.2])
+    def test_end_position_closed_form(self, p: float) -> None:
+        # Channels only before measurement: with λ = 1 − 4p/3 per qubit,
+        # Tr[D(ρ)D(σ)] = 2⁻ⁿ Σ_P λ^(2·wt P) Tr[ρP] Tr[σP] over Pauli strings P,
+        # computed here from the noiseless states.
+        layer = _angle_layer()
+        X = _angles(5)
+        states = encoded_states(X, layer)
+        lam = 1 - 4 * p / 3
+        expected = torch.zeros(5, 5, dtype=torch.float64)
+        for combo in itertools.product(range(4), repeat=N_QUBITS):
+            P = torch.ones(1, 1, dtype=torch.complex128)
+            for c in combo:
+                P = torch.kron(P, _PAULIS[c])
+            e = torch.einsum("ia,ab,ib->i", states.conj(), P, states).real
+            weight = sum(c != 0 for c in combo)
+            expected += lam ** (2 * weight) * torch.outer(e, e) / 2**N_QUBITS
+        got = quantum_kernel_matrix(X, layer, noise_level=p, noise_position="end")
+        torch.testing.assert_close(got, expected, rtol=0, atol=1e-12)
+
+    def test_symmetric_psd_with_purity_on_the_diagonal(self) -> None:
+        layer = _reuploading()
+        X = _angles(M)
+        K = quantum_kernel_matrix(X, layer, noise_level=0.1)
+        assert torch.equal(K, K.T)
+        assert torch.linalg.eigvalsh(K).min() > -1e-12
+        rho = kernels.encoded_density_matrices(X, layer, noise_level=0.1)
+        purity = torch.einsum("iab,iba->i", rho, rho).real
+        torch.testing.assert_close(K.diagonal(), purity, rtol=0, atol=1e-12)
+        assert K.diagonal().max() < 1.0
+        torch.testing.assert_close(
+            torch.einsum("iaa->i", rho).real, torch.ones(M, dtype=torch.float64)
+        )
+        torch.testing.assert_close(rho, rho.conj().transpose(1, 2), rtol=0, atol=1e-12)
+
+    def test_diagonal_falls_with_the_noise_level(self) -> None:
+        layer = _angle_layer()
+        X = _angles(4)
+        diagonals = [
+            quantum_kernel_matrix(X, layer, noise_level=p).diagonal()
+            for p in (0.0, 0.02, 0.05, 0.1, 0.2, 0.4)
+        ]
+        for lower, higher in itertools.pairwise(diagonals):
+            assert torch.all(higher < lower)
+
+    def test_rectangular_and_batched(self) -> None:
+        layer = _angle_layer()
+        X, Y = _angles(5), _angles(3, seed=1)
+        full = quantum_kernel_matrix(torch.cat([X, Y]), layer, noise_level=0.1)
+        rect = quantum_kernel_matrix(X, layer, Y, noise_level=0.1)
+        torch.testing.assert_close(rect, full[:5, 5:], rtol=0, atol=1e-12)
+        torch.testing.assert_close(
+            quantum_kernel_matrix(X, layer, Y, noise_level=0.1, batch_size=2), rect, rtol=0, atol=0
+        )
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"noise_level": 0.8}, r"noise_level must lie in \[0, 0.75\]"),
+            ({"noise_level": 0.1, "noise_position": "middle"}, "noise_position must be"),
+        ],
+    )
+    def test_rejected_noise_arguments(self, kwargs: dict, match: str) -> None:
+        with pytest.raises(ValueError, match=match):
+            quantum_kernel_matrix(_angles(3), _angle_layer(), **kwargs)
+        with pytest.raises(ValueError, match=match):
+            kernels.encoded_density_matrices(_angles(3), _angle_layer(), **kwargs)
+
+    def test_inside_the_noise_block_it_points_to_noise_level(self) -> None:
+        from hqnn_forge.noise import apply_depolarizing_noise
+
+        layer = _angle_layer()
+        with apply_depolarizing_noise(layer, 0.1):
+            with pytest.raises(RuntimeError, match="pass noise_level="):
+                quantum_kernel_matrix(_angles(3), layer, noise_level=0.1)
+
+    def test_density_kernel_shape_checks(self) -> None:
+        with pytest.raises(ValueError, match="stacks of equal square matrices"):
+            kernels.kernel_from_density_matrices(torch.zeros(2, 4, 4), torch.zeros(2, 2, 2))
