@@ -106,7 +106,7 @@ from hqnn_forge.models._trunk import (
 )
 from hqnn_forge.models.base import BinaryClassifierBase
 from hqnn_forge.models.hybrid_classifier import _PUBLISHED_SHNN
-from hqnn_forge.noise import NoiseMethod, Position
+from hqnn_forge.noise import Channel, NoiseMethod, Position
 
 
 class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
@@ -213,6 +213,11 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
         ``"finite-diff"``); ``adjoint`` and ``backprop`` need the exact state.
         :func:`hqnn_forge.noise.apply_shots` evaluates a model with a finite
         shot count without rebuilding it.
+    noise_channel:
+        The channel ``noise_level`` is the strength of: ``"depolarizing"``
+        (default), ``"amplitude_damping"``, ``"phase_damping"``,
+        ``"bit_flip"`` or ``"phase_flip"``; see :mod:`hqnn_forge.noise`.  The
+        trajectory method samples the Pauli ones only.
 
     Attributes
     ----------
@@ -256,6 +261,7 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
         noise_trajectories: int = 1,
         trainable_input_scaling: bool = False,
         shots: int | None = None,
+        noise_channel: Channel = "depolarizing",
     ) -> None:
         super().__init__()
         self._config = dict(
@@ -280,6 +286,7 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
             noise_trajectories=noise_trajectories,
             trainable_input_scaling=trainable_input_scaling,
             shots=shots,
+            noise_channel=noise_channel,
         )
 
         # Validated before the classical branch is built, as before the shared
@@ -318,6 +325,7 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
             noise_trajectories=noise_trajectories,
             trainable_input_scaling=trainable_input_scaling,
             shots=shots,
+            noise_channel=noise_channel,
         )
 
         # ── Classical head ────────────────────────────────────────────────

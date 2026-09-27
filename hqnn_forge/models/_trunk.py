@@ -37,7 +37,7 @@ from hqnn_forge.initializers.restricted_variance import (
     block_local_init_,
     restricted_normal_init_,
 )
-from hqnn_forge.noise import NoiseMethod, Position
+from hqnn_forge.noise import Channel, NoiseMethod, Position
 
 #: Constructor defaults that mark an option as "not asked for".  Both options
 #: are inert outside the configuration that uses them, so a non-default value
@@ -179,6 +179,7 @@ class QuantumTrunk(nn.Module):
         noise_trajectories: int,
         trainable_input_scaling: bool = False,
         shots: int | None = None,
+        noise_channel: Channel = "depolarizing",
     ) -> int:
         """
         Build ``classical_encoder``, ``quantum_layer`` and ``dropout`` on ``self``.
@@ -238,6 +239,7 @@ class QuantumTrunk(nn.Module):
                 noise_method=noise_method,
                 noise_trajectories=noise_trajectories,
                 shots=shots,
+                noise_channel=noise_channel,
             )
         elif encoding_type == "iqp":
             self.quantum_layer = IQPEncodingLayer(
@@ -253,6 +255,7 @@ class QuantumTrunk(nn.Module):
                 noise_method=noise_method,
                 noise_trajectories=noise_trajectories,
                 shots=shots,
+                noise_channel=noise_channel,
             )
         elif encoding_type == "amplitude":
             self.quantum_layer = AmplitudeEncodingLayer(
@@ -268,6 +271,7 @@ class QuantumTrunk(nn.Module):
                 noise_method=noise_method,
                 noise_trajectories=noise_trajectories,
                 shots=shots,
+                noise_channel=noise_channel,
             )
         else:
             self.quantum_layer = DataReuploadingLayer(
@@ -284,6 +288,7 @@ class QuantumTrunk(nn.Module):
                 noise_method=noise_method,
                 noise_trajectories=noise_trajectories,
                 shots=shots,
+                noise_channel=noise_channel,
             )
 
         # ── Dropout ───────────────────────────────────────────────────────

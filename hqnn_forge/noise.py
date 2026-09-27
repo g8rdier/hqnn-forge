@@ -23,6 +23,29 @@ depolarizing, and ``p`` is restricted to [0, 3/4].
 * ``"end"`` -- once on every wire before measurement: readout-style noise that
   damps each ⟨Z_i⟩ by exactly ``1 − 4p/3``.
 
+Other channels
+--------------
+``channel`` (``noise_channel`` on the layers) selects the channel ``p`` is the
+strength of.  What each does to a ⟨Z⟩ readout with ``position="end"``:
+
+========================  =============================  ===================
+channel                   effect on ⟨Z⟩ at ``"end"``      ``p`` range
+========================  =============================  ===================
+``"depolarizing"``        ``(1 − 4p/3) ⟨Z⟩``             [0, 3/4]
+``"amplitude_damping"``   ``(1 − p) ⟨Z⟩ + p`` (T1)       [0, 1]
+``"phase_damping"``       unchanged (T2 dephasing)       [0, 1]
+``"bit_flip"``            ``(1 − 2p) ⟨Z⟩``               [0, 1]
+``"phase_flip"``          unchanged                      [0, 1]
+========================  =============================  ===================
+
+Dephasing and phase flips commute with a Z measurement, so they act only
+through gates that follow them (``position="all"``).  A symmetric readout
+error -- each measured bit flipped with probability ``p`` -- is exactly
+``"bit_flip"`` at ``"end"``; an asymmetric one (``p(0→1) ≠ p(1→0)``) is not
+modelled.  Training noise by Pauli trajectories covers the Pauli channels
+(depolarizing, bit flip, phase flip); amplitude and phase damping are not
+mixtures of Pauli errors and need ``noise_method="density"``.
+
 ``p = 0`` replaces nothing: the original QNode stays in place, so the output
 is bit-identical to the noiseless model rather than merely close to it.  It
 still counts as an active wrapper, so a layer's training-time noise (below) is
@@ -96,7 +119,29 @@ from torch import nn
 
 Position = Literal["all", "end"]
 NoiseMethod = Literal["density", "trajectories"]
+Channel = Literal["depolarizing", "amplitude_damping", "phase_damping", "bit_flip", "phase_flip"]
 MAX_P = 0.75
+
+
+class _ChannelSpec(NamedTuple):
+    op: type[qml.operation.Channel]
+    #: Largest meaningful strength: 3/4 is fully depolarizing, 1 is a full
+    #: decay, dephasing or flip.
+    max_p: float
+    #: (I, X, Y, Z) probabilities of a Pauli channel at strength p, or None:
+    #: the channels the trajectory sampler can draw.
+    paulis: Callable[[float], tuple[float, float, float, float]] | None
+
+
+CHANNELS: dict[str, _ChannelSpec] = {
+    "depolarizing": _ChannelSpec(
+        qml.DepolarizingChannel, MAX_P, lambda p: (1 - p, p / 3, p / 3, p / 3)
+    ),
+    "amplitude_damping": _ChannelSpec(qml.AmplitudeDamping, 1.0, None),
+    "phase_damping": _ChannelSpec(qml.PhaseDamping, 1.0, None),
+    "bit_flip": _ChannelSpec(qml.BitFlip, 1.0, lambda p: (1 - p, p, 0.0, 0.0)),
+    "phase_flip": _ChannelSpec(qml.PhaseFlip, 1.0, lambda p: (1 - p, 0.0, 0.0, p)),
+}
 
 
 def _resolve_qlayer(
@@ -118,34 +163,52 @@ def _resolve_qlayer(
 
 
 def validate_noise(
-    p: float, position: str, *, p_name: str = "p", position_name: str = "position"
+    p: float,
+    position: str,
+    *,
+    p_name: str = "p",
+    position_name: str = "position",
+    channel: str = "depolarizing",
+    channel_name: str = "channel",
 ) -> None:
     """
-    Raise ``ValueError`` unless ``0 <= p <= MAX_P`` and ``position`` is known.
+    Raise ``ValueError`` unless ``channel`` is known, ``0 <= p`` is at most the
+    channel's maximum, and ``position`` is known.
 
-    ``p_name`` / ``position_name`` are the argument names the messages use, so
-    a caller that exposes them under other names (``noise_level``) is quoted.
+    The ``*_name`` arguments are the names the messages use, so a caller that
+    exposes these under other names (``noise_level``) is quoted.
     """
-    if not 0.0 <= p <= MAX_P:
-        raise ValueError(f"{p_name} must lie in [0, {MAX_P}]; got {p}.")
+    if channel not in CHANNELS:
+        raise ValueError(
+            f"{channel_name} must be one of {', '.join(map(repr, CHANNELS))}; got {channel!r}."
+        )
+    max_p = CHANNELS[channel].max_p
+    if not 0.0 <= p <= max_p:
+        raise ValueError(f"{p_name} must lie in [0, {max_p}] for {channel!r}; got {p}.")
     if position not in ("all", "end"):
         raise ValueError(f"{position_name} must be 'all' or 'end'; got {position!r}.")
 
 
-def _noisy_qnode(qnode: qml.QNode, n_qubits: int, p: float, position: Position) -> qml.QNode:
+def _noisy_qnode(
+    qnode: qml.QNode, n_qubits: int, p: float, position: Position, channel: str = "depolarizing"
+) -> qml.QNode:
     device = qml.device("default.mixed", wires=n_qubits)
     base = qml.QNode(qnode.func, device, diff_method="backprop", interface="torch")
-    return qml.noise.insert(base, qml.DepolarizingChannel, p, position=position)
+    return qml.noise.insert(base, CHANNELS[channel].op, p, position=position)
 
 
 def training_noise_qnode(
-    qnode: qml.QNode, n_qubits: int, p: float, position: Position = "all"
+    qnode: qml.QNode,
+    n_qubits: int,
+    p: float,
+    position: Position = "all",
+    channel: Channel = "depolarizing",
 ) -> qml.QNode:
     """
     The noisy counterpart of ``qnode`` an encoding layer runs in train mode.
 
     Same construction as :func:`apply_depolarizing_noise` uses: the layer's
-    circuit function on ``default.mixed`` with ``DepolarizingChannel(p)``
+    circuit function on ``default.mixed`` with ``channel`` of strength ``p``
     inserted at ``position``, differentiated with backprop.  The layer's own
     ``device_name`` and ``diff_method`` apply to its noiseless path only;
     mixed-state simulation costs ``O(4^n)`` memory per sample, and training
@@ -155,17 +218,18 @@ def training_noise_qnode(
     Raises
     ------
     ValueError
-        If ``p`` is outside ``(0, 0.75]`` or ``position`` is unknown.
+        If ``channel`` is unknown, ``p`` is 0 or above the channel's maximum,
+        or ``position`` is unknown.
     """
-    validate_noise(p, position)
+    validate_noise(p, position, channel=channel)
     if p == 0.0:
         raise ValueError("training_noise_qnode needs p > 0; p = 0 is the noiseless QNode itself.")
-    return _noisy_qnode(qnode, n_qubits, p, position)
+    return _noisy_qnode(qnode, n_qubits, p, position, channel)
 
 
 @qml.transform
 def _pauli_trajectories(
-    tape: qml.tape.QuantumScript, p: float, position: Position
+    tape: qml.tape.QuantumScript, p: float, position: Position, channel: str = "depolarizing"
 ) -> tuple[qml.tape.QuantumScriptBatch, Callable[..., object]]:
     """
     ``tape`` with one randomly drawn Pauli per sample at every channel site.
@@ -175,7 +239,9 @@ def _pauli_trajectories(
     """
     shape = () if tape.batch_size is None else (tape.batch_size,)
     n_draws = 1 if tape.batch_size is None else tape.batch_size
-    weights = torch.tensor([1.0 - p, p / 3, p / 3, p / 3], dtype=torch.float64)
+    paulis = CHANNELS[channel].paulis
+    assert paulis is not None  # trajectory_noise_qnode refuses the others
+    weights = torch.tensor(paulis(p), dtype=torch.float64)
 
     def pauli_error(wires: object) -> None:
         # 0 = I, 1 = X, 2 = Y, 3 = Z; Y = i·X·Z, so Y sets both bits.
@@ -186,25 +252,35 @@ def _pauli_trajectories(
     return qml.noise.insert(tape, pauli_error, (), position=position)
 
 
-def trajectory_noise_qnode(qnode: qml.QNode, p: float, position: Position = "all") -> qml.QNode:
+def trajectory_noise_qnode(
+    qnode: qml.QNode, p: float, position: Position = "all", channel: Channel = "depolarizing"
+) -> qml.QNode:
     """
-    ``qnode`` with depolarizing noise sampled as Pauli trajectories.
+    ``qnode`` with a Pauli ``channel`` sampled as Pauli trajectories.
 
     Runs on ``qnode``'s own device and differentiation method; each call draws
     a fresh error pattern per sample (see the module docstring).  The average
-    over draws equals :func:`training_noise_qnode`'s output.
+    over draws equals :func:`training_noise_qnode`'s output.  Only the Pauli
+    channels -- depolarizing, bit flip, phase flip -- are mixtures of Pauli
+    errors; amplitude and phase damping are not, and are refused.
 
     Raises
     ------
     ValueError
-        If ``p`` is outside ``(0, 0.75]`` or ``position`` is unknown.
+        If ``p`` is 0 or out of range, ``position`` is unknown, or ``channel``
+        is not a Pauli channel.
     """
-    validate_noise(p, position)
+    validate_noise(p, position, channel=channel)
+    if CHANNELS[channel].paulis is None:
+        raise ValueError(
+            f"{channel!r} is not a mixture of Pauli errors, so it cannot be sampled as "
+            f"Pauli trajectories; use noise_method='density'."
+        )
     if p == 0.0:
         raise ValueError(
             "trajectory_noise_qnode needs p > 0; p = 0 is the noiseless QNode itself."
         )
-    return _pauli_trajectories(qnode, p=p, position=position)
+    return _pauli_trajectories(qnode, p=p, position=position, channel=channel)
 
 
 def run_with_training_noise(
@@ -288,6 +364,7 @@ class TrainingNoiseMixin:
     qlayer: qml.qnn.TorchLayer
     training: bool
     noise_level: float
+    noise_channel: Channel
     noise_position: Position
     noise_method: NoiseMethod
     noise_trajectories: int
@@ -303,9 +380,13 @@ class TrainingNoiseMixin:
         noise_trajectories: int,
         *,
         shots: int | None = None,
+        noise_channel: Channel = "depolarizing",
     ) -> None:
         """
         Validate the options and build the train-mode QNode (``None`` without noise).
+
+        ``noise_channel`` is the channel ``noise_level`` is the strength of; the
+        trajectory method samples the Pauli channels only.
 
         With ``shots``, only ``noise_method="trajectories"`` is accepted: it runs
         the layer's own sampled QNode, while the density method runs the exact
@@ -318,9 +399,20 @@ class TrainingNoiseMixin:
         :data:`MAX_TRAINING_NOISE_QUBITS`.
         """
         validate_noise(
-            noise_level, noise_position, p_name="noise_level", position_name="noise_position"
+            noise_level,
+            noise_position,
+            p_name="noise_level",
+            position_name="noise_position",
+            channel=noise_channel,
+            channel_name="noise_channel",
         )
         validate_noise_method(noise_method, noise_trajectories)
+        if noise_method == "trajectories" and CHANNELS[noise_channel].paulis is None:
+            raise ValueError(
+                f"noise_channel={noise_channel!r} is not a mixture of Pauli errors, so it "
+                f"cannot be sampled as trajectories; use noise_method='density'."
+            )
+        self.noise_channel = noise_channel
         self.noise_level = noise_level
         self.noise_position = noise_position
         self.noise_method = noise_method
@@ -335,7 +427,9 @@ class TrainingNoiseMixin:
                 f"shot-based QNode."
             )
         if noise_method == "trajectories":
-            self._training_noise_qnode = trajectory_noise_qnode(qnode, noise_level, noise_position)
+            self._training_noise_qnode = trajectory_noise_qnode(
+                qnode, noise_level, noise_position, noise_channel
+            )
             return
         if n_qubits > MAX_TRAINING_NOISE_QUBITS:
             warnings.warn(
@@ -348,7 +442,7 @@ class TrainingNoiseMixin:
                 stacklevel=3,
             )
         self._training_noise_qnode = training_noise_qnode(
-            qnode, n_qubits, noise_level, noise_position
+            qnode, n_qubits, noise_level, noise_position, noise_channel
         )
 
     def _run_circuit(self, x: torch.Tensor) -> torch.Tensor:
@@ -364,6 +458,8 @@ class TrainingNoiseMixin:
         if not self.noise_level:
             return ""
         text = f", noise_level={self.noise_level}, noise_position={self.noise_position!r}"
+        if self.noise_channel != "depolarizing":
+            text += f", noise_channel={self.noise_channel!r}"
         if self.noise_method != "density":
             text += (
                 f", noise_method={self.noise_method!r}, "
@@ -378,18 +474,26 @@ def apply_depolarizing_noise(
     p: float,
     *,
     position: Position = "all",
+    channel: Channel = "depolarizing",
 ) -> Iterator[nn.Module]:
     """
-    Run ``model``'s quantum layer with depolarizing noise inside the block.
+    Run ``model``'s quantum layer with noise inside the block.
+
+    Named for its default channel; ``channel`` selects any of :data:`CHANNELS`.
 
     Parameters
     ----------
     model:
         A hybrid classifier or an encoding layer.
     p:
-        Depolarizing probability per channel, in [0, 0.75].
+        Strength of each channel: the depolarizing probability in [0, 0.75],
+        or the damping / flip probability in [0, 1].
     position:
         ``"all"`` or ``"end"``; see the module docstring.
+    channel:
+        ``"depolarizing"`` (default), ``"amplitude_damping"``,
+        ``"phase_damping"``, ``"bit_flip"`` or ``"phase_flip"``; see the module
+        docstring.
 
     Yields
     ------
@@ -411,7 +515,7 @@ def apply_depolarizing_noise(
     Gradients flow through the noisy circuit, so the block can also be used to
     fine-tune under noise.
     """
-    validate_noise(p, position)
+    validate_noise(p, position, channel=channel)
     qlayer, n_qubits = _resolve_qlayer(model)
     # Two separate markers.  _hqnn_noise_depth counts open blocks of any p and
     # is what tells run_with_training_noise to skip a layer's train-mode
@@ -426,7 +530,7 @@ def apply_depolarizing_noise(
     # more than 23 wires, and a failure here has to leave the layer as it was:
     # arming the guard first would leave it armed with no block to disarm it,
     # and every later call on that layer would raise "cannot be nested".
-    noisy = _noisy_qnode(original, n_qubits, p, position) if p > 0.0 else None
+    noisy = _noisy_qnode(original, n_qubits, p, position, channel) if p > 0.0 else None
     qlayer._hqnn_noise_depth = getattr(qlayer, "_hqnn_noise_depth", 0) + 1
     if noisy is not None:
         qlayer._hqnn_noise_original = original
@@ -454,6 +558,7 @@ def noise_sweep(
     ps: Iterable[float],
     *,
     position: Position = "all",
+    channel: Channel = "depolarizing",
     y: torch.Tensor | None = None,
     score_fn: Callable[[torch.Tensor, torch.Tensor], float] | None = None,
 ) -> list[NoiseSweepPoint]:
@@ -467,8 +572,8 @@ def noise_sweep(
     X:
         Inputs to evaluate.
     ps:
-        Depolarizing probabilities, each in [0, 0.75]; consumed once.
-    position:
+        Channel strengths, each in the channel's range; consumed once.
+    position, channel:
         Passed to :func:`apply_depolarizing_noise`.
     y, score_fn:
         If both are given, ``score_fn(y, probabilities)`` is recorded per level,
@@ -499,12 +604,14 @@ def noise_sweep(
     # generator, and a bad one at the end would otherwise be found only after
     # every earlier (O(4^n)) evaluation had already been paid for.
     levels = [float(p) for p in ps]
-    invalid = [p for p in levels if not 0.0 <= p <= MAX_P]
+    validate_noise(0.0, position, channel=channel)
+    max_p = CHANNELS[channel].max_p
+    invalid = [p for p in levels if not 0.0 <= p <= max_p]
     if invalid:
-        raise ValueError(f"every p must lie in [0, {MAX_P}]; got {invalid}.")
+        raise ValueError(f"every p must lie in [0, {max_p}] for {channel!r}; got {invalid}.")
     points = []
     for p in levels:
-        with apply_depolarizing_noise(model, p, position=position):
+        with apply_depolarizing_noise(model, p, position=position, channel=channel):
             probs = predict(X)
         score = float(score_fn(y, probs)) if score_fn is not None and y is not None else None
         points.append(NoiseSweepPoint(float(p), probs, score))

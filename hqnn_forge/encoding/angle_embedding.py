@@ -72,7 +72,7 @@ from hqnn_forge.encoding._common import (
     validate_shots,
     variational_weight_shape,
 )
-from hqnn_forge.noise import NoiseMethod, Position, TrainingNoiseMixin
+from hqnn_forge.noise import Channel, NoiseMethod, Position, TrainingNoiseMixin
 
 logger = logging.getLogger(__name__)
 
@@ -437,6 +437,7 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
         noise_method: NoiseMethod = "density",
         noise_trajectories: int = 1,
         shots: int | None = None,
+        noise_channel: Channel = "depolarizing",
     ) -> None:
         super().__init__()
 
@@ -479,6 +480,7 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
             noise_method,
             noise_trajectories,
             shots=shots,
+            noise_channel=noise_channel,
         )
         self.shots = shots
 

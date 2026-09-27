@@ -74,7 +74,7 @@ from hqnn_forge.encoding.angle_embedding import (
 )
 from hqnn_forge.models._trunk import DEFAULT_ENCODER_ACTIVATION, DEFAULT_INIT_STD, QuantumTrunk
 from hqnn_forge.models.base import BinaryClassifierBase
-from hqnn_forge.noise import NoiseMethod, Position
+from hqnn_forge.noise import Channel, NoiseMethod, Position
 
 #: Constructor arguments of the SHNN published in the thesis (see
 #: ``HybridBinaryClassifier.published_shnn``).
@@ -189,6 +189,11 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
         ``"finite-diff"``); ``adjoint`` and ``backprop`` need the exact state.
         :func:`hqnn_forge.noise.apply_shots` evaluates a model with a finite
         shot count without rebuilding it.
+    noise_channel:
+        The channel ``noise_level`` is the strength of: ``"depolarizing"``
+        (default), ``"amplitude_damping"``, ``"phase_damping"``,
+        ``"bit_flip"`` or ``"phase_flip"``; see :mod:`hqnn_forge.noise`.  The
+        trajectory method samples the Pauli ones only.
 
     Attributes
     ----------
@@ -230,6 +235,7 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
         noise_trajectories: int = 1,
         trainable_input_scaling: bool = False,
         shots: int | None = None,
+        noise_channel: Channel = "depolarizing",
     ) -> None:
         super().__init__()
         self._config = dict(
@@ -253,6 +259,7 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
             noise_trajectories=noise_trajectories,
             trainable_input_scaling=trainable_input_scaling,
             shots=shots,
+            noise_channel=noise_channel,
         )
 
         n_readouts = self._build_trunk(
@@ -276,6 +283,7 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
             noise_trajectories=noise_trajectories,
             trainable_input_scaling=trainable_input_scaling,
             shots=shots,
+            noise_channel=noise_channel,
         )
 
         # ── Classical head ────────────────────────────────────────────────
