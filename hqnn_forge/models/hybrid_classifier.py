@@ -78,7 +78,7 @@ from hqnn_forge.initializers.restricted_variance import (
     block_local_init_,
     restricted_normal_init_,
 )
-from hqnn_forge.models.base import BinaryClassifierBase
+from hqnn_forge.models.base import BinaryClassifierBase, custom_encoder
 from hqnn_forge.noise import Position
 
 #: Constructor arguments of the SHNN published in the thesis (see
@@ -166,10 +166,26 @@ class HybridBinaryClassifier(BinaryClassifierBase):
         See :mod:`hqnn_forge.noise`.
     noise_position:
         ``"all"`` (default) or ``"end"``; where the channel is inserted.
+    classical_encoder:
+        Your own module in place of the built-in ``Linear(n_input_features →
+        n_qubits)``, trained together with the quantum layer: a small MLP,
+        or a CNN or sequence model that reshapes the flat
+        ``(batch, n_input_features)`` input itself.  It must return
+        ``(batch, n_qubits)``, which is checked here with one forward pass.
+        The model owns the angle range: it applies ``encoder_activation`` and
+        the factor π on top of the module, exactly as for the built-in
+        encoder, so the module should output unbounded features and not end
+        in ``Tanh`` or ``Sigmoid`` (that warns).  The module is used as given
+        and never re-initialised, so pretrained weights are kept.  Requires
+        ``use_classical_encoder=True``.  ``save_checkpoint`` refuses a model
+        with a custom encoder; save its ``state_dict`` instead.  Default:
+        ``None``, the built-in encoder.
 
     Attributes
     ----------
     classical_encoder : nn.Sequential or nn.Identity
+        ``Sequential(Linear, activation)``, ``Sequential(custom module,
+        activation)`` with a custom ``classical_encoder``, or ``Identity``.
     quantum_layer     : QuantumEncodingLayer
     dropout           : nn.Dropout
     head              : nn.Linear
@@ -203,6 +219,7 @@ class HybridBinaryClassifier(BinaryClassifierBase):
         init_std: float = 0.1,
         noise_level: float = 0.0,
         noise_position: Position = "all",
+        classical_encoder: nn.Module | None = None,
     ) -> None:
         super().__init__()
         self._config = dict(
@@ -222,6 +239,7 @@ class HybridBinaryClassifier(BinaryClassifierBase):
             init_std=init_std,
             noise_level=noise_level,
             noise_position=noise_position,
+            classical_encoder=classical_encoder,
         )
 
         if encoder_activation not in ("tanh", "sigmoid"):
@@ -251,8 +269,18 @@ class HybridBinaryClassifier(BinaryClassifierBase):
         self.init_std = init_std
 
         # ── Classical encoder ─────────────────────────────────────────────
-        if use_classical_encoder:
-            self.classical_encoder: nn.Module = nn.Sequential(
+        if classical_encoder is not None:
+            if not use_classical_encoder:
+                raise ValueError(
+                    "classical_encoder replaces the built-in encoder and needs "
+                    "use_classical_encoder=True; use_classical_encoder=False feeds the "
+                    "input to the circuit directly, with no encoder at all."
+                )
+            self.classical_encoder: nn.Module = custom_encoder(
+                classical_encoder, n_input_features, n_qubits, encoder_activation
+            )
+        elif use_classical_encoder:
+            self.classical_encoder = nn.Sequential(
                 nn.Linear(n_input_features, n_qubits),
                 nn.Tanh() if encoder_activation == "tanh" else nn.Sigmoid(),
             )
@@ -311,6 +339,11 @@ class HybridBinaryClassifier(BinaryClassifierBase):
         self.head = nn.Linear(n_readouts, 1)
 
         # ── Small-angle restricted-variance initialisation ─────────────────
+        # A custom encoder is left as given (it may be pretrained), so its
+        # submodules are excluded from the classical init below.
+        self._custom_encoder_ids: frozenset[int] = frozenset(
+            map(id, classical_encoder.modules()) if classical_encoder is not None else ()
+        )
         self._initialise_weights()
 
     # ------------------------------------------------------------------
@@ -338,7 +371,7 @@ class HybridBinaryClassifier(BinaryClassifierBase):
         """Apply restricted-variance init to quantum weights; Xavier to classical."""
         # Classical encoder: Xavier uniform (standard for linear + Tanh)
         for module in self.modules():
-            if isinstance(module, nn.Linear):
+            if isinstance(module, nn.Linear) and id(module) not in self._custom_encoder_ids:
                 nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
