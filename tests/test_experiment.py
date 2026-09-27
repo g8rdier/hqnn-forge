@@ -293,3 +293,26 @@ class TestSeveralSeedsInTheRecord:
         assert len({f["init_seed"] for f in record["seeds"]["folds"]}) > 1
         again = rerun_benchmark(record, data)
         assert [f.mcc for f in again.folds] == [f["mcc"] for f in record["folds"]]
+
+
+class TestTuningInTheRecord:
+    def test_budget_and_choices_are_recorded_and_rerun(self, tmp_path: Path) -> None:
+        from hqnn_forge.benchmark import Tuning
+
+        spaces = {"hybrid": {"lr": [0.01, 0.05]}, "control": {"lr": [0.01, 0.05]}}
+        tuning = Tuning(n_trials=2, search_spaces=spaces, inner_folds=2)
+        path = tmp_path / "tuned.json"
+        data = {"first": _data(0)}
+        run_benchmark(data, _hybrid, record_path=path, tuning=tuning, **SETTINGS)
+        record, _ = load_record(path)
+        assert record["config"]["settings"]["tuning"] == {
+            "n_trials": 2,
+            "inner_folds": 2,
+            "search_spaces": spaces,
+        }
+        assert all(f["hyperparameters"]["lr"] in (0.01, 0.05) for f in record["folds"])
+        again = rerun_benchmark(record, data)
+        assert [f.mcc for f in again.folds] == [f["mcc"] for f in record["folds"]]
+        assert [f.hyperparameters for f in again.folds] == [
+            f["hyperparameters"] for f in record["folds"]
+        ]

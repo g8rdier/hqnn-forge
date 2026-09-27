@@ -103,6 +103,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `run_benchmark(n_seeds=...)`: each fold trained with several recorded initialisation seeds,
   fold scores averaged over them for the paired test, and the across-seed spread reported as
   `mcc_seed_std`
+- `run_benchmark(tuning=Tuning(...))`: random search over training settings with the same
+  trial budget and inner folds for the hybrid model and its control, inside each outer training
+  split; the chosen settings are recorded
 - `hqnn_forge.utils.permute_quantum_layer`: the permutation null for quantum ablation, which
   runs the circuit and shuffles its readouts across the batch with a seedable generator, so
   they keep their distribution and lose only their link to the input
