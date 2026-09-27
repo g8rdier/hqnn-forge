@@ -192,3 +192,28 @@ class TestInputGradients:
 
         assert grad_of(x_batched).abs().sum() > 0
         torch.testing.assert_close(grad_of(x_batched), grad_of(x_looped), rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.skipif(not _lightning_available(), reason="pennylane-lightning not installed")
+@pytest.mark.parametrize("layer_cls", LAYER_CLASSES)
+def test_lightning_runs_broadcast_tapes_correctly(layer_cls: type) -> None:
+    # #312: the split into one tape per sample stays on lightning's adjoint
+    # path for speed, not correctness -- broadcast tapes give the same outputs
+    # and gradients there (PennyLane 0.45).  If this starts failing, the split
+    # is load-bearing again and expand_batch_dimension's docstring is wrong.
+    import pennylane as qml
+
+    split = _build(layer_cls, "lightning.qubit", "adjoint")
+    native = _build(layer_cls, "lightning.qubit", "adjoint")
+    native.load_state_dict(split.state_dict())
+    q = native.qlayer.qnode
+    native.qlayer.qnode = qml.QNode(q.func, q.device, interface="torch", diff_method="adjoint")
+    x = torch.rand(BATCH, N_QUBITS, generator=torch.Generator().manual_seed(4)) * 2 - 1
+    results = []
+    for layer in (split, native):
+        xi = x.clone().requires_grad_(True)
+        out = layer(xi)
+        out.sum().backward()
+        results.append((out.detach(), layer.qlayer.weights.grad, xi.grad))
+    for got, expected in zip(results[1], results[0], strict=True):
+        torch.testing.assert_close(got, expected, atol=1e-5, rtol=1e-5)
