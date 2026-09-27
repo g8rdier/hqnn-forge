@@ -33,17 +33,17 @@ import pennylane as qml
 import torch
 import torch.nn as nn
 
-from hqnn_forge.encoding.angle_embedding import (
+from hqnn_forge.encoding._common import (
     DeviceName,
     DiffMethod,
     Entangler,
     Readout,
-    _expand_batch_dimension,
-    _resolve_device,
     apply_variational_layers,
     check_inputs,
+    expand_batch_dimension,
     measure_z,
     readout_wires,
+    resolve_device,
     validate_circuit_options,
     variational_weight_shape,
 )
@@ -94,7 +94,7 @@ def _make_iqp_embedding_circuit(
         # with the two-qubit MultiRZ replaced by its exact CNOT·RZ·CNOT form.
         # Written out so that a batched ``inputs`` of shape (batch, n_qubits)
         # broadcasts through single-parameter gates only.  The QNode wrapper
-        # (_expand_batch_dimension) already splits the batch into one tape per
+        # (expand_batch_dimension) already splits the batch into one tape per
         # sample for every method except backprop, so lightning.qubit's adjoint
         # path -- which mis-shapes results for a broadcasted MultiRZ -- never
         # sees a broadcasted tape here; this form is a safeguard in case the
@@ -129,7 +129,7 @@ def build_iqp_qnode(
     if n_qubits < 2:
         raise ValueError(f"n_qubits must be ≥ 2; got {n_qubits}.")
 
-    device = _resolve_device(device_name, n_qubits)
+    device = resolve_device(device_name, n_qubits)
     circuit_fn = _make_iqp_embedding_circuit(n_qubits, n_layers, n_repeats, entangler, readout)
 
     qnode = qml.QNode(
@@ -138,8 +138,8 @@ def build_iqp_qnode(
         diff_method=diff_method,
         interface="torch",
     )
-    # Batched inputs: see angle_embedding._expand_batch_dimension
-    return _expand_batch_dimension(qnode, diff_method)
+    # Batched inputs: see hqnn_forge.encoding._common.expand_batch_dimension
+    return expand_batch_dimension(qnode, diff_method)
 
 
 class IQPEncodingLayer(TrainingNoiseMixin, nn.Module):

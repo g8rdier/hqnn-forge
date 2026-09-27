@@ -84,18 +84,18 @@ import pennylane as qml
 import torch
 import torch.nn as nn
 
-from hqnn_forge.encoding.angle_embedding import (
+from hqnn_forge.encoding._common import (
     DeviceName,
     DiffMethod,
     Entangler,
     Readout,
     RotationAxis,
-    _expand_batch_dimension,
-    _resolve_device,
     apply_variational_layers,
     check_inputs,
+    expand_batch_dimension,
     measure_z,
     readout_wires,
+    resolve_device,
     validate_circuit_options,
     variational_weight_shape,
 )
@@ -253,7 +253,7 @@ def build_data_reuploading_qnode(
             "global phase, so a single upload leaves the outputs independent of the inputs."
         )
 
-    device = _resolve_device(device_name, n_qubits)
+    device = resolve_device(device_name, n_qubits)
     circuit_fn = _make_data_reuploading_circuit(
         n_qubits, n_layers, rotation, trainable_input_scaling, entangler, readout
     )
@@ -264,7 +264,7 @@ def build_data_reuploading_qnode(
         diff_method=diff_method,
         interface="torch",
     )
-    qnode = _expand_batch_dimension(qnode, diff_method)
+    qnode = expand_batch_dimension(qnode, diff_method)
 
     logger.info(
         "Re-uploading QNode built | device=%s | qubits=%d | layers=%d | diff=%s | "
