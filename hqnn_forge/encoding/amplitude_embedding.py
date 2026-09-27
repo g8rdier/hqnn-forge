@@ -68,14 +68,14 @@ import pennylane as qml
 import torch
 import torch.nn as nn
 
-from hqnn_forge.encoding.angle_embedding import (
+from hqnn_forge.encoding._common import (
     DeviceName,
     DiffMethod,
-    _expand_batch_dimension,
-    _resolve_device,
     apply_variational_layers,
     check_inputs,
+    expand_batch_dimension,
     measure_z,
+    resolve_device,
     variational_weight_shape,
 )
 from hqnn_forge.noise import NoiseMethod, Position, TrainingNoiseMixin
@@ -201,7 +201,7 @@ def build_amplitude_qnode(
     if n_qubits < 2:
         raise ValueError(f"n_qubits must be ≥ 2 for the CNOT entangling ring; got {n_qubits}.")
 
-    device = _resolve_device(device_name, n_qubits)
+    device = resolve_device(device_name, n_qubits)
     circuit_fn = _make_amplitude_embedding_circuit(n_qubits, n_layers, diff_method)
 
     qnode = qml.QNode(
@@ -210,7 +210,7 @@ def build_amplitude_qnode(
         diff_method=diff_method,
         interface="torch",
     )
-    qnode = _expand_batch_dimension(qnode, diff_method)
+    qnode = expand_batch_dimension(qnode, diff_method)
 
     logger.info(
         "Amplitude QNode built | device=%s | qubits=%d | layers=%d | diff=%s",
