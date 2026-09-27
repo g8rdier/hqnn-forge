@@ -223,6 +223,14 @@ and versioning policy this project follows.
 
 ---
 
+## Citing
+
+If you use hqnn-forge in research, please cite it. [`CITATION.cff`](CITATION.cff) holds the
+citation metadata, and GitHub's **Cite this repository** button in the sidebar turns it into
+BibTeX or APA.
+
+---
+
 ## References
 
 - Cerezo et al. (2021) — *Cost function dependent barren plateaus in shallow parametrized quantum circuits*

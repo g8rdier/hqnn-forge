@@ -130,6 +130,8 @@ docs](https://docs.astral.sh/uv/getting-started/installation/) if you don't have
 Releases follow [Semantic Versioning](https://semver.org/) (`MAJOR.MINOR.PATCH`), tagged (e.g.
 `v1.2.0`) on the `main` merge commit that encapsulates the release. `CHANGELOG.md` follows
 [Keep a Changelog](https://keepachangelog.com/) and is updated as part of the release PR.
+The release PR also bumps `version` in `CITATION.cff` to the new `pyproject.toml` version
+(`tests/test_citation.py` fails until it does) and, once released, can add a `date-released`.
 
 ## Using AI Coding Assistants
 
