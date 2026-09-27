@@ -16,10 +16,12 @@ on:
 permissions:
   contents: read
 
-# A new push to a PR cancels its still-running, now superseded runs, and so
-# does a retarget: the called workflow runs with the caller's event context.
+# A new push to a PR cancels its still-running, now superseded runs. A retarget
+# (called from retarget.yml, with the caller's `edited` event context) gets its
+# own group: cancelling the run for the old base would leave its jobs marked
+# cancelled under the real check names, which is the shadowing #346 removed.
 concurrency:
-  group: tests-${{ github.event.pull_request.number || github.ref }}
+  group: tests-${{ github.event.pull_request.number || github.ref }}${{ github.event.action == 'edited' && '-retarget' || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
