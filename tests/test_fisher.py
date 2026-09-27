@@ -22,6 +22,7 @@ z = w·⟨Z⟩ + b the Bernoulli Fisher matrix is the rank-one
 from __future__ import annotations
 
 import math
+from typing import TypedDict
 
 import pytest
 import torch
@@ -35,10 +36,17 @@ from hqnn_forge.diagnostics import (
     fisher_information_spectrum,
 )
 from hqnn_forge.encoding import QuantumEncodingLayer
+from hqnn_forge.encoding.angle_embedding import DeviceName, DiffMethod
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
 
-CPU = {"device_name": "default.qubit", "diff_method": "backprop"}
+
+class _Backend(TypedDict):
+    device_name: DeviceName
+    diff_method: DiffMethod
+
+
+CPU: _Backend = {"device_name": "default.qubit", "diff_method": "backprop"}
 WEIGHTS = torch.tensor([[[0.3, 0.7, 1.1], [0.2, 1.9, 0.5]]])  # (1 layer, 2 qubits, φ θ ω)
 THETA = (0.7, 1.9)
 

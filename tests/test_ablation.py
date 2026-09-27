@@ -6,20 +6,40 @@ Unit tests for hqnn_forge.utils.disable_quantum_layer.
 
 from __future__ import annotations
 
+from typing import Any, TypedDict, TypeVar
+
 import pytest
 import torch
 import torch.nn as nn
 
+from hqnn_forge.encoding.angle_embedding import DeviceName, DiffMethod
 from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
 from hqnn_forge.utils import disable_quantum_layer
 
-CPU = dict(device_name="default.qubit", diff_method="backprop")
+
+class _Backend(TypedDict):
+    device_name: DeviceName
+    diff_method: DiffMethod
+
+
+CPU: _Backend = {"device_name": "default.qubit", "diff_method": "backprop"}
 N_FEATURES, N_QUBITS = 6, 3
 
 
-def _model(cls: type, **kw: object) -> nn.Module:
+Model = HybridBinaryClassifier | ParallelHybridClassifier
+M = TypeVar("M", bound=Model)
+
+
+def _model(cls: type[M], **kw: Any) -> M:
     torch.manual_seed(0)
     return cls(n_input_features=N_FEATURES, n_qubits=N_QUBITS, n_layers=2, **CPU, **kw)
+
+
+def _qweights(model: Model) -> torch.Tensor:
+    """The quantum layer's weights, narrowed from ``nn.Module.__getattr__``."""
+    weights = model.quantum_layer.qlayer.weights
+    assert isinstance(weights, torch.Tensor)
+    return weights
 
 
 MODELS = [
@@ -35,26 +55,28 @@ def x() -> torch.Tensor:
 
 @pytest.mark.parametrize("cls", MODELS)
 class TestAblation:
-    def test_output_ignores_quantum_weights(self, cls: type, x: torch.Tensor) -> None:
+    def test_output_ignores_quantum_weights(self, cls: type[Model], x: torch.Tensor) -> None:
         model = _model(cls)
         with disable_quantum_layer(model):
             before = model(x).detach()
             with torch.no_grad():
-                model.quantum_layer.qlayer.weights.add_(1.0)
+                _qweights(model).add_(1.0)
             after = model(x).detach()
         torch.testing.assert_close(before, after, rtol=0, atol=0)
 
-    def test_no_gradient_reaches_the_quantum_branch(self, cls: type, x: torch.Tensor) -> None:
+    def test_no_gradient_reaches_the_quantum_branch(
+        self, cls: type[Model], x: torch.Tensor
+    ) -> None:
         model = _model(cls)
         with disable_quantum_layer(model):
             model(x).sum().backward()
-        assert model.quantum_layer.qlayer.weights.grad is None
+        assert _qweights(model).grad is None
         for p in model.classical_encoder.parameters():
             assert p.grad is None
         assert model.head.weight.grad is not None
 
     def test_circuit_is_not_executed(
-        self, cls: type, x: torch.Tensor, monkeypatch: pytest.MonkeyPatch
+        self, cls: type[Model], x: torch.Tensor, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         model = _model(cls)
 
@@ -65,7 +87,7 @@ class TestAblation:
         with disable_quantum_layer(model):
             model(x)
 
-    def test_forward_is_restored(self, cls: type, x: torch.Tensor) -> None:
+    def test_forward_is_restored(self, cls: type[Model], x: torch.Tensor) -> None:
         model = _model(cls)
         model.eval()
         with torch.no_grad():
@@ -75,20 +97,20 @@ class TestAblation:
             torch.testing.assert_close(model(x), expected, rtol=0, atol=0)
         assert "forward" not in vars(model.quantum_layer)
 
-    def test_restored_after_an_exception(self, cls: type) -> None:
+    def test_restored_after_an_exception(self, cls: type[Model]) -> None:
         model = _model(cls)
         with pytest.raises(KeyError):
             with disable_quantum_layer(model):
                 raise KeyError("inside")
         assert "forward" not in vars(model.quantum_layer)
 
-    def test_predict_proba_works_inside(self, cls: type, x: torch.Tensor) -> None:
+    def test_predict_proba_works_inside(self, cls: type[Model], x: torch.Tensor) -> None:
         model = _model(cls)
         with disable_quantum_layer(model):
             probs = model.predict_proba(x)
         assert probs.shape == (5,)
 
-    def test_nested_use_raises(self, cls: type) -> None:
+    def test_nested_use_raises(self, cls: type[Model]) -> None:
         model = _model(cls)
         with disable_quantum_layer(model):
             with pytest.raises(RuntimeError, match="cannot be nested"):
@@ -139,7 +161,7 @@ class TestExactReplacement:
 
     def test_training_inside_updates_only_live_parameters(self, x: torch.Tensor) -> None:
         model = _model(ParallelHybridClassifier)
-        quantum_before = model.quantum_layer.qlayer.weights.detach().clone()
+        quantum_before = _qweights(model).detach().clone()
         encoder_before = [p.detach().clone() for p in model.classical_encoder.parameters()]
         opt = torch.optim.SGD(model.parameters(), lr=0.1)
         with disable_quantum_layer(model):
@@ -147,9 +169,7 @@ class TestExactReplacement:
                 opt.zero_grad()
                 model(x).pow(2).mean().backward()
                 opt.step()
-        torch.testing.assert_close(
-            model.quantum_layer.qlayer.weights.detach(), quantum_before, rtol=0, atol=0
-        )
+        torch.testing.assert_close(_qweights(model).detach(), quantum_before, rtol=0, atol=0)
         for before, p in zip(encoder_before, model.classical_encoder.parameters()):
             torch.testing.assert_close(p.detach(), before, rtol=0, atol=0)
 

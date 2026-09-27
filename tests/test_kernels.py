@@ -19,6 +19,7 @@ from ``encoded_states`` must equal what the layer's own forward returns.
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import pennylane as qml
 import pytest
@@ -121,7 +122,9 @@ class TestKernelMatrixProperties:
         assert K[0, 2].item() == pytest.approx(1.0, abs=1e-12)
 
     def test_states_are_normalised(self) -> None:
-        for build in (p.values[0] for p in ALL_LAYERS):
+        for param in ALL_LAYERS:
+            build = param.values[0]
+            assert callable(build)
             layer = build()
             states = encoded_states(_inputs_for(layer), layer)
             assert states.shape == (M, 2**N_QUBITS)
@@ -247,8 +250,10 @@ class TestClosedForms:
 
 def _overlap_kernel(layer: torch.nn.Module, X: torch.Tensor) -> torch.Tensor:
     """|⟨0|U†(x_i)U(x_j)|0⟩|² from the layer's own tape, via qml.adjoint."""
-    weights = {k: p.detach().to(torch.float64) for k, p in layer.qlayer.qnode_weights.items()}
-    build = qml.workflow.construct_tape(layer.qlayer.qnode, level=0)
+    qlayer = layer.qlayer
+    assert isinstance(qlayer, qml.qnn.TorchLayer)
+    weights = {k: p.detach().to(torch.float64) for k, p in qlayer.qnode_weights.items()}
+    build = qml.workflow.construct_tape(qlayer.qnode, level=0)
     dev = qml.device("default.qubit", wires=N_QUBITS)
 
     @qml.qnode(dev)
@@ -452,9 +457,14 @@ class TestUsage:
             quantum_kernel_matrix(_inputs_for(layer), layer, Y=too_narrow)
 
     def test_validates_y_before_simulating_x(self, monkeypatch) -> None:
-        calls = []
+        calls: list[int] = []
         real = kernels._simulate
-        monkeypatch.setattr(kernels, "_simulate", lambda *a: calls.append(1) or real(*a))
+
+        def counting(*args: Any) -> torch.Tensor:
+            calls.append(1)
+            return real(*args)
+
+        monkeypatch.setattr(kernels, "_simulate", counting)
         with pytest.raises(ValueError, match="does not match"):
             quantum_kernel_matrix(_angles(2), _angle_layer(), Y=torch.zeros(2, N_QUBITS + 1))
         assert calls == []
@@ -527,8 +537,13 @@ class TestUsage:
         )
 
     def test_simulates_x_and_y_in_one_replay(self, monkeypatch) -> None:
-        calls = []
+        calls: list[int] = []
         real = kernels._simulate
-        monkeypatch.setattr(kernels, "_simulate", lambda *a: calls.append(1) or real(*a))
+
+        def counting(*args: Any) -> torch.Tensor:
+            calls.append(1)
+            return real(*args)
+
+        monkeypatch.setattr(kernels, "_simulate", counting)
         quantum_kernel_matrix(_angles(3, seed=0), _angle_layer(), Y=_angles(4, seed=1))
         assert calls == [1]

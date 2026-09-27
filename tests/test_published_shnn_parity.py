@@ -68,7 +68,7 @@ def _published_circuit() -> qml.QNode:
     return circuit
 
 
-def _published_shnn() -> tuple[nn.Module, qml.QNode]:
+def _published_shnn() -> tuple[nn.ModuleDict, qml.QNode]:
     circuit = _published_circuit()
     vqc = qml.qnn.TorchLayer(circuit, {"weights": (N_LAYERS, N_QUBITS, 3)})
     pre = nn.Sequential(nn.Linear(N_QUBITS, N_QUBITS), _PiSigmoid())
@@ -126,7 +126,7 @@ def _ours() -> HybridBinaryClassifier:
 
 
 @pytest.fixture(scope="module")
-def published() -> tuple[nn.Module, CircuitSummary, qml.tape.QuantumScript]:
+def published() -> tuple[nn.ModuleDict, CircuitSummary, qml.tape.QuantumScript]:
     model, circuit = _published_shnn()
     # Counted from the rebuild rather than assumed: ``test_rebuild_quantum_parameters``
     # is what checks this number against the published table.

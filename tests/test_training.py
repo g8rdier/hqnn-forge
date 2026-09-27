@@ -32,7 +32,7 @@ def data() -> tuple[torch.Tensor, ...]:
     return (*_separable(200, 0), *_separable(80, 1))
 
 
-def _logreg(seed: int = 0) -> nn.Module:
+def _logreg(seed: int = 0) -> nn.Linear:
     torch.manual_seed(seed)
     return nn.Linear(N_FEATURES, 1)
 

@@ -10,6 +10,7 @@ the accelerated backends when they are installed, and the fallback chain
 from __future__ import annotations
 
 import warnings
+from typing import get_args
 
 import pennylane as qml
 import pytest
@@ -83,7 +84,7 @@ class TestAcceleratedBackends:
 
     @pytest.mark.parametrize("name", GPU_BACKENDS)
     def test_backend_names_are_accepted_by_the_type_alias(self, name: str) -> None:
-        assert name in ae.DeviceName.__args__
+        assert name in get_args(ae.DeviceName)
 
 
 # ---------------------------------------------------------------------------

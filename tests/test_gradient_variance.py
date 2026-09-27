@@ -13,6 +13,7 @@ which quotes its own ranges.
 from __future__ import annotations
 
 import math
+from typing import TypedDict
 
 import pennylane as qml
 import pytest
@@ -25,10 +26,17 @@ from hqnn_forge.diagnostics import (
     gradient_variance_sweep,
 )
 from hqnn_forge.encoding import DataReuploadingLayer, QuantumEncodingLayer
+from hqnn_forge.encoding.angle_embedding import DeviceName, DiffMethod
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.models import HybridBinaryClassifier
 
-CPU = dict(device_name="default.qubit", diff_method="backprop")
+
+class _Backend(TypedDict):
+    device_name: DeviceName
+    diff_method: DiffMethod
+
+
+CPU: _Backend = {"device_name": "default.qubit", "diff_method": "backprop"}
 
 
 def _layer(n_qubits: int, n_layers: int = 2) -> QuantumEncodingLayer:

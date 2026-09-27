@@ -15,16 +15,24 @@ from __future__ import annotations
 
 from math import comb
 from types import MappingProxyType
+from typing import TypedDict
 
 import pytest
 import torch
 
 from hqnn_forge.diagnostics import CircuitSummary, circuit_summary, draw_circuit
 from hqnn_forge.encoding import QuantumEncodingLayer
+from hqnn_forge.encoding.angle_embedding import DeviceName, DiffMethod
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
 
-CPU = {"device_name": "default.qubit", "diff_method": "backprop"}
+
+class _Backend(TypedDict):
+    device_name: DeviceName
+    diff_method: DiffMethod
+
+
+CPU: _Backend = {"device_name": "default.qubit", "diff_method": "backprop"}
 
 
 def _lightning_available() -> bool:

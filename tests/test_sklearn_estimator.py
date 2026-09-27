@@ -15,6 +15,7 @@ the seed is part of the fixture rather than incidental.
 from __future__ import annotations
 
 import inspect
+from typing import Any, Literal
 
 import numpy as np
 import pytest
@@ -29,7 +30,7 @@ from sklearn.preprocessing import StandardScaler
 from hqnn_forge.sklearn import HybridClassifierEstimator
 from hqnn_forge.training import train_model
 
-FAST = dict(
+FAST: dict[str, Any] = dict(
     n_qubits=2,
     n_layers=1,
     device_name="default.qubit",
@@ -68,7 +69,7 @@ class TestParams:
 
 class TestFitPredict:
     @pytest.mark.parametrize("model", ["serial", "parallel"])
-    def test_shapes_and_learning(self, data: tuple, model: str) -> None:
+    def test_shapes_and_learning(self, data: tuple, model: Literal["serial", "parallel"]) -> None:
         X, y = data
         est = HybridClassifierEstimator(model=model, **FAST).fit(X, y)
         proba = est.predict_proba(X)

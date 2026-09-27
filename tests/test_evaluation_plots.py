@@ -12,6 +12,8 @@ import numpy as np
 import pytest
 
 matplotlib = pytest.importorskip("matplotlib")
+from matplotlib.text import Annotation
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
@@ -102,10 +104,14 @@ class TestFoldBoxplot:
         # Tie each median to the box it belongs to: a median line spans the
         # full box width (0.5) centred on the box position, while the whisker
         # caps span half that, so the span picks out one line per box.
-        medians = {
-            round(float(np.mean(line.get_xdata())), 6): float(line.get_ydata()[0])
+        segments = [
+            (np.asarray(line.get_xdata(), dtype=float), np.asarray(line.get_ydata(), dtype=float))
             for line in ax.lines
-            if len(line.get_xdata()) == 2 and abs(float(np.ptp(line.get_xdata())) - 0.5) < 1e-9
+        ]
+        medians = {
+            round(float(xs.mean()), 6): float(ys[0])
+            for xs, ys in segments
+            if xs.size == 2 and abs(float(np.ptp(xs)) - 0.5) < 1e-9
         }
         ticks = {
             t.get_text(): round(float(x), 6) for t, x in zip(ax.get_xticklabels(), ax.get_xticks())
@@ -151,13 +157,15 @@ class TestEfficiencyFrontier:
         assert ax.get_xscale() == "log"
         assert sorted(t.get_text() for t in ax.texts) == sorted(THESIS)
         (step,) = [line for line in ax.lines if line.get_label() == "Pareto frontier"]
-        assert list(step.get_xdata()) == [122, 8897, 14869, 29357]
-        assert list(step.get_ydata()) == [
+        assert list(np.asarray(step.get_xdata())) == [122, 8897, 14869, 29357]
+        assert list(np.asarray(step.get_ydata())) == [
             THESIS[n][0] for n in ["SHNN", "ResNet", "FT-T", "SAINT"]
         ]
         # Each label is anchored on its own model's point, and each point is
         # drawn at that model's (params, score).
-        assert {t.get_text(): tuple(t.xy) for t in ax.texts} == {
+        labels = [t for t in ax.texts if isinstance(t, Annotation)]
+        assert len(labels) == len(ax.texts)
+        assert {t.get_text(): tuple(t.xy) for t in labels} == {
             name: (float(params), score) for name, (score, params) in THESIS.items()
         }
         points = np.concatenate([c.get_offsets() for c in ax.collections])
