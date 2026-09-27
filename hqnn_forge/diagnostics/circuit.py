@@ -24,9 +24,10 @@ would compile to.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
-from typing import Any
+from typing import Any, NamedTuple
 
 import pennylane as qml
 import torch
@@ -167,6 +168,42 @@ def _resolve_layer(target: nn.Module) -> tuple[nn.Module, qml.qnn.TorchLayer, in
             f"got {type(target).__name__}."
         )
     return layer, qlayer, n_qubits
+
+
+class TapeResources(NamedTuple):
+    """Depth and gate counts of a tape's operations (measurements excluded)."""
+
+    depth: int
+    n_gates: int
+    n_two_qubit_gates: int
+    gate_counts: dict[str, int]
+
+
+def tape_resources(tape: qml.tape.QuantumScript) -> TapeResources:
+    """
+    Depth and gate counts of ``tape``, computed from its operations.
+
+    Counted here rather than read from ``tape.specs["resources"]``, whose
+    layout PennyLane changes between releases: 0.46 drops ``num_gates``,
+    ``gate_types`` and ``gate_sizes`` (#344).  The depth is the usual one, the
+    number of layers when every gate starts as soon as all its wires are free,
+    which is what ``specs`` reports as ``depth`` in both 0.45 and 0.46.  A gate
+    on two or more wires counts once towards ``n_two_qubit_gates``.
+    """
+    free_at: dict[object, int] = {}
+    depth = 0
+    for op in tape.operations:
+        layer = 1 + max((free_at.get(w, 0) for w in op.wires), default=0)
+        for w in op.wires:
+            free_at[w] = layer
+        depth = max(depth, layer)
+    names = Counter(op.name for op in tape.operations)
+    return TapeResources(
+        depth=depth,
+        n_gates=len(tape.operations),
+        n_two_qubit_gates=sum(1 for op in tape.operations if len(op.wires) >= 2),
+        gate_counts=dict(sorted(names.items())),
+    )
 
 
 def _logical_tape(
@@ -359,7 +396,7 @@ def circuit_summary(target: nn.Module) -> CircuitSummary:
     """
     layer, qlayer, n_qubits = _resolve_layer(target)
     tape = _logical_tape(qlayer, n_qubits)
-    resources = tape.specs["resources"]
+    resources = tape_resources(tape)
     qnode = qlayer.qnode
     n_inert = count_inert_parameters(tape)
     return CircuitSummary(
@@ -368,10 +405,10 @@ def circuit_summary(target: nn.Module) -> CircuitSummary:
         n_trainable_params=sum(
             p.numel() for p in qlayer.qnode_weights.values() if p.requires_grad
         ),
-        depth=int(resources.depth),
-        n_gates=int(resources.num_gates),
-        n_two_qubit_gates=sum(count for size, count in resources.gate_sizes.items() if size >= 2),
-        gate_counts=dict(sorted(resources.gate_types.items())),
+        depth=resources.depth,
+        n_gates=resources.n_gates,
+        n_two_qubit_gates=resources.n_two_qubit_gates,
+        gate_counts=resources.gate_counts,
         device_name=str(qnode.device.name),
         diff_method=str(qnode.diff_method),
         n_inert_params=n_inert,
