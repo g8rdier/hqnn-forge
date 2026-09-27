@@ -124,6 +124,7 @@ def to_record(result: BenchmarkResult) -> dict[str, Any]:
             "batch_seed": f.batch_seed,
             "device": f.device,
             "hyperparameters": f.hyperparameters,
+            "noise_mcc": {repr(level): mcc for level, mcc in f.noise_mcc.items()},
             "threshold": f.threshold,
             "mcc": f.mcc,
             "epochs": f.epochs,
@@ -157,6 +158,8 @@ def to_record(result: BenchmarkResult) -> dict[str, Any]:
             "datasets": result.datasets,
             "folds": folds,
             "metrics": result.records,
+            "noise": result.noise,
+            "noise_summary": result.noise_summary,
         }
     )
 
@@ -316,6 +319,9 @@ def rerun_benchmark(
         smote_kwargs=settings["smote_kwargs"],
         n_seeds=settings.get("n_seeds", 1),
         tuning=None if settings.get("tuning") is None else Tuning(**settings["tuning"]),
+        noise_levels=settings.get("noise_levels"),
+        noise_position=settings.get("noise_position", "all"),
+        alpha=settings.get("alpha", 0.05),
     )
     rebuilt = _plain(result.models)
     if rebuilt != recorded_models:

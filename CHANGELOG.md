@@ -97,6 +97,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `run_benchmark(tuning=Tuning(...))`: random search over training settings with the same
   trial budget and inner folds for the hybrid model and its control, inside each outer training
   split; the chosen settings are recorded
+- `run_benchmark(noise_levels=...)`: each trained hybrid model also scored under
+  inference-time depolarising noise, compared per level with the noise-free control, with the
+  noise level at which it stops being significantly better
 - `hqnn_forge.utils.permute_quantum_layer`: the permutation null for quantum ablation, which
   runs the circuit and shuffles its readouts across the batch with a seedable generator, so
   they keep their distribution and lose only their link to the input
