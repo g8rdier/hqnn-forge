@@ -382,6 +382,15 @@ uv run --frozen --all-extras vermin --no-tips -t=3.11- --violations --eval-annot
 
 ---
 
+## Methodology
+
+[`docs/methodology.md`](docs/methodology.md) states the rules the comparisons follow: how the
+classical control is matched, how folds, oversampling and thresholds are handled, which
+statistical test applies when, the equal tuning budget, what the noise sweep models, and what
+an experiment record captures.
+
+---
+
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the issue/branch/PR workflow, commit conventions,
@@ -413,4 +422,5 @@ and versioning policy this project follows.
 - Chawla et al. (2002) — *SMOTE: Synthetic Minority Over-sampling Technique*
 - Wilcoxon (1945) — *Individual comparisons by ranking methods*
 - Kerby (2014) — *The simple difference formula: an approach to teaching nonparametric correlation*
+- Efron (1987) — *Better Bootstrap Confidence Intervals*
 - Bergholm et al. (2022) — *PennyLane: Automatic differentiation of hybrid quantum-classical computations*
