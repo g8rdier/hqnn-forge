@@ -27,16 +27,6 @@ from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
 CPU = {"device_name": "default.qubit", "diff_method": "backprop"}
 
 
-def _lightning_available() -> bool:
-    try:
-        import pennylane as qml
-
-        qml.device("lightning.qubit", wires=1)
-        return True
-    except Exception:  # noqa: BLE001
-        return False
-
-
 class TestAngleEncodingCounts:
     @pytest.mark.parametrize("n_qubits", [2, 3, 4])
     @pytest.mark.parametrize("n_layers", [1, 2, 3])
@@ -87,7 +77,7 @@ class TestIQPEncodingCounts:
 
 
 class TestDeviceIndependence:
-    @pytest.mark.skipif(not _lightning_available(), reason="pennylane-lightning not installed")
+    @pytest.mark.requires_lightning
     @pytest.mark.parametrize("layer_cls", [QuantumEncodingLayer, IQPEncodingLayer])
     def test_same_counts_on_lightning_adjoint(self, layer_cls: type) -> None:
         """lightning's adjoint path rewrites Rot as RZ·RY·RZ; the summary must not."""
