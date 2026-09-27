@@ -1,0 +1,58 @@
+name: Docs
+
+# The API reference site (#322): mkdocs-material + mkdocstrings, built with
+# --strict so an unresolved cross-reference or a broken page fails the job,
+# then checked for exported names that have no entry.  Pushes to main deploy
+# it to GitHub Pages (Settings -> Pages -> Source: GitHub Actions).
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install uv
+      uses: astral-sh/setup-uv@v10.1.0
+      with:
+        python-version: "3.12"
+    # Only the documentation tools: griffe reads hqnn_forge's source
+    # statically, so neither the package nor torch / PennyLane is installed.
+    - name: Install the docs tools
+      run: |
+        uv venv
+        uv pip install "mkdocs-material>=9.7" "mkdocstrings[python]>=1.0" pytest
+    - name: Test the griffe extension
+      run: uv run --no-sync pytest docs/ -q -p no:cacheprovider
+    - name: Build the site, strictly
+      run: uv run --no-sync mkdocs build --strict
+    - name: Check every exported name is documented
+      run: uv run --no-sync python .github/scripts/check_docs_inventory.py
+    - uses: actions/upload-pages-artifact@v5.0.0
+      if: github.event_name == 'push'
+      with:
+        path: site/
+
+  deploy:
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+    - id: deployment
+      uses: actions/deploy-pages@v5.0.1

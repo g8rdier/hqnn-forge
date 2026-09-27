@@ -62,6 +62,11 @@ examples = [
     "scikit-learn>=1.6",  # dataset generation in examples, and hqnn_forge.sklearn
     "matplotlib",
 ]
+docs = [
+    # The API reference site: mkdocs build --strict (docs/, mkdocs.yml)
+    "mkdocs-material>=9.7",
+    "mkdocstrings[python]>=1.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

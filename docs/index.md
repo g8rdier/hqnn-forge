@@ -1,0 +1,41 @@
+# hqnn-forge
+
+Hybrid quantum-classical neural networks for tabular binary and multiclass
+classification: quantum encoding layers, hybrid classifiers, training with
+early stopping and imbalance-aware losses, noise models, quantum kernels and
+the diagnostics to judge them, built on PennyLane and PyTorch.
+
+```bash
+pip install hqnn-forge                 # the library
+pip install "hqnn-forge[lightning]"    # plus the fast C++ simulator
+```
+
+```python
+import torch
+from hqnn_forge.models import HybridBinaryClassifier
+
+model = HybridBinaryClassifier(n_input_features=30, n_qubits=8, n_layers=2)
+probabilities = model.predict_proba(torch.randn(4, 30))
+```
+
+The [README](https://github.com/g8rdier/hqnn-forge#readme) covers installation,
+device backends and the architectures in detail; this site is the API
+reference, generated from the docstrings.
+
+## API reference
+
+| Package | Contents |
+|---|---|
+| [`hqnn_forge.encoding`](api/encoding.md) | Quantum feature maps: angle, IQP, amplitude and data re-uploading layers |
+| [`hqnn_forge.models`](api/models.md) | The hybrid classifiers |
+| [`hqnn_forge.noise`](api/noise.md) | Depolarizing noise, post hoc and during training |
+| [`hqnn_forge.kernels`](api/kernels.md) | Quantum fidelity kernels |
+| [`hqnn_forge.diagnostics`](api/diagnostics.md) | Circuit summaries, gradient variance, Fisher spectrum, effective dimension |
+| [`hqnn_forge.evaluation`](api/evaluation.md) | Metrics, threshold search, statistical tests, [plots](api/evaluation.plots.md) |
+| [`hqnn_forge.training`](api/training.md) | The training loop |
+| [`hqnn_forge.data`](api/data.md) | Dataset loaders |
+| [`hqnn_forge.preprocessing`](api/preprocessing.md) | PCA, cross-validation and fold-safe SMOTE |
+| [`hqnn_forge.sklearn`](api/sklearn.md) | The scikit-learn estimator |
+| [`hqnn_forge.utils`](api/utils.md) | Losses, checkpoints, ablation, evaluation-mode helper |
+| [`hqnn_forge.circuits`](api/circuits.md) | Ansatz primitives |
+| [`hqnn_forge.initializers`](api/initializers.md) | Small-angle weight initialisation |

@@ -125,6 +125,17 @@ docs](https://docs.astral.sh/uv/getting-started/installation/) if you don't have
     `pyproject.toml`, so contributors only regenerate the lockfile when they change
     `pyproject.toml` by hand.
 
+## Documentation
+
+The API reference site is built from the docstrings by `mkdocs build --strict`
+(`mkdocs.yml`, `docs/`), which the Docs workflow runs on every PR. Docstrings are NumPy style
+and cross-reference with Sphinx roles (`` :func:`gradient_variance` ``,
+`` :class:`~hqnn_forge.models.HybridBinaryClassifier` ``); `docs/griffe_sphinx_roles.py` turns
+them into links, so a reference to something that does not exist fails the build. Constants are
+documented with `#:` comments above the assignment. A new public module needs a page under
+`docs/api/` and an entry in the `nav` of `mkdocs.yml`; the workflow fails if a name in a
+documented `__all__` has no entry.
+
 ## Versioning
 
 Releases follow [Semantic Versioning](https://semver.org/) (`MAJOR.MINOR.PATCH`), tagged (e.g.

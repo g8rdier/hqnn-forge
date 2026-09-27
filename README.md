@@ -2,6 +2,7 @@
 
 [![Tests](https://github.com/g8rdier/hqnn-forge/actions/workflows/tests.yml/badge.svg)](https://github.com/g8rdier/hqnn-forge/actions/workflows/tests.yml)
 [![License](https://img.shields.io/github/license/g8rdier/hqnn-forge)](LICENSE)
+[![Docs](https://github.com/g8rdier/hqnn-forge/actions/workflows/docs.yml/badge.svg)](https://g8rdier.github.io/hqnn-forge/)
 
 > **Parameter-efficient Hybrid Quantum Neural Networks for imbalanced tabular classification.**
 
@@ -212,6 +213,18 @@ before pushing changes to `hqnn_forge/`:
 
 ```bash
 uv run --frozen --extra dev mypy hqnn_forge
+```
+
+---
+
+## Documentation
+
+The API reference, generated from the docstrings, is at
+**<https://g8rdier.github.io/hqnn-forge/>**. To build it locally:
+
+```bash
+pip install -e ".[docs]"
+mkdocs serve          # or: mkdocs build --strict, as CI does
 ```
 
 ---

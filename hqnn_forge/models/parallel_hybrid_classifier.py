@@ -120,6 +120,11 @@ class ParallelHybridClassifier(BinaryClassifierBase):
     options and ``predict_proba`` / ``predict`` / ``count_parameters``
     interface.
 
+    The published SHNN (thesis / ``hqnn-fraud-detection-benchmark``) is
+    ``embedding_rotation="Y"``, ``entangler="strongly_entangling"``,
+    ``readout="first"``, ``encoder_activation="sigmoid"``,
+    ``init_strategy="normal"``; see :meth:`published_shnn`.
+
     Parameters
     ----------
     n_input_features:
@@ -168,10 +173,6 @@ class ParallelHybridClassifier(BinaryClassifierBase):
         Standard deviation for ``init_strategy="normal"``.  Default: 0.1.
         Raises under the other strategies, which derive their own sigma.
 
-    The published SHNN (thesis / ``hqnn-fraud-detection-benchmark``) is
-    ``embedding_rotation="Y"``, ``entangler="strongly_entangling"``,
-    ``readout="first"``, ``encoder_activation="sigmoid"``,
-    ``init_strategy="normal"``; see :meth:`published_shnn`.
     noise_level:
         Training-time depolarizing probability for the quantum layer, in
         ``[0, 0.75]``.  Default: ``0.0`` (noiseless).  Applied in train mode
