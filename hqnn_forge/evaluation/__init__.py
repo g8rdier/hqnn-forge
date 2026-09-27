@@ -26,6 +26,10 @@ nemenyi_critical_difference  Nemenyi CD for all-pairs comparison of average rank
 compare_to_control       Holm-corrected z-tests of every model against a control.
 ControlComparison        One row of compare_to_control.
 holm_correction          Holm step-down adjusted p-values for any family.
+brier_score, expected_calibration_error, reliability_curve
+                         Calibration of the probabilities (#319).
+TemperatureScaler, PlattScaler
+                         Post-hoc calibration fitted on a validation split.
 plots                    Submodule: confusion matrix, fold boxplot, efficiency
                          frontier (needs matplotlib; import it explicitly:
                          ``from hqnn_forge.evaluation import plots``).
@@ -35,6 +39,13 @@ from hqnn_forge.evaluation.bootstrap import (
     BootstrapResult,
     bootstrap_ci,
     paired_bootstrap_ci,
+)
+from hqnn_forge.evaluation.calibration import (
+    PlattScaler,
+    TemperatureScaler,
+    brier_score,
+    expected_calibration_error,
+    reliability_curve,
 )
 from hqnn_forge.evaluation.statistics import (
     ControlComparison,
@@ -65,12 +76,16 @@ __all__: list[str] = [
     "BootstrapResult",
     "ControlComparison",
     "FriedmanResult",
+    "PlattScaler",
+    "TemperatureScaler",
     "ThresholdSearchResult",
     "WilcoxonResult",
     "average_ranks",
     "balanced_accuracy",
     "bootstrap_ci",
+    "brier_score",
     "compare_to_control",
+    "expected_calibration_error",
     "f1_score",
     "find_optimal_threshold",
     "friedman_from_ranks",
@@ -82,5 +97,6 @@ __all__: list[str] = [
     "parameter_efficiency",
     "pr_auc",
     "rank_biserial_correlation",
+    "reliability_curve",
     "wilcoxon_signed_rank",
 ]

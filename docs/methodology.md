@@ -81,6 +81,19 @@ applies it **unchanged to the test rows**. Tuning the threshold on test rows wou
 best case, not an estimate. MCC is the primary metric because it stays informative under
 imbalance, where accuracy does not.
 
+## Calibration
+
+MCC at a tuned threshold says nothing about whether a predicted probability means what it
+says, and for risk scoring it has to. Each fold therefore also records the Brier score and
+the expected calibration error of the test probabilities (`brier_mean` and `ece_mean` in the
+records, per fold in `FoldResult`). The ECE uses 10 equal-count bins: on imbalanced data,
+equal-width bins put nearly every sample in the lowest bin. Focal loss, the default, is
+known to change calibration, so compare these columns before reading a probability as a
+probability. `TemperatureScaler` and `PlattScaler` (`hqnn_forge.evaluation`) fix
+calibration after training, fitted on the validation split; `train_model` records the
+validation temperature in its history. Temperature scaling is monotone, so it leaves every
+ranking-based number above unchanged.
+
 ## Statistics
 
 | Question | Test | Where |
