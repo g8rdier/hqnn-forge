@@ -158,8 +158,9 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
     entangler:
         ``"ring"`` (default: CNOT ring then ``Rot``), ``"strongly_entangling"``
         (``qml.StronglyEntanglingLayers``: ``Rot`` then a CNOT ring of growing
-        range) or ``"brickwork"`` (nearest-neighbour CNOT pairs, so each ⟨Z_i⟩
-        keeps a local light cone at shallow depth).  See
+        range), ``"brickwork"`` (nearest-neighbour CNOT pairs, so each ⟨Z_i⟩
+        keeps a local light cone at shallow depth) or ``"hardware_efficient"``
+        (a CZ ladder then ``RY``: a third of the circuit parameters).  See
         :func:`hqnn_forge.encoding.angle_embedding.apply_variational_layers`.
     readout:
         ``"all"`` (default): the head reads every ⟨Z_i⟩.  ``"first"``: ⟨Z_0⟩
