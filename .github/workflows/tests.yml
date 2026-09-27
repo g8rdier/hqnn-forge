@@ -4,20 +4,22 @@ on:
   push:
     branches: [ "main" ]
   # Every pull request, whatever its base, so stacked PRs (base = another
-  # feature branch) get CI before their parent merges. `edited` is there for
-  # retargeting: each job skips title/body edits, but a base change re-runs
-  # the PR against its new base, e.g. main after the parent is squash-merged.
+  # feature branch) get CI before their parent merges.
   pull_request:
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, synchronize, reopened]
+  # Retargeting re-runs the suite through retarget.yml, which calls this
+  # workflow only when the base changed. An `edited` trigger here would post
+  # skipped check runs under these job names for every title or body edit,
+  # and the checks page would show those instead of the real results (#346).
+  workflow_call:
 
 permissions:
   contents: read
 
-# A new push to a PR cancels its still-running, now superseded runs. Title/body
-# edits get their own group: concurrency applies before the jobs' `if`, so the
-# skipped run would otherwise cancel the PR's real one.
+# A new push to a PR cancels its still-running, now superseded runs, and so
+# does a retarget: the called workflow runs with the caller's event context.
 concurrency:
-  group: tests-${{ github.event.pull_request.number || github.ref }}${{ github.event.action == 'edited' && !github.event.changes.base && '-edit' || '' }}
+  group: tests-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -32,7 +34,6 @@ jobs:
   # tests/ and examples/; modules still failing are listed under
   # [[tool.mypy.overrides]] in pyproject.toml until #232 clears them.
   lint:
-    if: github.event.action != 'edited' || github.event.changes.base
     runs-on: ubuntu-latest
 
     steps:
@@ -84,7 +85,6 @@ jobs:
         fi
 
   test:
-    if: github.event.action != 'edited' || github.event.changes.base
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -124,7 +124,6 @@ jobs:
   # the newest can install different pins from the same lockfile. A job on one
   # interpreter only would go green without installing the other half of a bump.
   test-locked:
-    if: github.event.action != 'edited' || github.event.changes.base
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -160,7 +159,6 @@ jobs:
   # installed afterwards at its normal resolution, using the spec from the dev
   # extra, which leaves the runtime pins untouched.
   test-lowest:
-    if: github.event.action != 'edited' || github.event.changes.base
     runs-on: ubuntu-latest
 
     steps:
