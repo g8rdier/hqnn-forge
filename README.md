@@ -164,7 +164,10 @@ Options shared by both models:
 - `published_shnn()` on either class builds the configuration published in the thesis and in
   `hqnn-fraud-detection-benchmark`: 8 qubits, 2 layers, RY embedding, strongly-entangling
   ansatz, ⟨Z_0⟩ readout, sigmoid encoder, `N(0, 0.1²)` init — 122 trainable parameters for the
-  serial model. Keyword arguments override it.
+  serial model, of which **102 are live**: with the ⟨Z_0⟩ readout, 20 quantum weights can never
+  move the output. They are kept, so the published model and its checkpoints stay as published,
+  and both counts are reported; parameter-efficiency figures use the total unless stated
+  (4.72 MCC/kParam published, 5.65 over the live 102). Keyword arguments override it.
 - `use_classical_encoder=False` to feed features already scaled into (-π, π), for example from
   `PCANormalizer(scale_to_pi=True)`, straight into the circuit. `n_input_features` must then
   equal `n_qubits`.
