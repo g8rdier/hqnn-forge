@@ -1,7 +1,7 @@
-<h1><img src="assets/social-preview.png" alt="hqnn-forge" width="640"></h1>
+<h1><img src="https://raw.githubusercontent.com/g8rdier/hqnn-forge/main/assets/social-preview.png" alt="hqnn-forge" width="640"></h1>
 
 [![Tests](https://github.com/g8rdier/hqnn-forge/actions/workflows/tests.yml/badge.svg)](https://github.com/g8rdier/hqnn-forge/actions/workflows/tests.yml)
-[![License](https://img.shields.io/github/license/g8rdier/hqnn-forge)](LICENSE)
+[![License](https://img.shields.io/github/license/g8rdier/hqnn-forge)](https://github.com/g8rdier/hqnn-forge/blob/main/LICENSE)
 
 > **Parameter-efficient Hybrid Quantum Neural Networks for imbalanced tabular classification.**
 
@@ -218,7 +218,7 @@ uv run --frozen --extra dev mypy hqnn_forge
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the issue/branch/PR workflow, commit conventions,
+See [`CONTRIBUTING.md`](https://github.com/g8rdier/hqnn-forge/blob/main/CONTRIBUTING.md) for the issue/branch/PR workflow, commit conventions,
 and versioning policy this project follows.
 
 ---

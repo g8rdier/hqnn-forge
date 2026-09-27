@@ -129,7 +129,29 @@ docs](https://docs.astral.sh/uv/getting-started/installation/) if you don't have
 
 Releases follow [Semantic Versioning](https://semver.org/) (`MAJOR.MINOR.PATCH`), tagged (e.g.
 `v1.2.0`) on the `main` merge commit that encapsulates the release. `CHANGELOG.md` follows
-[Keep a Changelog](https://keepachangelog.com/) and is updated as part of the release PR.
+[Keep a Changelog](https://keepachangelog.com/).
+
+*   **Every user-facing PR adds its changelog line** under `## [Unreleased]`, in `Added`,
+    `Changed`, `Fixed` or `Removed`, ending with the PR number, e.g. `(#42)`. User-facing means
+    anything a user of the package can observe: the API, behaviour, results, dependencies,
+    supported Python versions. CI, tests, internal refactors and contributor docs don't need
+    one. A test checks that every entry names its PR.
+*   **A release PR** sets `version` in `pyproject.toml` (then `uv lock`), renames
+    `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` and opens a new empty `## [Unreleased]`
+    above it, and adds the compare link at the bottom.
+*   **Tagging publishes.** After the release PR is merged, tag its merge commit and push the
+    tag:
+
+    ```bash
+    git tag vX.Y.Z <merge-commit> && git push origin vX.Y.Z
+    ```
+
+    `.github/workflows/release.yml` then checks that the tag equals `v` + `project.version` and
+    that the changelog has a non-empty `[X.Y.Z]` section
+    (`.github/scripts/release_notes.py`). It builds and checks the sdist and wheel, publishes
+    them to PyPI through trusted publishing (no stored token), and creates the GitHub release
+    with that changelog section as its notes. A manual run of the workflow is a dry run to
+    TestPyPI.
 
 ## Using AI Coding Assistants
 

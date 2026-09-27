@@ -43,6 +43,12 @@ dependencies = [
     "numpy>=2.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/g8rdier/hqnn-forge"
+Repository = "https://github.com/g8rdier/hqnn-forge"
+Issues = "https://github.com/g8rdier/hqnn-forge/issues"
+Changelog = "https://github.com/g8rdier/hqnn-forge/blob/main/CHANGELOG.md"
+
 [project.optional-dependencies]
 lightning = [
     "pennylane-lightning>=0.45",  # enables adjoint diff on CPU
