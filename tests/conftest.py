@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 import pytest
 import torch
@@ -30,3 +30,18 @@ def grad_of() -> Callable[[torch.Tensor], torch.Tensor]:
     ``prepend`` import mode.
     """
     return _grad
+
+
+@pytest.fixture(autouse=True)
+def _fresh_device_fallback() -> Iterator[None]:
+    """
+    Forget backends that failed to initialise before and after every test.
+    The library remembers them for the whole process, so a test that fakes a
+    failing ``qml.device`` would otherwise leave that backend marked as
+    failed for every test after it.
+    """
+    from hqnn_forge.encoding.angle_embedding import reset_device_fallback
+
+    reset_device_fallback()
+    yield
+    reset_device_fallback()

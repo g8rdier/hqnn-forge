@@ -182,9 +182,12 @@ class TestFallbackChain:
         monkeypatch.setattr(ae.qml, "device", device)
         with warnings.catch_warnings():
             warnings.simplefilter("error", RuntimeWarning)
-            with pytest.raises(type(error), match=str(error).split()[-1]):
-                ae._resolve_device("lightning.gpu", 30)
-        assert tried == ["lightning.gpu"]
+            # Raised on every call, not remembered as a failed backend: the
+            # failure depends on the qubit count, not on the backend.
+            for _ in range(2):
+                with pytest.raises(type(error), match=str(error).split()[-1]):
+                    ae._resolve_device("lightning.gpu", 30)
+        assert tried == ["lightning.gpu", "lightning.gpu"]
 
     def test_no_warning_when_the_requested_device_works(self) -> None:
         with warnings.catch_warnings():
@@ -204,7 +207,9 @@ class TestFallbackChain:
                 n_qubits=2, n_layers=1, device_name="lightning.gpu", diff_method="backprop"
             )
         assert iqp.qlayer.qnode.device.name == "default.qubit"
-        with pytest.warns(RuntimeWarning):
+        # The same failures again: remembered, so no second warning.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
             model = HybridBinaryClassifier(
                 n_input_features=2,
                 n_qubits=2,
@@ -214,3 +219,76 @@ class TestFallbackChain:
             )
         assert model.quantum_layer.qlayer.qnode.device.name == "default.qubit"
         assert model(torch.rand(3, 2)).shape == (3, 1)
+
+
+def _counting_device(failing: set[str]) -> tuple[list[str], object]:
+    """A stand-in for ``qml.device`` that records every name and fails for ``failing``."""
+    real = qml.device
+    calls: list[str] = []
+
+    def device(name: str, *args, **kwargs):
+        calls.append(name)
+        if name in failing:
+            raise DeviceError(f"{name} unavailable in this test")
+        return real(name, *args, **kwargs)
+
+    return calls, device
+
+
+class TestFallbackIsRememberedAndAttributed:
+    """#225: one attempt and one warning per failed backend, pointed at the caller."""
+
+    def test_three_layers_probe_and_warn_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls, device = _counting_device({"lightning.gpu", "lightning.qubit"})
+        monkeypatch.setattr(ae.qml, "device", device)
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")  # no deduplication hiding repeats
+            layers = [
+                QuantumEncodingLayer(
+                    n_qubits=2, n_layers=1, device_name="lightning.gpu", diff_method="backprop"
+                )
+                for _ in range(3)
+            ]
+        assert calls.count("lightning.gpu") == 1 and calls.count("lightning.qubit") == 1
+        fallbacks = [str(w.message) for w in record if issubclass(w.category, RuntimeWarning)]
+        assert len(fallbacks) == 2
+        assert (
+            "'lightning.gpu'" in fallbacks[0]
+            and "Falling back to 'lightning.qubit'" in fallbacks[0]
+        )
+        assert (
+            "'lightning.qubit'" in fallbacks[1]
+            and "Falling back to 'default.qubit'" in fallbacks[1]
+        )
+        assert all(layer.qlayer.qnode.device.name == "default.qubit" for layer in layers)
+
+    def test_reset_tries_the_backend_again(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls, device = _counting_device({"lightning.gpu"})
+        monkeypatch.setattr(ae.qml, "device", device)
+        with pytest.warns(RuntimeWarning):
+            ae._resolve_device("lightning.gpu", 2)
+        ae.reset_device_fallback()
+        with pytest.warns(RuntimeWarning):
+            ae._resolve_device("lightning.gpu", 2)
+        assert calls.count("lightning.gpu") == 2
+
+    @pytest.mark.parametrize(
+        "build",
+        [
+            lambda: QuantumEncodingLayer(n_qubits=2, n_layers=1, device_name="lightning.gpu"),
+            lambda: IQPEncodingLayer(n_qubits=2, n_layers=1, device_name="lightning.gpu"),
+            lambda: HybridBinaryClassifier(2, 2, 1, device_name="lightning.gpu"),
+            lambda: HybridBinaryClassifier.published_shnn(device_name="lightning.gpu"),
+        ],
+        ids=["layer", "iqp", "classifier", "published_shnn"],
+    )
+    def test_warning_points_at_the_callers_file(
+        self, build, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, device = _counting_device({"lightning.gpu", "lightning.qubit"})
+        monkeypatch.setattr(ae.qml, "device", device)
+        with pytest.warns(RuntimeWarning) as record:
+            build()
+        messages = [str(w.message) for w in record]
+        assert len(messages) == 2 and "'lightning.gpu'" in messages[0]
+        assert [w.filename for w in record] == [__file__, __file__]

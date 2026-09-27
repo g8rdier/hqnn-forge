@@ -43,7 +43,9 @@ References
 
 from __future__ import annotations
 
+import inspect
 import logging
+import os
 import warnings
 from collections.abc import Callable
 from typing import Literal, get_args
@@ -224,11 +226,54 @@ def _is_out_of_memory(exc: BaseException) -> bool:
     )
 
 
+#: Backends that failed to initialise in this process, with the failure.  A
+#: failed plugin import is not cached by Python, and a CUDA library load or a
+#: GPU probe is slow, so every layer built with the same device_name would
+#: otherwise repeat them -- and warn again.  Out-of-memory failures are never
+#: recorded: they depend on n_qubits and are raised, not fallen back from.
+_FAILED_BACKENDS: dict[str, BaseException] = {}
+
+#: The hqnn_forge package directory, for attributing warnings to user code.
+_PACKAGE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def reset_device_fallback() -> None:
+    """
+    Forget the backends that failed to initialise, so the next layer tries
+    them again -- e.g. after installing a plugin in a running session.
+    """
+    _FAILED_BACKENDS.clear()
+
+
+def _stacklevel_outside_package() -> int:
+    """
+    ``stacklevel`` that attributes a warning issued by the caller of this
+    function to the first frame outside ``hqnn_forge``: the user's own call,
+    however deep the layer or classifier constructors that led here.
+    (``warnings.warn(skip_file_prefixes=...)`` does this from Python 3.12 on;
+    the floor is 3.11.)
+    """
+    frame = inspect.currentframe()
+    frame = frame.f_back if frame is not None else None  # the function that warns
+    level = 1
+    while frame is not None and os.path.abspath(frame.f_code.co_filename).startswith(
+        _PACKAGE_DIR + os.sep
+    ):
+        frame = frame.f_back
+        level += 1
+    return level
+
+
 def _resolve_device(device_name: DeviceName, n_qubits: int) -> qml.devices.Device:
     """
     Create *device_name*, falling back along :data:`FALLBACK_CHAIN` when a
-    backend is not installed or has no usable hardware, with one
-    ``RuntimeWarning`` per failed step.
+    backend is not installed or has no usable hardware.
+
+    A backend that fails is remembered for the rest of the process: later
+    layers skip it without trying again, and its ``RuntimeWarning`` is issued
+    once, not once per layer (:func:`reset_device_fallback` forgets them).
+    The warning is attributed to the first frame outside ``hqnn_forge`` --
+    the user's call -- whichever layer or classifier constructor led here.
 
     The chain is ``requested → lightning.qubit → default.qubit``; entries at
     or before the requested device are skipped, so ``lightning.qubit`` falls
@@ -269,12 +314,18 @@ def _resolve_device(device_name: DeviceName, n_qubits: int) -> qml.devices.Devic
         )
     start = FALLBACK_CHAIN.index(device_name) + 1 if device_name in FALLBACK_CHAIN else 0
     candidates = [device_name, *FALLBACK_CHAIN[start:]]
+    last = len(candidates) - 1
     for attempt, name in enumerate(candidates):
+        if attempt < last and name in _FAILED_BACKENDS:
+            # Already failed and warned about in this process: go straight on.
+            logger.debug("Skipping %s, which failed before: %r", name, _FAILED_BACKENDS[name])
+            continue
         try:
             dev = qml.device(name, wires=n_qubits)
         except _DEVICE_FAILURES as exc:
-            if attempt == len(candidates) - 1 or _is_out_of_memory(exc):
+            if attempt == last or _is_out_of_memory(exc):
                 raise
+            _FAILED_BACKENDS[name] = exc
             fallback = candidates[attempt + 1]
             hint = (
                 "  Install pennylane-lightning for adjoint differentiation support and "
@@ -286,7 +337,7 @@ def _resolve_device(device_name: DeviceName, n_qubits: int) -> qml.devices.Devic
                 f"Could not initialise '{name}' ({type(exc).__name__}: {exc}).  "
                 f"Falling back to '{fallback}'.{hint}",
                 RuntimeWarning,
-                stacklevel=3,
+                stacklevel=_stacklevel_outside_package(),
             )
             continue
         if attempt:
