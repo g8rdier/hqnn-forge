@@ -446,11 +446,14 @@ def expand_batch_dimension(qnode: qml.QNode, diff_method: str) -> qml.QNode:
       parameter-shift and finite-difference transforms refuse a broadcasted
       tape when the gradient with respect to the broadcasted parameters is
       requested -- which is exactly the case when a classical encoder upstream
-      needs input gradients.  ``lightning.qubit``'s adjoint path also
-      mis-shapes results for some broadcasted two-qubit rotations.  For these
-      the tape is split into one tape per sample *before* the gradient
-      transform sees it, so each tape is unbroadcasted and the whole batch is
-      still handed to the device as a single list of tapes.
+      needs input gradients.  For these the tape is split into one tape per
+      sample *before* the gradient transform sees it, so each tape is
+      unbroadcasted and the whole batch is still handed to the device as a
+      single list of tapes.  ``lightning.qubit``'s adjoint path once
+      mis-shaped results for broadcast two-qubit rotations; with PennyLane
+      0.45 it runs broadcast tapes correctly, but measured no faster than the
+      split -- 0 to 60 % slower (#312, ``examples/benchmark_batching.py``) --
+      so the split stays for every method.
 
     Either way the QNode's signature and results are unchanged: it returns
     ``n_qubits`` expectation values, each of shape ``(batch,)``.

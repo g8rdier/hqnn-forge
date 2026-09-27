@@ -80,9 +80,24 @@ does, and needs `diff_method="parameter-shift"`; hardware devices need both.
 | `lightning.gpu` | State-vector simulator on NVIDIA GPUs via cuQuantum (cuStateVec) | `pip install pennylane-lightning-gpu`; Linux, an NVIDIA GPU with compute capability ≥ 7.0, a CUDA 12 driver. The wheel pulls in `custatevec-cu12` |
 | `lightning.kokkos` | State-vector simulator on Kokkos; OpenMP-parallel CPU on the PyPI wheel, CUDA or HIP GPUs when built from source | `pip install pennylane-lightning-kokkos` for the CPU build; see the [PennyLane-Lightning docs](https://docs.pennylane.ai/projects/lightning/) for a GPU build |
 
-The GPU backends pay off at larger qubit counts or batch sizes; at the 8 qubits the library
-targets, `lightning.qubit` is usually the fastest option. Both accelerated devices support the
-same `diff_method="adjoint"` as `lightning.qubit`.
+The GPU backends pay off at larger qubit counts or batch sizes. Both accelerated devices support
+the same `diff_method="adjoint"` as `lightning.qubit`.
+
+**Which to train with.** `lightning.qubit` with adjoint, the default, runs a batch one sample
+at a time; `default.qubit` with `diff_method="backprop"` vectorises it. Measured for one
+training step at batch 64 (`examples/benchmark_batching.py --crossover`):
+
+| qubits | `lightning.qubit` / adjoint | `default.qubit` / backprop |
+|---|---|---|
+| 8 | 0.59 s, +11 MB | 0.04 s, +11 MB |
+| 12 | 0.57 s, +18 MB | 0.30 s, +299 MB |
+| 14 | 1.42 s, +22 MB | 1.62 s, +1182 MB |
+| 16 | 10.1 s, +35 MB | 9.8 s, +3161 MB |
+
+So for batched training at up to about 12 qubits, pass
+`device_name="default.qubit", diff_method="backprop"`: it is several times faster (15× at 8
+qubits). From about 14 qubits backprop's memory grows fourfold per two qubits while adjoint's
+stays flat, and lightning is the better choice. For single samples lightning is faster.
 
 ---
 
