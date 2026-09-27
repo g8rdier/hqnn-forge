@@ -7,6 +7,8 @@ on:
   # feature branch) get CI before their parent merges. `edited` is there for
   # retargeting: each job skips title/body edits, but a base change re-runs
   # the PR against its new base, e.g. main after the parent is squash-merged.
+  # A push to a PR's *base* branch fires nothing here; CONTRIBUTING.md
+  # ("Stacked PRs") says how to re-run the PRs stacked on it (#231).
   pull_request:
     types: [opened, synchronize, reopened, edited]
 
