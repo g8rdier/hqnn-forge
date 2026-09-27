@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import math
 
+import pennylane as qml
 import pytest
 import torch
 
@@ -443,3 +444,55 @@ class TestEffectiveDimension:
             for _ in range(2)
         )
         assert (a == again) is True
+
+
+# ---------------------------------------------------------------------------
+# Circuit executions per Fisher matrix (#223)
+# ---------------------------------------------------------------------------
+
+
+def _lightning_works() -> bool:
+    try:
+        qml.device("lightning.qubit", wires=1)
+    except Exception:  # noqa: BLE001 - any failure means "not installed"
+        return False
+    return True
+
+
+def _executions(model: torch.nn.Module, X: torch.Tensor) -> int:
+    layer = getattr(model, "quantum_layer", model)
+    with qml.Tracker(layer.qlayer.qnode.device) as tracker:
+        fisher_information_matrix(model, X)
+    return int(tracker.totals["executions"])
+
+
+class TestExecutionCount:
+    """
+    The k backward passes per row reuse the forward's Jacobian, so the cost in
+    circuit executions does not grow with the number of outputs.
+    """
+
+    @pytest.mark.parametrize("diff_method", ["backprop", "adjoint"])
+    @pytest.mark.parametrize("readout", ["all", "first"])
+    def test_one_execution_per_row_on_default_qubit(self, diff_method: str, readout: str) -> None:
+        torch.manual_seed(0)
+        layer = QuantumEncodingLayer(
+            n_qubits=3,
+            n_layers=2,
+            readout=readout,  # type: ignore[arg-type]
+            device_name="default.qubit",
+            diff_method=diff_method,  # type: ignore[arg-type]
+        )
+        assert _executions(layer, torch.rand(5, 3)) == 5
+
+    def test_classifier_on_default_qubit(self) -> None:
+        torch.manual_seed(0)
+        model = HybridBinaryClassifier(4, 3, 2, device_name="default.qubit", diff_method="adjoint")
+        assert _executions(model, torch.rand(5, 4)) == 5
+
+    @pytest.mark.skipif(not _lightning_works(), reason="pennylane-lightning not installed")
+    def test_two_executions_per_row_on_lightning(self) -> None:
+        # The forward pass, and the adjoint Jacobian its three outputs share.
+        torch.manual_seed(0)
+        layer = QuantumEncodingLayer(n_qubits=3, n_layers=2)
+        assert _executions(layer, torch.rand(5, 3)) == 10
