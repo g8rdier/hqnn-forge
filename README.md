@@ -3,9 +3,21 @@
 [![Tests](https://github.com/g8rdier/hqnn-forge/actions/workflows/tests.yml/badge.svg)](https://github.com/g8rdier/hqnn-forge/actions/workflows/tests.yml)
 [![License](https://img.shields.io/github/license/g8rdier/hqnn-forge)](LICENSE)
 
-> **Parameter-efficient Hybrid Quantum Neural Networks for imbalanced tabular classification.**
+> **Test whether a small quantum layer earns its parameters on imbalanced binary tabular data.**
 
-`hqnn-forge` is a research-grade Python library that fuses **PennyLane** quantum circuits with **PyTorch** classical layers into end-to-end differentiable hybrid architectures optimised for NISQ-era hardware and binary fraud-detection workloads.
+`hqnn-forge` is a research library for hybrid quantum-classical classifiers: **PennyLane**
+circuits inside **PyTorch** models, trained end to end. It is built around one question: on
+an imbalanced binary classification problem, does a small quantum layer add enough per
+parameter to justify it? The library brings the parts needed to answer it on your own data:
+hybrid models, a scikit-learn estimator, imbalance-robust losses, stratified CV with SMOTE,
+threshold search, MCC per thousand parameters, a paired Wilcoxon test, ablation of the quantum
+layer, and circuit diagnostics.
+
+**Scope.** Binary classification on imbalanced tabular data, or data made tabular by a
+pretrained embedding (see [Non-tabular data](#non-tabular-data-precomputed-embeddings)). The
+estimator, losses, thresholds and metrics are built for binary targets;
+`MulticlassHybridClassifier` covers multiclass targets at the model level only. End-to-end
+image, text or time-series pipelines are out of scope.
 
 ---
 
@@ -54,7 +66,85 @@ same `diff_method="adjoint"` as `lightning.qubit`.
 
 ---
 
-## Quick Start
+## Quick Start: your own data
+
+`HybridClassifierEstimator` trains a hybrid model on any binary `X, y` through the usual
+scikit-learn `fit` / `predict` / `predict_proba`, so it also works in `Pipeline`,
+`cross_val_score` and `GridSearchCV`. It needs the `sklearn` extra:
+
+```python
+from sklearn.datasets import make_classification
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+
+from hqnn_forge.evaluation import matthews_corrcoef, parameter_efficiency
+from hqnn_forge.sklearn import HybridClassifierEstimator
+
+# Any imbalanced binary X, y; here 2,000 rows, 20 features, 5% positives
+X, y = make_classification(n_samples=2000, n_features=20, weights=[0.95], random_state=0)
+X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, random_state=0)
+
+clf = make_pipeline(
+    StandardScaler(),
+    HybridClassifierEstimator(
+        n_qubits=4, n_layers=2, max_epochs=20, validation_fraction=0.2, random_state=0
+    ),
+)
+clf.fit(X_train, y_train)  # about a minute on a laptop CPU
+
+mcc = matthews_corrcoef(y_test, clf.predict(X_test))
+print(f"test MCC {mcc:.3f}")
+print(f"MCC per 1,000 parameters {parameter_efficiency(clf[-1].model_, mcc):.2f}")
+```
+
+The model's classical encoder (`Linear` + `tanh`, scaled by π) maps any number of features
+onto the qubits, so the input width is free. With `validation_fraction` set, a stratified
+share of the training data drives early stopping and picks the decision threshold that
+`predict` uses. MCC, not accuracy, is the metric here: with 5% positives, predicting the
+majority class alone is 95% accurate.
+
+### Non-tabular data: precomputed embeddings
+
+Images, text or time series can be used through embeddings from any pretrained model. Reduce
+the embeddings to `n_qubits` dimensions and pass `use_classical_encoder=False`, so the quantum
+layer reads them directly:
+
+```python
+from hqnn_forge.preprocessing import PCANormalizer
+from hqnn_forge.sklearn import HybridClassifierEstimator
+
+# emb_train, emb_test: (n_samples, d) arrays from a pretrained model; y_train: 0/1 labels
+pca = PCANormalizer(n_components=8)  # standardise, keep 8 components, tanh(·)·π
+Z_train = pca.fit_transform(emb_train).numpy()
+Z_test = pca.transform(emb_test).numpy()
+
+clf = HybridClassifierEstimator(n_qubits=8, use_classical_encoder=False)
+clf.fit(Z_train, y_train)
+proba = clf.predict_proba(Z_test)[:, 1]
+```
+
+Without the encoder, each input value is used unscaled as a rotation angle, so it has to lie
+in (−π, π) already. Values outside that range wrap around modulo 2π, and distant inputs can
+land on the same angle. `PCANormalizer` keeps them inside with `tanh(·)·π`. The input width
+must equal `n_qubits`, and the model refuses anything else.
+
+### Worked example: credit-card fraud
+
+`hqnn_forge.data.load_credit_card_fraud` loads the Kaggle Credit Card Fraud Detection dataset
+(284,807 transactions, 492 frauds, 0.17% positive), the benchmark the library was first
+developed on. The CSV is not redistributable. Download it once with the Kaggle CLI
+(`kaggle datasets download -d mlg-ulb/creditcardfraud -p data/raw --unzip`), or pass
+`download=True`:
+
+```python
+from hqnn_forge.data import load_credit_card_fraud
+
+data = load_credit_card_fraud()  # data/raw/creditcard.csv, or $HQNN_FORGE_DATA
+X, y = data.X, data.y  # (284807, 30) float64, (284807,) int64
+```
+
+### The models directly, in PyTorch
 
 ```python
 import torch
