@@ -14,10 +14,15 @@ the seed is part of the fixture rather than incidental.
 
 from __future__ import annotations
 
+import functools
 import inspect
+import pickle
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 import pytest
+import torch
 
 pytest.importorskip("sklearn")
 from sklearn.base import clone
@@ -25,6 +30,7 @@ from sklearn.exceptions import NotFittedError
 from sklearn.model_selection import GridSearchCV, cross_val_score
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
+from sklearn.utils.estimator_checks import estimator_checks_generator
 
 from hqnn_forge.sklearn import HybridClassifierEstimator
 from hqnn_forge.training import train_model
@@ -178,7 +184,10 @@ class TestErrors:
 
     def test_multiclass_rejected(self, data: tuple) -> None:
         X, _ = data
-        with pytest.raises(ValueError, match="binary classifier; got 3 classes"):
+        with pytest.raises(
+            ValueError,
+            match="Only binary classification is supported.  HybridClassifierEstimator got 3 classes",
+        ):
             HybridClassifierEstimator(**FAST).fit(X, np.arange(80) % 3)
 
     @pytest.mark.parametrize(
@@ -216,3 +225,94 @@ class TestErrors:
         X[0, 0] = np.nan
         with pytest.raises(ValueError, match="NaN"):
             HybridClassifierEstimator(**FAST).fit(X, y)
+
+
+class TestPickle:
+    """A fitted model holds a QNode around a local function; pickle rebuilds it."""
+
+    def test_fitted_pipeline_round_trips(self, data: tuple) -> None:
+        X, y = data
+        pipe = make_pipeline(StandardScaler(), HybridClassifierEstimator(**FAST)).fit(X, y)
+        loaded = pickle.loads(pickle.dumps(pipe))
+        np.testing.assert_array_equal(loaded.predict_proba(X), pipe.predict_proba(X))
+        est = loaded[-1]
+        assert est.threshold_ == pipe[-1].threshold_
+        assert not est.model_.training
+        assert type(est.model_) is type(pipe[-1].model_)
+
+    @pytest.mark.parametrize("model", ["serial", "parallel"])
+    def test_both_models_and_the_original_is_untouched(self, data: tuple, model: str) -> None:
+        X, y = data
+        est = HybridClassifierEstimator(**{**FAST, "model": model}).fit(X, y)
+        trained = est.model_
+        payload = pickle.dumps(est)
+        assert est.model_ is trained  # pickling must not strip the live estimator
+        loaded = pickle.loads(payload)
+        np.testing.assert_array_equal(loaded.predict(X), est.predict(X))
+
+    def test_unpickling_leaves_the_global_rng_alone(self, data: tuple) -> None:
+        X, y = data
+        payload = pickle.dumps(HybridClassifierEstimator(**FAST).fit(X, y))
+        torch.manual_seed(123)
+        expected = torch.rand(3)
+        torch.manual_seed(123)
+        pickle.loads(payload)
+        torch.testing.assert_close(torch.rand(3), expected, rtol=0, atol=0)
+
+    def test_unfitted_estimator_round_trips(self) -> None:
+        loaded = pickle.loads(pickle.dumps(HybridClassifierEstimator(**FAST)))
+        assert loaded.get_params() == HybridClassifierEstimator(**FAST).get_params()
+        assert not hasattr(loaded, "model_")
+
+
+# ---------------------------------------------------------------------------
+# scikit-learn's own conformance checks
+# ---------------------------------------------------------------------------
+
+#: Checks this estimator is expected to fail, each with the reason.  Empty:
+#: every check that runs passes.  Two are skipped by scikit-learn itself when
+#: an optional package is absent (check_classifier_data_not_an_array needs
+#: pandas, check_array_api_input needs SCIPY_ARRAY_API and array-api-strict),
+#: neither of which this project installs.
+EXPECTED_FAILED_CHECKS: dict[str, str] = {}
+
+
+def _conformance_estimator() -> HybridClassifierEstimator:
+    # check_classifiers_train requires training accuracy > 0.83 on its own
+    # toy problem; 2 epochs fall short, 30 pass with margin at this seed.
+    return HybridClassifierEstimator(
+        n_qubits=2,
+        n_layers=1,
+        device_name="default.qubit",
+        diff_method="backprop",
+        max_epochs=30,
+        batch_size=32,
+        random_state=0,
+    )
+
+
+def _check_id(value: Any) -> str:
+    if isinstance(value, HybridClassifierEstimator):
+        return "HybridClassifierEstimator"
+    if isinstance(value, functools.partial):
+        kwargs = ",".join(f"{k}={v}" for k, v in value.keywords.items())
+        return f"{value.func.__name__}({kwargs})" if kwargs else value.func.__name__
+    return getattr(value, "__name__", repr(value))
+
+
+@pytest.mark.parametrize(
+    ("estimator", "check"),
+    list(
+        estimator_checks_generator(
+            _conformance_estimator(),
+            expected_failed_checks=EXPECTED_FAILED_CHECKS,
+            mark="xfail",
+            xfail_strict=True,
+        )
+    ),
+    ids=_check_id,
+)
+def test_scikit_learn_conformance(
+    estimator: HybridClassifierEstimator, check: Callable[[HybridClassifierEstimator], None]
+) -> None:
+    check(estimator)

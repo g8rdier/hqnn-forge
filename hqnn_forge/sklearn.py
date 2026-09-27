@@ -216,9 +216,11 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         X_arr, y_arr = validate_data(self, X, y, dtype=np.float32)
         classes = unique_labels(y_arr)
         if classes.size != 2:
+            # The first sentence is scikit-learn's wording for a binary-only
+            # classifier, which its conformance checks match on.
             raise ValueError(
-                f"HybridClassifierEstimator is a binary classifier; got {classes.size} "
-                f"classes: {classes.tolist()}."
+                f"Only binary classification is supported.  HybridClassifierEstimator "
+                f"got {classes.size} classes: {classes.tolist()}."
             )
         if not 0.0 <= self.validation_fraction < 1.0:
             raise ValueError(
@@ -287,6 +289,40 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         """Labels from ``classes_``, thresholding the positive probability at ``threshold_``."""
         positive = self.predict_proba(X)[:, 1]
         return self.classes_[(positive >= self.threshold_).astype(np.intp)]
+
+    # ------------------------------------------------------------------
+    # Pickling: the fitted model holds a PennyLane QNode built around a local
+    # function, which pickle cannot serialise.  The model is stored as its
+    # class, constructor arguments and weights instead, and rebuilt on load.
+    def __getstate__(self) -> dict[str, Any]:
+        # BaseEstimator returns the live __dict__ on Python 3.11+; copy it so
+        # pickling does not strip model_ from the estimator itself.
+        state = dict(super().__getstate__())
+        model = state.pop("model_", None)
+        if model is not None:
+            state["_model_state"] = {
+                "class_name": type(model).__name__,
+                "config": model.get_config(),
+                "state_dict": model.state_dict(),
+            }
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        state = dict(state)
+        saved = state.pop("_model_state", None)
+        super().__setstate__(state)
+        if saved is not None:
+            classes = {
+                cls.__name__: cls for cls in (HybridBinaryClassifier, ParallelHybridClassifier)
+            }
+            # Construction initialises weights from the global torch RNG before
+            # load_state_dict overwrites them; fork it so unpickling leaves the
+            # caller's random stream untouched.
+            with torch.random.fork_rng(devices=[]):
+                model = classes[saved["class_name"]](**saved["config"])
+            model.load_state_dict(saved["state_dict"])
+            model.eval()
+            self.model_ = model
 
     def __sklearn_tags__(self) -> Any:
         tags = super().__sklearn_tags__()
