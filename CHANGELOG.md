@@ -83,6 +83,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   angle counted as one parameter. `ClassicalBaseline` takes `init_seed` like the other
   classifiers, and the builder carries the hybrid's `init_seed` over, so a seeded hybrid gets
   a seeded control
+- `hqnn_forge.benchmark.run_benchmark`: a hybrid model against its matched classical control
+  on identical folds of several datasets, one row per dataset and model (MCC, parameters,
+  MCC per 1,000 parameters, training time, paired Wilcoxon test), with `write_csv` and
+  `examples/benchmark.py`
 
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from
