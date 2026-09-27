@@ -3,6 +3,10 @@ hqnn_forge.sklearn
 ==================
 A scikit-learn estimator around the hybrid classifiers.
 
+``QuantumKernelClassifier`` is the quantum-kernel SVM (QSVM) as an estimator:
+the same bookkeeping around ``SVC(kernel="precomputed")`` that
+:mod:`hqnn_forge.kernels` otherwise leaves to the caller.
+
 ``HybridClassifierEstimator`` implements ``fit`` / ``predict`` /
 ``predict_proba`` / ``get_params`` / ``set_params``, so a hybrid model can be
 dropped into ``cross_val_score``, ``GridSearchCV`` and ``Pipeline`` like any
@@ -40,6 +44,8 @@ import torch
 
 try:
     from sklearn.base import BaseEstimator, ClassifierMixin
+    from sklearn.calibration import CalibratedClassifierCV
+    from sklearn.svm import SVC
     from sklearn.utils.multiclass import unique_labels
     from sklearn.utils.validation import check_is_fitted, validate_data
 except ImportError as exc:  # pragma: no cover - exercised only without scikit-learn
@@ -49,6 +55,11 @@ except ImportError as exc:  # pragma: no cover - exercised only without scikit-l
         "were added in 1.6, so an older install fails this import too."
     ) from exc
 
+import math
+
+from hqnn_forge import kernels
+from hqnn_forge.encoding import AmplitudeEncodingLayer, DataReuploadingLayer, QuantumEncodingLayer
+from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
 from hqnn_forge.training import TrainingHistory, train_model
 from hqnn_forge.utils import FocalLoss
@@ -349,3 +360,251 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         tags.classifier_tags.multi_class = False
         tags.non_deterministic = self.random_state is None
         return tags
+
+
+# ---------------------------------------------------------------------------
+# Quantum-kernel SVM
+# ---------------------------------------------------------------------------
+
+KernelEncoding = Literal["angle", "iqp", "reuploading", "amplitude"]
+
+
+class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
+    """
+    Support vector classifier on a quantum fidelity kernel (QSVM).
+
+    ``fit`` builds an encoding layer for the width of ``X``, optionally trains
+    it by kernel-target alignment, computes the Gram matrix
+    ``K[i, j] = |⟨Φ(x_i)|Φ(x_j)⟩|²`` with :func:`hqnn_forge.kernels.quantum_kernel_matrix`
+    and fits ``SVC(kernel="precomputed")`` on it.  ``predict`` and friends
+    compute the kernel between new samples and the training set -- rows new,
+    columns training, the orientation ``SVC`` needs -- from the training
+    states cached at ``fit``, so only the new samples are simulated.  So the
+    estimator works in ``cross_val_score``, ``GridSearchCV``, ``Pipeline`` and
+    ``hqnn_forge.benchmark.run_benchmark`` like any other.
+
+    Parameters
+    ----------
+    encoding:
+        ``"angle"`` (default), ``"iqp"``, ``"reuploading"`` or ``"amplitude"``.
+    n_qubits:
+        Default: one qubit per feature, or ``ceil(log2(n_features))`` for
+        ``"amplitude"`` (whose features are zero-padded to ``2**n_qubits``).
+        With one feature per qubit it must equal ``n_features``.
+    n_layers:
+        Variational layers of the encoding layer.  For the single-upload
+        encoders the ansatz cancels in the fidelity kernel (see
+        :mod:`hqnn_forge.kernels`); it matters for ``"reuploading"``, where
+        the weights sit between uploads.  Default: 2.
+    trainable_input_scaling:
+        ``"reuploading"`` only: a trainable scale per upload.  Default: False.
+    align_steps, align_lr, align_subset_size:
+        With ``align_steps > 0`` (two classes only), train the layer by
+        kernel-target alignment before fitting the SVM
+        (:func:`hqnn_forge.kernels.train_kernel_alignment`).  Default: 0.
+    noise_level, noise_position:
+        Estimate the kernel under depolarising noise from density matrices;
+        ``0`` (default) is the exact state-vector kernel.
+    C, class_weight:
+        Passed to ``SVC``.
+    probability:
+        Enable ``predict_proba``: Platt (sigmoid) scaling of the SVM's
+        decision values, fitted on out-of-fold predictions by
+        ``CalibratedClassifierCV(..., ensemble=False)``, which splits the
+        precomputed kernel by rows *and* columns.  (``SVC(probability=True)``,
+        which did the same internally, is deprecated from scikit-learn 1.9.)
+        ``predict`` and ``decision_function`` stay those of the plain SVM.
+        Default: False.
+    batch_size:
+        Samples simulated at a time, to bound memory.  Default: all.
+    random_state:
+        Seeds the layer's initialisation, the alignment subsets and ``SVC``.
+
+    Attributes
+    ----------
+    classes_ : ndarray
+    n_features_in_ : int
+    layer_ : nn.Module
+        The (possibly aligned) encoding layer.
+    svc_ : sklearn.svm.SVC
+    calibrator_ : sklearn.calibration.CalibratedClassifierCV or None
+        The probability model, with ``probability=True``.
+    alignment_history_ : list of float
+        The alignment at each training step; empty without alignment.
+    """
+
+    def __init__(
+        self,
+        encoding: KernelEncoding = "angle",
+        n_qubits: int | None = None,
+        n_layers: int = 2,
+        trainable_input_scaling: bool = False,
+        align_steps: int = 0,
+        align_lr: float = 0.05,
+        align_subset_size: int | None = None,
+        noise_level: float = 0.0,
+        noise_position: str = "all",
+        C: float = 1.0,
+        class_weight: dict[Any, float] | str | None = None,
+        probability: bool = False,
+        batch_size: int | None = None,
+        random_state: int | None = None,
+    ) -> None:
+        self.encoding = encoding
+        self.n_qubits = n_qubits
+        self.n_layers = n_layers
+        self.trainable_input_scaling = trainable_input_scaling
+        self.align_steps = align_steps
+        self.align_lr = align_lr
+        self.align_subset_size = align_subset_size
+        self.noise_level = noise_level
+        self.noise_position = noise_position
+        self.C = C
+        self.class_weight = class_weight
+        self.probability = probability
+        self.batch_size = batch_size
+        self.random_state = random_state
+
+    # ------------------------------------------------------------------
+    def _build_layer(self, n_features: int) -> torch.nn.Module:
+        common: dict[str, Any] = dict(
+            n_layers=self.n_layers, device_name="default.qubit", diff_method="backprop"
+        )
+        if self.encoding == "amplitude":
+            n_qubits = (
+                self.n_qubits
+                if self.n_qubits is not None
+                else max(2, math.ceil(math.log2(n_features)))
+            )
+            return AmplitudeEncodingLayer(n_qubits=n_qubits, n_features=n_features, **common)
+        if self.encoding not in ("angle", "iqp", "reuploading"):
+            raise ValueError(
+                f"encoding must be 'angle', 'iqp', 'reuploading' or 'amplitude'; "
+                f"got {self.encoding!r}."
+            )
+        n_qubits = self.n_qubits if self.n_qubits is not None else n_features
+        if n_qubits != n_features:
+            raise ValueError(
+                f"encoding={self.encoding!r} takes one feature per qubit: n_qubits={n_qubits} "
+                f"but X has {n_features} features.  Reduce the features (e.g. PCA) or use "
+                f"encoding='amplitude'."
+            )
+        if self.trainable_input_scaling and self.encoding != "reuploading":
+            raise ValueError("trainable_input_scaling applies to encoding='reuploading' only.")
+        if self.encoding == "angle":
+            return QuantumEncodingLayer(n_qubits=n_qubits, **common)
+        if self.encoding == "iqp":
+            return IQPEncodingLayer(n_qubits=n_qubits, **common)
+        return DataReuploadingLayer(
+            n_qubits=n_qubits, trainable_input_scaling=self.trainable_input_scaling, **common
+        )
+
+    def _encode(self, X: torch.Tensor) -> torch.Tensor:
+        """States, or density matrices under noise, of ``X`` through ``layer_``."""
+        if self.noise_level:
+            return kernels.encoded_density_matrices(
+                X,
+                self.layer_,
+                noise_level=self.noise_level,
+                noise_position=self.noise_position,  # type: ignore[arg-type]
+                batch_size=self.batch_size,
+            )
+        return kernels.encoded_states(X, self.layer_, batch_size=self.batch_size)
+
+    def _kernel(
+        self, encoded_x: torch.Tensor, encoded_y: torch.Tensor | None = None
+    ) -> np.ndarray:
+        K = (
+            kernels.kernel_from_density_matrices(encoded_x, encoded_y)
+            if self.noise_level
+            else kernels.kernel_from_states(encoded_x, encoded_y)
+        )
+        return K.detach().numpy()
+
+    # ------------------------------------------------------------------
+    def fit(self, X: npt.ArrayLike, y: npt.ArrayLike) -> QuantumKernelClassifier:
+        """Build (and optionally align) the layer, then fit the SVM on the Gram matrix."""
+        X_arr, y_arr = validate_data(self, X, y, dtype=np.float64)
+        classes = unique_labels(y_arr)
+        if classes.size < 2:
+            raise ValueError(
+                f"QuantumKernelClassifier needs at least two classes; got {classes.size}."
+            )
+        if self.align_steps < 0:
+            raise ValueError(f"align_steps must be >= 0; got {self.align_steps}.")
+        if self.align_steps and classes.size != 2:
+            raise ValueError(
+                f"kernel-target alignment is defined for two classes; got {classes.size}."
+            )
+        if self.random_state is not None:
+            torch.manual_seed(self.random_state)
+        layer = self._build_layer(X_arr.shape[1])
+        X_t = torch.from_numpy(X_arr)
+        history: list[float] = []
+        if self.align_steps:
+            labels = torch.from_numpy(np.searchsorted(classes, y_arr))
+            generator = (
+                torch.Generator().manual_seed(self.random_state)
+                if self.random_state is not None
+                else None
+            )
+            history = kernels.train_kernel_alignment(
+                layer,
+                X_t,
+                labels,
+                steps=self.align_steps,
+                lr=self.align_lr,
+                subset_size=self.align_subset_size,
+                generator=generator,
+            )
+        self.layer_ = layer
+        encoded = self._encode(X_t)
+        K = self._kernel(encoded)
+
+        def svm() -> SVC:
+            return SVC(
+                kernel="precomputed",
+                C=self.C,
+                class_weight=self.class_weight,
+                random_state=self.random_state,
+            )
+
+        svc = svm().fit(K, y_arr)
+        calibrator = None
+        if self.probability:
+            smallest = int(np.unique(y_arr, return_counts=True)[1].min())
+            if smallest < 2:
+                raise ValueError(
+                    "probability=True calibrates on cross-validated predictions and needs "
+                    "at least two samples of every class."
+                )
+            calibrator = CalibratedClassifierCV(
+                svm(), method="sigmoid", ensemble=False, cv=min(5, smallest)
+            ).fit(K, y_arr)
+        # Published together, after everything that can fail.
+        self._train_encoded = encoded
+        self.svc_ = svc
+        self.calibrator_ = calibrator
+        self.classes_ = svc.classes_
+        self.alignment_history_ = history
+        return self
+
+    def _test_kernel(self, X: npt.ArrayLike) -> np.ndarray:
+        check_is_fitted(self, "svc_")
+        X_arr = validate_data(self, X, dtype=np.float64, reset=False)
+        return self._kernel(self._encode(torch.from_numpy(X_arr)), self._train_encoded)
+
+    def decision_function(self, X: npt.ArrayLike) -> npt.NDArray[np.float64]:
+        """``SVC.decision_function`` on the kernel between ``X`` and the training set."""
+        return self.svc_.decision_function(self._test_kernel(X))  # type: ignore[no-any-return]
+
+    def predict(self, X: npt.ArrayLike) -> npt.NDArray[Any]:
+        """Labels from ``classes_``."""
+        return self.svc_.predict(self._test_kernel(X))  # type: ignore[no-any-return]
+
+    def predict_proba(self, X: npt.ArrayLike) -> npt.NDArray[np.float64]:
+        """Platt-scaled probabilities; needs ``probability=True``."""
+        if not self.probability:
+            raise AttributeError("predict_proba needs probability=True.")
+        K = self._test_kernel(X)
+        return self.calibrator_.predict_proba(K)  # type: ignore[no-any-return,union-attr]
