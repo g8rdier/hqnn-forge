@@ -133,6 +133,7 @@ _LEGACY_DEFAULTS: dict[str, Any] = {
     "noise_trajectories": 1,
     "init_seed": None,  # weights drawn from the global RNG; inert once loaded
     "classical_encoder": None,  # the built-in Linear encoder
+    "trainable_input_scaling": False,  # added with encoding_type="reuploading"
 }
 
 #: Constructor arguments added deliberately without a legacy default: no value

@@ -73,7 +73,7 @@ strategy:
 use_classical_encoder, dropout_p, device_name, diff_method, init_strategy,
 encoding_type, embedding_rotation, entangler, readout, encoder_activation,
 init_std, noise_level, noise_position, noise_method, noise_trajectories,
-init_seed, classical_encoder:
+trainable_input_scaling, init_seed, classical_encoder:
     As for :class:`~hqnn_forge.models.HybridBinaryClassifier`.
 """
 
@@ -120,7 +120,7 @@ class MulticlassHybridClassifier(QuantumTrunk, ClassifierBase):
     use_classical_encoder, dropout_p, device_name, diff_method,
     init_strategy, encoding_type, embedding_rotation, entangler, readout,
     encoder_activation, init_std, noise_level, noise_position, noise_method,
-    noise_trajectories, classical_encoder:
+    noise_trajectories, classical_encoder, trainable_input_scaling:
         The trunk's options, exactly as for
         :class:`~hqnn_forge.models.HybridBinaryClassifier`.  With
         ``readout="first"`` every class head reads ⟨Z_0⟩ alone.
@@ -177,6 +177,7 @@ class MulticlassHybridClassifier(QuantumTrunk, ClassifierBase):
         noise_trajectories: int = 1,
         init_seed: int | None = None,
         classical_encoder: nn.Module | None = None,
+        trainable_input_scaling: bool = False,
     ) -> None:
         super().__init__()
         init_seed = as_seed(init_seed)
@@ -209,6 +210,7 @@ class MulticlassHybridClassifier(QuantumTrunk, ClassifierBase):
                 noise_trajectories=noise_trajectories,
                 init_seed=init_seed,
                 classical_encoder=classical_encoder,
+                trainable_input_scaling=trainable_input_scaling,
             )
 
             if n_classes < 2:
@@ -241,6 +243,7 @@ class MulticlassHybridClassifier(QuantumTrunk, ClassifierBase):
                 noise_method=noise_method,
                 noise_trajectories=noise_trajectories,
                 classical_encoder=classical_encoder,
+                trainable_input_scaling=trainable_input_scaling,
             )
 
             # ── Class heads: one row per class ────────────────────────────────

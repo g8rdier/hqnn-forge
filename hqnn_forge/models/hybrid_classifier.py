@@ -128,11 +128,27 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
         ``"restricted"`` (default), ``"block_local"``, or ``"normal"``
         (``N(0, init_std²)``, the published SHNN's init).
     encoding_type:
-        Type of quantum embedding to use: ``"angle"`` or ``"iqp"``. Default: ``"angle"``.
+        The quantum embedding.  Default: ``"angle"``.
+
+        * ``"angle"``: one rotation per feature (:class:`~hqnn_forge.encoding.QuantumEncodingLayer`).
+        * ``"iqp"``: Hadamards, ``RZ(x_i)`` and pairwise ``x_i x_j`` phases
+          (:class:`~hqnn_forge.encoding.iqp_embedding.IQPEncodingLayer`).
+        * ``"reuploading"``: the angle embedding repeated before every
+          variational layer (:class:`~hqnn_forge.encoding.DataReuploadingLayer`),
+          optionally with ``trainable_input_scaling``.
+        * ``"amplitude"``: the features as the ``2**n_qubits`` amplitudes of
+          the state (:class:`~hqnn_forge.encoding.AmplitudeEncodingLayer`).  The
+          classical encoder then maps to ``2**n_qubits`` features, and the
+          ``·π`` scaling is irrelevant because the layer normalises.  Its
+          input gradient is only correct under backprop, so with a classical
+          encoder it requires ``diff_method="backprop"`` (on
+          ``default.qubit``) and raises otherwise.  Without one, 1 to
+          ``2**n_qubits`` raw features are zero-padded.
     embedding_rotation:
-        Pauli axis of the angle embedding, ``"X"`` (default) or ``"Y"``; ``"Z"``
-        raises, since a single ``RZ`` embedding on ``|0⟩`` ignores the input.
-        Angle encoding only.
+        Pauli axis of the angle embedding, ``"X"`` (default), ``"Y"`` or ``"Z"``.
+        Angle and re-uploading encodings only.  ``"Z"`` raises under angle
+        encoding, since a single ``RZ`` embedding on ``|0⟩`` ignores the input;
+        under re-uploading it needs ``n_layers ≥ 2``.
     entangler:
         ``"ring"`` (default: CNOT ring then ``Rot``), ``"strongly_entangling"``
         (``qml.StronglyEntanglingLayers``: ``Rot`` then a CNOT ring of growing
@@ -181,7 +197,8 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
         n_qubits)``, trained together with the quantum layer: a small MLP,
         or a CNN or sequence model that reshapes the flat
         ``(batch, n_input_features)`` input itself.  It must return
-        ``(batch, n_qubits)``, which is checked here with one forward pass.
+        ``(batch, n_qubits)`` (``(batch, 2**n_qubits)`` with
+        ``encoding_type="amplitude"``), which is checked here with one forward pass.
         The model owns the angle range: it applies ``encoder_activation`` and
         the factor π on top of the module, exactly as for the built-in
         encoder, so the module should output unbounded features and not end
@@ -190,6 +207,9 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
         ``use_classical_encoder=True``.  ``save_checkpoint`` refuses a model
         with a custom encoder; save its ``state_dict`` instead.  Default:
         ``None``, the built-in encoder.
+    trainable_input_scaling:
+        With ``encoding_type="reuploading"`` only: a trainable per-upload
+        scale on the features, initialised to 1.  Default: ``False``.
 
     Attributes
     ----------
@@ -233,6 +253,7 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
         classical_encoder: nn.Module | None = None,
         noise_method: NoiseMethod = "density",
         noise_trajectories: int = 1,
+        trainable_input_scaling: bool = False,
     ) -> None:
         super().__init__()
         init_seed = as_seed(init_seed)
@@ -263,6 +284,7 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
                 classical_encoder=classical_encoder,
                 noise_method=noise_method,
                 noise_trajectories=noise_trajectories,
+                trainable_input_scaling=trainable_input_scaling,
             )
 
             n_readouts = self._build_trunk(
@@ -285,6 +307,7 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
                 noise_method=noise_method,
                 noise_trajectories=noise_trajectories,
                 classical_encoder=classical_encoder,
+                trainable_input_scaling=trainable_input_scaling,
             )
 
             # ── Classical head ────────────────────────────────────────────────

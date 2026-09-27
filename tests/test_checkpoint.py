@@ -668,6 +668,7 @@ CONSTRUCTOR_ARGS = {
         "classical_encoder",
         "noise_method",
         "noise_trajectories",
+        "trainable_input_scaling",
     },
     ParallelHybridClassifier: {
         "n_input_features",
@@ -691,6 +692,7 @@ CONSTRUCTOR_ARGS = {
         "classical_encoder",
         "noise_method",
         "noise_trajectories",
+        "trainable_input_scaling",
     },
     MulticlassHybridClassifier: {
         "n_input_features",
@@ -716,6 +718,7 @@ CONSTRUCTOR_ARGS = {
         "noise_method",
         "noise_trajectories",
         "classical_encoder",
+        "trainable_input_scaling",
     },
     ClassicalBaseline: {
         "n_input_features",
