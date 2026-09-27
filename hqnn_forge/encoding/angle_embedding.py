@@ -541,7 +541,9 @@ def build_encoding_qnode(
         Number of entangling + rotation layers in the VQC ansatz.
         More layers increase expressibility but deepen the circuit.  Default: 2.
     rotation:
-        Pauli rotation axis for AngleEmbedding: ``"X"`` (default), ``"Y"``, or ``"Z"``.
+        Pauli rotation axis for AngleEmbedding: ``"X"`` (default) or ``"Y"``.
+        ``"Z"`` raises: a single ``RZ`` on ``|0⟩`` is only a phase, so the
+        layer would not depend on its inputs.
     device_name:
         PennyLane device string.  ``"lightning.qubit"`` is strongly preferred for
         adjoint differentiation.  An unavailable backend falls back along
@@ -572,7 +574,8 @@ def build_encoding_qnode(
     ValueError
         If ``n_qubits < 2`` (minimum for a meaningful entangling ring), or if
         ``rotation``, ``entangler`` or ``readout`` is not one of the values
-        above -- all checked here, before the circuit first runs.
+        above, or if ``rotation="Z"`` -- all checked here, before the circuit
+        first runs.
 
     Examples
     --------
@@ -583,6 +586,17 @@ def build_encoding_qnode(
     """
     if n_qubits < 2:
         raise ValueError(f"n_qubits must be ≥ 2 for the CNOT entangling ring; got {n_qubits}.")
+    if rotation == "Z":
+        # The inputs are embedded once, on |0…0⟩, where RZ(x) only multiplies
+        # each wire by a phase: the state entering the ansatz is the same for
+        # every x, so the layer would be a constant.  DataReuploadingLayer
+        # can use "Z" from its second upload on.
+        raise ValueError(
+            'rotation="Z" would make the layer ignore its inputs: a single RZ embedding '
+            "acts on |0…0⟩, where it is only a global phase, so every input gives the same "
+            'state and the input gradients are zero.  Use "X" or "Y", or '
+            'DataReuploadingLayer(rotation="Z", n_layers >= 2).'
+        )
 
     device = _resolve_device(device_name, n_qubits)
     circuit_fn = _make_angle_embedding_circuit(n_qubits, n_layers, rotation, entangler, readout)
@@ -649,7 +663,8 @@ class QuantumEncodingLayer(nn.Module):
         so ``readout="first"`` wants 2 or more; see step 2 of
         :func:`_make_angle_embedding_circuit`.
     rotation:
-        Pauli axis for AngleEmbedding: ``"X"`` | ``"Y"`` | ``"Z"``.
+        Pauli axis for AngleEmbedding: ``"X"`` | ``"Y"``; ``"Z"`` raises, see
+        :func:`build_encoding_qnode`.
     device_name:
         PennyLane device, one of :data:`DeviceName`.  An unavailable backend
         falls back along ``lightning.qubit → default.qubit`` with a warning
