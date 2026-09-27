@@ -15,6 +15,9 @@ background.
 Reduce complexity and increase clarity. A clean `main` branch, understandable commit history,
 and consistent processes lead to better software.
 
+Adding a dataset loader, an encoding layer or a variational block? The conventions and required
+tests for each are in [`docs/extending.md`](docs/extending.md).
+
 ## Git Workflow
 
 ### 1. Issue First
