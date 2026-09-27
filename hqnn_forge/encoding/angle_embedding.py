@@ -146,6 +146,28 @@ def apply_variational_layers(
             )
 
 
+def variational_weight_shape(
+    entangler: Entangler, n_qubits: int, n_layers: int
+) -> tuple[int, ...]:
+    """
+    Shape of the ``weights`` tensor :func:`apply_variational_layers` reads for ``entangler``.
+
+    The one place an encoder's variational weight shape is defined: every
+    encoding layer registers its ``weights`` with this shape.  Dim 0 is always
+    the layer index, which :func:`~hqnn_forge.initializers.block_local_init_`
+    and the diagnostics' ``n_layers`` fallback rely on.  Both blocks so far
+    apply one ``Rot(φ, θ, ω)`` per qubit per layer: ``(n_layers, n_qubits, 3)``.
+
+    Raises
+    ------
+    ValueError
+        For an unknown ``entangler``.
+    """
+    if entangler not in ("ring", "strongly_entangling"):
+        raise ValueError(f"entangler must be 'ring' or 'strongly_entangling'; got {entangler!r}.")
+    return (n_layers, n_qubits, 3)
+
+
 def validate_circuit_options(
     n_qubits: int,
     entangler: Entangler,
@@ -679,7 +701,7 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
         #   dim-1: qubit  index i ∈ {0, …, n_qubits-1}
         #   dim-2: Euler angles (φ, θ, ω) for qml.Rot
         weight_shapes: dict[str, tuple[int, ...]] = {
-            "weights": (n_layers, n_qubits, 3),
+            "weights": variational_weight_shape(entangler, n_qubits, n_layers),
         }
 
         # Wrap QNode as an nn.Module with registered Parameters ───────────
@@ -756,7 +778,7 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
         return (
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "
-            f"n_params={self.n_layers * self.n_qubits * 3}{options}"
+            f"n_params={sum(p.numel() for p in self.parameters())}{options}"
         )
 
 

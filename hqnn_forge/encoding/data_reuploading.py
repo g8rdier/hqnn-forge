@@ -97,6 +97,7 @@ from hqnn_forge.encoding.angle_embedding import (
     measure_z,
     readout_wires,
     validate_circuit_options,
+    variational_weight_shape,
 )
 from hqnn_forge.noise import NoiseMethod, Position, TrainingNoiseMixin
 
@@ -413,7 +414,7 @@ class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
         )
 
         weight_shapes: dict[str, tuple[int, ...]] = {
-            "weights": (n_layers, n_qubits, 3),
+            "weights": variational_weight_shape(entangler, n_qubits, n_layers),
         }
         if trainable_input_scaling:
             weight_shapes["input_scaling"] = input_scaling_shape(n_qubits, n_layers, rotation)
