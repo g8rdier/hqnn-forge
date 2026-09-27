@@ -125,6 +125,13 @@ docs](https://docs.astral.sh/uv/getting-started/installation/) if you don't have
     `pyproject.toml`, so contributors only regenerate the lockfile when they change
     `pyproject.toml` by hand.
 
+*   **Upcoming PennyLane releases are tested weekly.** `.github/workflows/upstream.yml` runs
+    the suite against the newest PennyLane and pennylane-lightning pre-releases on PyPI and
+    against their nightly builds on TestPyPI. It never blocks a PR. When it fails, it opens
+    (or comments on) an issue titled `ci: test suite fails against PennyLane <source> builds`:
+    the library relies on PennyLane internals, and this is how a break shows up before users
+    upgrade. Trigger it by hand with `gh workflow run upstream.yml`.
+
 ## Versioning
 
 Releases follow [Semantic Versioning](https://semver.org/) (`MAJOR.MINOR.PATCH`), tagged (e.g.
