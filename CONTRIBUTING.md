@@ -89,6 +89,38 @@ feat: add user authentication endpoint
 Keep commit bodies to at most 3 bullet points. If you need more, the work is probably better
 split into smaller, more atomic commits.
 
+## Linting
+
+The `lint` job in `.github/workflows/tests.yml` runs four checks, and a PR must pass all of
+them. To run the same checks locally with the same tool versions, run them through the
+lockfile:
+
+```bash
+uv run --frozen --all-extras ruff check .
+uv run --frozen --all-extras ruff format --check .   # `ruff format .` applies the fixes
+uv run --frozen --all-extras mypy hqnn_forge tests examples
+uv run --frozen --all-extras vermin --no-tips -t=3.11- --violations --eval-annotations \
+    --exclude long hqnn_forge tests examples .github/scripts
+```
+
+*   **ruff** lints the whole tree and checks its formatting, including the Python code
+    blocks in Markdown files. The pre-commit hooks in the README run both steps on each
+    commit.
+*   **mypy** type-checks the package, the tests and the examples. Modules that still fail
+    are listed under `[[tool.mypy.overrides]]` in `pyproject.toml` until #232 clears them.
+    CI also fails when an entry there no longer matches any module.
+*   **vermin** fails on stdlib calls that don't exist on Python 3.11, the `requires-python`
+    floor, which neither ruff nor mypy catches. CI also fails when vermin reports a file as
+    "incompatible", because vermin skips such a file without an error.
+*   **Why `uv run --frozen`.** It uses the ruff, mypy and vermin versions pinned in
+    `uv.lock`, which CI uses too. `--all-extras` installs every extra, as CI does, so mypy
+    sees the real types of matplotlib, scikit-learn and pennylane-lightning instead of
+    `Any`. The `dev` extra declares the tools without a version range, so a pip install
+    gets the newest releases, and when a new ruff changes a default, its `ruff format`
+    disagrees with CI's. The versions are deliberately not capped in `pyproject.toml`
+    either. Dependabot only updates `uv.lock`, so a cap such as `ruff<0.17` would stop it
+    from ever proposing the next minor release.
+
 ## Dependency Changes
 
 `uv.lock` is tracked in the repository and CI tests against it: the `test-locked` job in

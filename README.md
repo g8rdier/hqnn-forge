@@ -207,12 +207,15 @@ uvx pre-commit run --all-files
 ```
 
 The hooks cover the two ruff steps of the CI lint job, including the Python code blocks in
-Markdown files. The lint job also type-checks the package, which the hooks do not; run it
-before pushing changes to `hqnn_forge/`:
+Markdown files. The lint job also type-checks the package, the tests and the examples with
+mypy, and checks stdlib usage against Python 3.11 with vermin; the hooks do neither. Run
+them before pushing:
 
 ```bash
-uv run --frozen --extra dev mypy hqnn_forge
+uv run --frozen --all-extras mypy hqnn_forge tests examples
 ```
+
+[`CONTRIBUTING.md`](CONTRIBUTING.md#linting) lists every command the lint job runs.
 
 ---
 
