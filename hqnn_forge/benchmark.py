@@ -33,7 +33,9 @@ same parameter count) get exactly the same:
 
 Reported per dataset and model
 ------------------------------
-``mcc_mean``/``mcc_std`` over the test folds, ``n_parameters`` and MCC per
+``mcc_mean``/``mcc_std`` over the test folds (with ``n_seeds > 1``, of each
+fold's mean over its initialisation seeds, and ``mcc_seed_std`` the mean
+across-seed standard deviation), ``n_parameters`` and MCC per
 1,000 parameters (:func:`parameter_efficiency` of the mean), the wall-clock
 training time summed over folds (simulating the circuit is part of an honest
 efficiency comparison), and the paired Wilcoxon signed-rank test of hybrid
@@ -90,6 +92,8 @@ COLUMNS: tuple[str, ...] = (
     "n_parameters",
     "mcc_mean",
     "mcc_std",
+    "n_seeds",
+    "mcc_seed_std",
     "mcc_per_kparam",
     "fold_mcc",
     "train_seconds",
@@ -136,6 +140,8 @@ class FoldResult:
     epochs: int
     device: str | None
     """PennyLane device the circuit actually ran on (after any fallback); ``None`` for the control."""
+    seed_index: int = 0
+    """Which of the ``n_seeds`` initialisations of this fold (``init_seed`` is its seed)."""
 
 
 @dataclass(frozen=True)
@@ -258,6 +264,7 @@ def run_benchmark(
     random_state: int = 0,
     smote_kwargs: Mapping[str, Any] | None = None,
     record_path: str | os.PathLike[str] | None = None,
+    n_seeds: int = 1,
 ) -> BenchmarkResult:
     """
     Compare ``hybrid`` with its matched classical control on every dataset.
@@ -291,6 +298,12 @@ def run_benchmark(
         Root seed.  Every fold split, SMOTE draw, initialisation and batch
         order derives from it, so a run is repeatable; the seeds used are in
         :attr:`BenchmarkResult.folds`.
+    n_seeds:
+        Train each model this many times per fold, with distinct recorded
+        initialisation seeds (split, SMOTE and batch order stay the fold's).
+        The fold's score is the mean over its seeds, so the paired test still
+        pairs folds, and ``mcc_seed_std`` reports how much a model's score
+        moves with the initialisation alone.  Default 1: one seed, as before.
     record_path:
         Also write an experiment record (config, seeds, fold indices,
         dependency versions, devices, metrics) there as JSON; see
@@ -302,6 +315,8 @@ def run_benchmark(
     """
     if n_splits < 2:
         raise ValueError(f"n_splits must be >= 2; got {n_splits}.")
+    if n_seeds < 1:
+        raise ValueError(f"n_seeds must be >= 1; got {n_seeds}.")
     if validation_folds < 2:
         raise ValueError(f"validation_folds must be >= 2; got {validation_folds}.")
     if not datasets:
@@ -319,6 +334,7 @@ def run_benchmark(
         "random_state": random_state,
         "smote_kwargs": smote_options,
         "hybrid_builder": _import_path(hybrid),
+        "n_seeds": n_seeds,
     }
 
     records: list[dict[str, Any]] = []
@@ -350,12 +366,19 @@ def run_benchmark(
         split_seed = int(split_root.generate_state(1)[0])
         outer = stratified_kfold(y, n_splits, random_state=split_seed)
         scores: dict[str, list[float]] = {m: [] for m in MODELS}
+        seed_stds: dict[str, list[float]] = {m: [] for m in MODELS}
         seconds: dict[str, float] = {m: 0.0 for m in MODELS}
         n_parameters: dict[str, int] = {}
         architecture: dict[str, str] = {}
 
         for k, ((train_part, test_idx), fold_root) in enumerate(zip(outer, fold_roots)):
             inner_seed, smote_seed, init_seed, batch_seed = _seeds(fold_root, 4)
+            # The first seed is the one a single-seed run uses, so n_seeds=1
+            # reproduces earlier results; the others come from a child stream.
+            init_seeds = [init_seed]
+            if n_seeds > 1:
+                extra = np.random.SeedSequence([init_seed, 1])
+                init_seeds += _seeds(extra, n_seeds - 1)
             inner_tr, inner_va = stratified_kfold(
                 y[train_part], validation_folds, random_state=inner_seed
             )[0]
@@ -370,58 +393,65 @@ def run_benchmark(
                 X_train, y_train, n_synthetic = X_fold[train_idx], y[train_idx], 0
 
             for model_name in MODELS:
-                with torch.random.fork_rng(devices=[]):
-                    torch.manual_seed(init_seed)
-                    built = hybrid(X.shape[1])
-                    model = classical_baseline(built) if model_name == "control" else built
-                    if not isinstance(model, BinaryClassifierBase):
-                        raise TypeError(
-                            f"hybrid must return a hybrid classifier; got {type(model).__name__}."
+                seed_scores: list[float] = []
+                for seed_index, seed in enumerate(init_seeds):
+                    with torch.random.fork_rng(devices=[]):
+                        torch.manual_seed(seed)
+                        built = hybrid(X.shape[1])
+                        model = classical_baseline(built) if model_name == "control" else built
+                        if not isinstance(model, BinaryClassifierBase):
+                            raise TypeError(
+                                f"hybrid must return a hybrid classifier; "
+                                f"got {type(model).__name__}."
+                            )
+                        mcc, threshold, secs, epochs = _fit_and_score(
+                            model,
+                            loss,
+                            X_train,
+                            np.asarray(y_train, dtype=np.int64),
+                            X_fold[val_idx],
+                            y[val_idx],
+                            X_fold[test_idx],
+                            y[test_idx],
+                            lr=lr,
+                            max_epochs=max_epochs,
+                            batch_size=batch_size,
+                            patience=patience,
+                            batch_seed=batch_seed,
                         )
-                    mcc, threshold, secs, epochs = _fit_and_score(
-                        model,
-                        loss,
-                        X_train,
-                        np.asarray(y_train, dtype=np.int64),
-                        X_fold[val_idx],
-                        y[val_idx],
-                        X_fold[test_idx],
-                        y[test_idx],
-                        lr=lr,
-                        max_epochs=max_epochs,
-                        batch_size=batch_size,
-                        patience=patience,
-                        batch_seed=batch_seed,
+                    n_parameters[model_name] = model.count_parameters()
+                    models.setdefault(name, {})[model_name] = {
+                        "class": type(model).__name__,
+                        "config": model.get_config(),
+                    }
+                    architecture[model_name] = type(model).__name__
+                    seed_scores.append(mcc)
+                    seconds[model_name] += secs
+                    folds.append(
+                        FoldResult(
+                            name,
+                            model_name,
+                            k,
+                            np.sort(train_idx),
+                            np.sort(val_idx),
+                            np.sort(test_idx),
+                            n_synthetic,
+                            split_seed,
+                            inner_seed,
+                            smote_seed,
+                            seed,
+                            batch_seed,
+                            threshold,
+                            mcc,
+                            secs,
+                            epochs,
+                            _device_name(model),
+                            seed_index,
+                        )
                     )
-                n_parameters[model_name] = model.count_parameters()
-                models.setdefault(name, {})[model_name] = {
-                    "class": type(model).__name__,
-                    "config": model.get_config(),
-                }
-                architecture[model_name] = type(model).__name__
-                scores[model_name].append(mcc)
-                seconds[model_name] += secs
-                folds.append(
-                    FoldResult(
-                        name,
-                        model_name,
-                        k,
-                        np.sort(train_idx),
-                        np.sort(val_idx),
-                        np.sort(test_idx),
-                        n_synthetic,
-                        split_seed,
-                        inner_seed,
-                        smote_seed,
-                        init_seed,
-                        batch_seed,
-                        threshold,
-                        mcc,
-                        secs,
-                        epochs,
-                        _device_name(model),
-                    )
-                )
+                scores[model_name].append(float(np.mean(seed_scores)))
+                if n_seeds > 1:
+                    seed_stds[model_name].append(float(np.std(seed_scores, ddof=1)))
 
         hybrid_scores, control_scores = scores["hybrid"], scores["control"]
         try:
@@ -445,6 +475,11 @@ def run_benchmark(
                     "n_parameters": n_parameters[model_name],
                     "mcc_mean": mean,
                     "mcc_std": float(fold_scores.std(ddof=1)),
+                    "n_seeds": n_seeds,
+                    # Undefined with one seed: None, not NaN, so records compare equal.
+                    "mcc_seed_std": (
+                        float(np.mean(seed_stds[model_name])) if n_seeds > 1 else None
+                    ),
                     "mcc_per_kparam": parameter_efficiency(n_parameters[model_name], mean),
                     "fold_mcc": tuple(float(s) for s in fold_scores),
                     "train_seconds": seconds[model_name],

@@ -91,6 +91,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   seeds, fold indices, dependency versions, devices used, dataset fingerprints and metrics,
   written by `run_benchmark(record_path=...)`; `load_record` reports version differences from
   the current environment and `rerun_benchmark` repeats the run
+- `run_benchmark(n_seeds=...)`: each fold trained with several recorded initialisation seeds,
+  fold scores averaged over them for the paired test, and the across-seed spread reported as
+  `mcc_seed_std`
 - `hqnn_forge.utils.permute_quantum_layer`: the permutation null for quantum ablation, which
   runs the circuit and shuffles its readouts across the batch with a seedable generator, so
   they keep their distribution and lose only their link to the input

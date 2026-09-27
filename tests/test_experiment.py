@@ -280,3 +280,16 @@ class TestWriting:
         with pytest.raises(TypeError, match="cannot record a Linear"):
             save_record(broken, path)
         assert not path.exists()
+
+
+class TestSeveralSeedsInTheRecord:
+    def test_seed_indices_are_recorded_and_rerun(self, tmp_path: Path) -> None:
+        path = tmp_path / "seeds.json"
+        data = {"first": _data(0)}
+        run_benchmark(data, _hybrid, record_path=path, n_seeds=2, **SETTINGS)
+        record, _ = load_record(path)
+        assert record["config"]["settings"]["n_seeds"] == 2
+        assert [f["seed_index"] for f in record["folds"]][:4] == [0, 1, 0, 1]
+        assert len({f["init_seed"] for f in record["seeds"]["folds"]}) > 1
+        again = rerun_benchmark(record, data)
+        assert [f.mcc for f in again.folds] == [f["mcc"] for f in record["folds"]]
