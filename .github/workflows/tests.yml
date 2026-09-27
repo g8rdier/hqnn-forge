@@ -47,6 +47,11 @@ jobs:
     - name: Install dependencies from the lockfile
       run: uv sync --locked --all-extras
 
+    # The pre-commit hook refuses large files at commit time, but hooks are
+    # opt-in per clone; this applies the same limit to every tracked file.
+    - name: Refuse large files
+      run: uv run --frozen python .github/scripts/check_large_files.py
+
     - name: Lint
       run: uv run --frozen ruff check .
 

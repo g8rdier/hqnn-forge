@@ -198,7 +198,8 @@ uvx pre-commit install
 
 The `dev` extra brings `ruff`, `mypy` and `pytest`. `uvx pre-commit install` registers the hooks
 in `.pre-commit-config.yaml`, which run `ruff check --fix` and `ruff format` on every commit with
-the settings from `pyproject.toml`. The hooks call ruff through `uv run`, so they need
+the settings from `pyproject.toml`, and refuse a commit that adds a file over 1000 KB (a dataset,
+a checkpoint). CI applies the same size limit to every tracked file. The hooks call ruff through `uv run`, so they need
 [uv](https://docs.astral.sh/uv/getting-started/installation/) on the `PATH` and use the ruff
 version pinned in `uv.lock`, the same one CI uses. To run them over the whole tree at any time:
 
