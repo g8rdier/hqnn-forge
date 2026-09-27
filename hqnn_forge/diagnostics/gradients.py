@@ -134,7 +134,7 @@ class GradientVarianceResult:
 
 
 def _resolve_tensors(
-    target: nn.Module, caller: str = "gradient_variance", *, single: bool = False
+    target: nn.Module, caller: str = "gradient_variance"
 ) -> tuple[nn.Module, dict[str, torch.Tensor], str, int, int]:
     """
     Return ``(layer, tensors, angles, n_qubits, n_layers)`` for the layer
@@ -147,9 +147,7 @@ def _resolve_tensors(
     ``"weights"``, or the only tensor there is.  A layer with several tensors
     and none named ``weights`` is refused, since which of them is the angles
     would be a guess.  ``n_layers`` falls back to the angle tensor's first
-    dimension when the layer has no ``n_layers`` attribute.  With *single*, a
-    layer with more than one tensor is refused with ``NotImplementedError``
-    before the angle tensor is looked for.
+    dimension when the layer has no ``n_layers`` attribute.
     """
     layer = getattr(target, "quantum_layer", target)
     qlayer = getattr(layer, "qlayer", None)
@@ -165,11 +163,6 @@ def _resolve_tensors(
             f"got {type(target).__name__}."
         )
     tensors = dict(qlayer.qnode_weights.items())
-    if single and len(tensors) != 1:
-        raise NotImplementedError(
-            f"{caller} measures a single trainable weight tensor; "
-            f"{type(layer).__name__} has {len(tensors)} ({', '.join(sorted(tensors))})."
-        )
     if len(tensors) == 1:
         (angles,) = tensors
     elif "weights" in tensors:
@@ -188,18 +181,6 @@ def _resolve_tensors(
         n_qubits,
         n_layers if isinstance(n_layers, int) else int(tensors[angles].shape[0]),
     )
-
-
-def _resolve_weights(
-    target: nn.Module, caller: str = "gradient_variance"
-) -> tuple[nn.Module, torch.Tensor, int, int]:
-    """
-    ``(layer, weights, n_qubits, n_layers)`` for a layer with exactly one
-    trainable tensor: the Fisher diagnostics, which do not yet measure
-    several.  A layer with more is refused rather than measured in part.
-    """
-    layer, tensors, angles, n_qubits, n_layers = _resolve_tensors(target, caller, single=True)
-    return layer, tensors[angles], n_qubits, n_layers
 
 
 def _make_init(

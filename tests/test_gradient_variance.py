@@ -420,14 +420,13 @@ class TestSeveralTensors:
             "mean_variance",
         }
 
-    def test_fisher_still_refuses_several_tensors(self) -> None:
+    def test_fisher_measures_every_tensor_too(self) -> None:
+        # Once refused (#308); see tests/test_fisher_multi_tensor.py.
         from hqnn_forge.diagnostics import fisher_information_matrix
 
-        with pytest.raises(NotImplementedError, match="input_scaling, weights"):
-            fisher_information_matrix(self._scaled(), torch.zeros(2, 2))
-        # Without a 'weights' tensor too: the refusal, not the init's ambiguity error.
-        with pytest.raises(NotImplementedError, match="w1, w2"):
-            fisher_information_matrix(_two_weight_layer(), torch.zeros(2, 2))
+        layer = self._scaled()
+        spectrum = fisher_information_matrix(layer, torch.zeros(2, 2))
+        assert spectrum.n_params == sum(p.numel() for p in layer.qlayer.qnode_weights.values())
 
 
 class TestDefaultDevice:
