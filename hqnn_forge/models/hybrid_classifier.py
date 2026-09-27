@@ -124,7 +124,8 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
     encoding_type:
         The quantum embedding.  Default: ``"angle"``.
 
-        * ``"angle"``: one rotation per feature (:class:`~hqnn_forge.encoding.QuantumEncodingLayer`).
+        * ``"angle"``: one rotation per feature
+          (:class:`~hqnn_forge.encoding.QuantumEncodingLayer`).
         * ``"iqp"``: Hadamards, ``RZ(x_i)`` and pairwise ``x_i x_j`` phases
           (:class:`~hqnn_forge.encoding.iqp_embedding.IQPEncodingLayer`).
         * ``"reuploading"``: the angle embedding repeated before every
@@ -181,6 +182,13 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
     trainable_input_scaling:
         With ``encoding_type="reuploading"`` only: a trainable per-upload
         scale on the features, initialised to 1.  Default: ``False``.
+    shots:
+        ``None`` (default): exact expectation values.  An ``int``: each circuit
+        is sampled that many times, as on hardware, so predictions carry shot
+        noise.  Requires ``diff_method="parameter-shift"`` (or
+        ``"finite-diff"``); ``adjoint`` and ``backprop`` need the exact state.
+        :func:`hqnn_forge.noise.apply_shots` evaluates a model with a finite
+        shot count without rebuilding it.
 
     Attributes
     ----------
@@ -221,6 +229,7 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
         noise_method: NoiseMethod = "density",
         noise_trajectories: int = 1,
         trainable_input_scaling: bool = False,
+        shots: int | None = None,
     ) -> None:
         super().__init__()
         self._config = dict(
@@ -243,6 +252,7 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
             noise_method=noise_method,
             noise_trajectories=noise_trajectories,
             trainable_input_scaling=trainable_input_scaling,
+            shots=shots,
         )
 
         n_readouts = self._build_trunk(
@@ -265,6 +275,7 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
             noise_method=noise_method,
             noise_trajectories=noise_trajectories,
             trainable_input_scaling=trainable_input_scaling,
+            shots=shots,
         )
 
         # ── Classical head ────────────────────────────────────────────────

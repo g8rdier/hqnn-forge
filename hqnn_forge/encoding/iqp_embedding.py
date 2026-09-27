@@ -44,7 +44,9 @@ from hqnn_forge.encoding._common import (
     measure_z,
     readout_wires,
     resolve_device,
+    shots_repr,
     validate_circuit_options,
+    validate_shots,
     variational_weight_shape,
 )
 from hqnn_forge.noise import NoiseMethod, Position, TrainingNoiseMixin
@@ -124,11 +126,13 @@ def build_iqp_qnode(
     diff_method: DiffMethod = "adjoint",
     entangler: Entangler = "ring",
     readout: Readout = "all",
+    shots: int | None = None,
 ) -> qml.QNode:
     """Build and return a PennyLane QNode for the IQP feature map."""
     if n_qubits < 2:
         raise ValueError(f"n_qubits must be ≥ 2; got {n_qubits}.")
 
+    validate_shots(shots, diff_method)
     device = resolve_device(device_name, n_qubits)
     circuit_fn = _make_iqp_embedding_circuit(n_qubits, n_layers, n_repeats, entangler, readout)
 
@@ -137,6 +141,7 @@ def build_iqp_qnode(
         device=device,
         diff_method=diff_method,
         interface="torch",
+        shots=shots,
     )
     # Batched inputs: see hqnn_forge.encoding._common.expand_batch_dimension
     return expand_batch_dimension(qnode, diff_method)
@@ -167,6 +172,7 @@ class IQPEncodingLayer(TrainingNoiseMixin, nn.Module):
         noise_position: Position = "all",
         noise_method: NoiseMethod = "density",
         noise_trajectories: int = 1,
+        shots: int | None = None,
     ) -> None:
         super().__init__()
 
@@ -185,6 +191,7 @@ class IQPEncodingLayer(TrainingNoiseMixin, nn.Module):
             diff_method=diff_method,
             entangler=entangler,
             readout=readout,
+            shots=shots,
         )
 
         weight_shapes: dict[str, tuple[int, ...]] = {
@@ -194,8 +201,15 @@ class IQPEncodingLayer(TrainingNoiseMixin, nn.Module):
         self.qlayer = qml.qnn.TorchLayer(qnode, weight_shapes)
         # Training-time depolarizing noise; see QuantumEncodingLayer.
         self._init_training_noise(
-            qnode, n_qubits, noise_level, noise_position, noise_method, noise_trajectories
+            qnode,
+            n_qubits,
+            noise_level,
+            noise_position,
+            noise_method,
+            noise_trajectories,
+            shots=shots,
         )
+        self.shots = shots
 
     def prepare_inputs(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -220,5 +234,6 @@ class IQPEncodingLayer(TrainingNoiseMixin, nn.Module):
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "
             f"n_repeats={self.n_repeats}, "
-            f"n_params={sum(p.numel() for p in self.parameters())}{self._noise_repr()}"
+            f"n_params={sum(p.numel() for p in self.parameters())}"
+            f"{self._noise_repr()}{shots_repr(self.shots)}"
         )

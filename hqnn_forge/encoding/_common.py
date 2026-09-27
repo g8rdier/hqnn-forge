@@ -30,7 +30,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 RotationAxis = Literal["X", "Y", "Z"]
 DiffMethod = Literal["adjoint", "parameter-shift", "backprop", "finite-diff"]
-DeviceName = Literal["lightning.gpu", "lightning.kokkos", "lightning.qubit", "default.qubit"]
+#: The simulators the fallback chain knows.  Any other PennyLane device name
+#: (a plugin such as ``"qiskit.aer"``, or hardware) is accepted too, and
+#: constructed exactly as given: see :func:`resolve_device`.
+KnownDevice = Literal["lightning.gpu", "lightning.kokkos", "lightning.qubit", "default.qubit"]
+KNOWN_DEVICES: tuple[str, ...] = get_args(KnownDevice)
+#: A PennyLane device name: one of :data:`KNOWN_DEVICES`, or any other.
+DeviceName = str
 Entangler = Literal["ring", "strongly_entangling", "hardware_efficient"]
 ENTANGLERS: tuple[str, ...] = ("ring", "strongly_entangling", "hardware_efficient")
 _ENTANGLER_CHOICES = "'ring', 'strongly_entangling' or 'hardware_efficient'"
@@ -220,6 +226,37 @@ def is_out_of_memory(exc: BaseException) -> bool:
     )
 
 
+SHOT_FREE_METHODS = ("adjoint", "backprop")
+
+
+def validate_shots(shots: int | None, diff_method: str) -> None:
+    """
+    Raise ``ValueError`` unless ``shots`` is ``None`` or a positive ``int``
+    usable with ``diff_method``.
+
+    ``shots=None`` gives exact expectation values.  A finite shot count samples
+    them, as hardware does, and rules out ``adjoint`` and ``backprop``: both
+    differentiate the simulator's state vector, which sampling does not give
+    (PennyLane refuses even the forward pass).  ``parameter-shift`` is the
+    method that runs on hardware; ``finite-diff`` also works.
+    """
+    if shots is None:
+        return
+    if isinstance(shots, bool) or not isinstance(shots, int) or shots < 1:
+        raise ValueError(f"shots must be None or a positive int; got {shots!r}.")
+    if diff_method in SHOT_FREE_METHODS:
+        raise ValueError(
+            f"shots={shots} samples the expectation values, and diff_method="
+            f"{diff_method!r} needs the exact state vector; use diff_method="
+            f"'parameter-shift', the method that also runs on hardware."
+        )
+
+
+def shots_repr(shots: int | None) -> str:
+    """The ``extra_repr`` fragment for a finite shot count; empty for exact values."""
+    return "" if shots is None else f", shots={shots}"
+
+
 def resolve_device(device_name: DeviceName, n_qubits: int) -> qml.devices.Device:
     """
     Create *device_name*, falling back along :data:`FALLBACK_CHAIN` when a
@@ -230,9 +267,11 @@ def resolve_device(device_name: DeviceName, n_qubits: int) -> qml.devices.Device
     or before the requested device are skipped, so ``lightning.qubit`` falls
     straight to ``default.qubit`` and ``default.qubit`` has no fallback.
 
-    A name outside :data:`DeviceName` is refused before anything is tried: a
-    typo such as ``"default.qbit"`` would otherwise fail like a missing plugin
-    and quietly run on another simulator.
+    Only the four simulators in :data:`KNOWN_DEVICES` fall back.  Any other
+    name -- a PennyLane plugin device or hardware -- is constructed exactly as
+    given, and PennyLane's error surfaces if it cannot be: a typo such as
+    ``"default.qbit"`` raises rather than quietly running on another
+    simulator.
 
     Parameters
     ----------
@@ -251,18 +290,17 @@ def resolve_device(device_name: DeviceName, n_qubits: int) -> qml.devices.Device
 
     Raises
     ------
-    ValueError
-        If *device_name* is not one of :data:`DeviceName`.
+    The plugin's own exception for a name outside :data:`KNOWN_DEVICES` that
+    cannot be constructed (``DeviceError`` for an unknown name).
     The backend's own exception if the state vector does not fit in memory
     (see :func:`is_out_of_memory`), or if every step of the chain fails,
     which can only happen if PennyLane itself is broken (``default.qubit``
     has no dependencies).
     """
-    if device_name not in get_args(DeviceName):
-        raise ValueError(
-            f"device_name must be one of {', '.join(map(repr, get_args(DeviceName)))}; "
-            f"got {device_name!r}."
-        )
+    if device_name not in KNOWN_DEVICES:
+        dev = qml.device(device_name, wires=n_qubits)
+        logger.debug("Quantum device initialised: %s (%d qubits)", device_name, n_qubits)
+        return dev
     start = FALLBACK_CHAIN.index(device_name) + 1 if device_name in FALLBACK_CHAIN else 0
     candidates = [device_name, *FALLBACK_CHAIN[start:]]
     for attempt, name in enumerate(candidates):

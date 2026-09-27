@@ -20,8 +20,9 @@ Design Rationale
   single forward + backward pass and scales as O(p) in the number of parameters p,
   making it strictly superior to the parameter-shift rule for state-vector sims.
   The GPU-accelerated ``lightning.gpu`` and ``lightning.kokkos`` devices support
-  the same method; :func:`~hqnn_forge.encoding._common.resolve_device` falls back through ``lightning.qubit`` to
-  ``default.qubit`` when a backend is not installed or has no usable hardware.
+  the same method; :func:`~hqnn_forge.encoding._common.resolve_device` falls back
+  through ``lightning.qubit`` to ``default.qubit`` when a backend is not
+  installed or has no usable hardware.
 
 * **Initialisation** — weights are *not* initialised here; callers should use
   `hqnn_forge.initializers.restricted_normal_init_` on the returned layer.  Note
@@ -66,7 +67,9 @@ from hqnn_forge.encoding._common import (
     measure_z,
     readout_wires,
     resolve_device,
+    shots_repr,
     validate_circuit_options,
+    validate_shots,
     variational_weight_shape,
 )
 from hqnn_forge.noise import NoiseMethod, Position, TrainingNoiseMixin
@@ -228,6 +231,7 @@ def build_encoding_qnode(
     diff_method: DiffMethod = "adjoint",
     entangler: Entangler = "ring",
     readout: Readout = "all",
+    shots: int | None = None,
 ) -> qml.QNode:
     """
     Build and return a PennyLane QNode for the angle-embedding feature map.
@@ -287,6 +291,7 @@ def build_encoding_qnode(
     if n_qubits < 2:
         raise ValueError(f"n_qubits must be ≥ 2 for the CNOT entangling ring; got {n_qubits}.")
 
+    validate_shots(shots, diff_method)
     device = resolve_device(device_name, n_qubits)
     circuit_fn = _make_angle_embedding_circuit(n_qubits, n_layers, rotation, entangler, readout)
 
@@ -295,6 +300,7 @@ def build_encoding_qnode(
         device=device,
         diff_method=diff_method,
         interface="torch",  # enables PyTorch autograd interop
+        shots=shots,
     )
     qnode = expand_batch_dimension(qnode, diff_method)
 
@@ -430,6 +436,7 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
         noise_position: Position = "all",
         noise_method: NoiseMethod = "density",
         noise_trajectories: int = 1,
+        shots: int | None = None,
     ) -> None:
         super().__init__()
 
@@ -448,6 +455,7 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
             diff_method=diff_method,
             entangler=entangler,
             readout=readout,
+            shots=shots,
         )
 
         # Declare the trainable weight tensor shape for TorchLayer ─────────
@@ -464,8 +472,15 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
 
         # Training-time depolarizing noise (see hqnn_forge.noise) ─────────
         self._init_training_noise(
-            qnode, n_qubits, noise_level, noise_position, noise_method, noise_trajectories
+            qnode,
+            n_qubits,
+            noise_level,
+            noise_position,
+            noise_method,
+            noise_trajectories,
+            shots=shots,
         )
+        self.shots = shots
 
     # ------------------------------------------------------------------
     # Forward pass
@@ -529,7 +544,7 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
             options += f", entangler={self.entangler!r}"
         if self.readout != "all":
             options += f", readout={self.readout!r}"
-        options += self._noise_repr()
+        options += self._noise_repr() + shots_repr(self.shots)
         return (
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "

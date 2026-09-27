@@ -96,7 +96,9 @@ from hqnn_forge.encoding._common import (
     measure_z,
     readout_wires,
     resolve_device,
+    shots_repr,
     validate_circuit_options,
+    validate_shots,
     variational_weight_shape,
 )
 from hqnn_forge.noise import NoiseMethod, Position, TrainingNoiseMixin
@@ -212,6 +214,7 @@ def build_data_reuploading_qnode(
     trainable_input_scaling: bool = False,
     entangler: Entangler = "ring",
     readout: Readout = "all",
+    shots: int | None = None,
 ) -> qml.QNode:
     """
     Build and return a PennyLane QNode for the data re-uploading circuit.
@@ -253,6 +256,7 @@ def build_data_reuploading_qnode(
             "global phase, so a single upload leaves the outputs independent of the inputs."
         )
 
+    validate_shots(shots, diff_method)
     device = resolve_device(device_name, n_qubits)
     circuit_fn = _make_data_reuploading_circuit(
         n_qubits, n_layers, rotation, trainable_input_scaling, entangler, readout
@@ -263,6 +267,7 @@ def build_data_reuploading_qnode(
         device=device,
         diff_method=diff_method,
         interface="torch",
+        shots=shots,
     )
     qnode = expand_batch_dimension(qnode, diff_method)
 
@@ -392,6 +397,7 @@ class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
         noise_position: Position = "all",
         noise_method: NoiseMethod = "density",
         noise_trajectories: int = 1,
+        shots: int | None = None,
     ) -> None:
         super().__init__()
 
@@ -412,6 +418,7 @@ class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
             trainable_input_scaling=trainable_input_scaling,
             entangler=entangler,
             readout=readout,
+            shots=shots,
         )
 
         weight_shapes: dict[str, tuple[int, ...]] = {
@@ -427,8 +434,15 @@ class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
             with torch.no_grad():
                 self.qlayer.input_scaling.fill_(1.0)
         self._init_training_noise(
-            qnode, n_qubits, noise_level, noise_position, noise_method, noise_trajectories
+            qnode,
+            n_qubits,
+            noise_level,
+            noise_position,
+            noise_method,
+            noise_trajectories,
+            shots=shots,
         )
+        self.shots = shots
 
     # ------------------------------------------------------------------
     def prepare_inputs(self, x: torch.Tensor) -> torch.Tensor:
@@ -480,7 +494,7 @@ class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
             options += f", entangler={self.entangler!r}"
         if self.readout != "all":
             options += f", readout={self.readout!r}"
-        options += self._noise_repr()
+        options += self._noise_repr() + shots_repr(self.shots)
         return (
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "

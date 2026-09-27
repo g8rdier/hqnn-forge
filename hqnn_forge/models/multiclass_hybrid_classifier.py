@@ -73,7 +73,7 @@ strategy:
 use_classical_encoder, dropout_p, device_name, diff_method, init_strategy,
 encoding_type, embedding_rotation, entangler, readout, encoder_activation,
 init_std, noise_level, noise_position, noise_method, noise_trajectories,
-trainable_input_scaling:
+trainable_input_scaling, shots:
     As for :class:`~hqnn_forge.models.HybridBinaryClassifier`.
 """
 
@@ -119,7 +119,7 @@ class MulticlassHybridClassifier(QuantumTrunk, ClassifierBase):
     use_classical_encoder, dropout_p, device_name, diff_method,
     init_strategy, encoding_type, embedding_rotation, entangler, readout,
     encoder_activation, init_std, noise_level, noise_position, noise_method,
-    noise_trajectories, trainable_input_scaling:
+    noise_trajectories, trainable_input_scaling, shots:
         The trunk's options, exactly as for
         :class:`~hqnn_forge.models.HybridBinaryClassifier`.  With
         ``readout="first"`` every class head reads ⟨Z_0⟩ alone.
@@ -170,6 +170,7 @@ class MulticlassHybridClassifier(QuantumTrunk, ClassifierBase):
         noise_method: NoiseMethod = "density",
         noise_trajectories: int = 1,
         trainable_input_scaling: bool = False,
+        shots: int | None = None,
     ) -> None:
         super().__init__()
         self._config = dict(
@@ -194,6 +195,7 @@ class MulticlassHybridClassifier(QuantumTrunk, ClassifierBase):
             noise_method=noise_method,
             noise_trajectories=noise_trajectories,
             trainable_input_scaling=trainable_input_scaling,
+            shots=shots,
         )
 
         if n_classes < 2:
@@ -224,6 +226,7 @@ class MulticlassHybridClassifier(QuantumTrunk, ClassifierBase):
             noise_method=noise_method,
             noise_trajectories=noise_trajectories,
             trainable_input_scaling=trainable_input_scaling,
+            shots=shots,
         )
 
         # ── Class heads: one row per class ────────────────────────────────

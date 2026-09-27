@@ -178,6 +178,7 @@ class QuantumTrunk(nn.Module):
         noise_method: NoiseMethod,
         noise_trajectories: int,
         trainable_input_scaling: bool = False,
+        shots: int | None = None,
     ) -> int:
         """
         Build ``classical_encoder``, ``quantum_layer`` and ``dropout`` on ``self``.
@@ -236,6 +237,7 @@ class QuantumTrunk(nn.Module):
                 noise_position=noise_position,
                 noise_method=noise_method,
                 noise_trajectories=noise_trajectories,
+                shots=shots,
             )
         elif encoding_type == "iqp":
             self.quantum_layer = IQPEncodingLayer(
@@ -250,6 +252,7 @@ class QuantumTrunk(nn.Module):
                 noise_position=noise_position,
                 noise_method=noise_method,
                 noise_trajectories=noise_trajectories,
+                shots=shots,
             )
         elif encoding_type == "amplitude":
             self.quantum_layer = AmplitudeEncodingLayer(
@@ -264,6 +267,7 @@ class QuantumTrunk(nn.Module):
                 noise_position=noise_position,
                 noise_method=noise_method,
                 noise_trajectories=noise_trajectories,
+                shots=shots,
             )
         else:
             self.quantum_layer = DataReuploadingLayer(
@@ -279,6 +283,7 @@ class QuantumTrunk(nn.Module):
                 noise_position=noise_position,
                 noise_method=noise_method,
                 noise_trajectories=noise_trajectories,
+                shots=shots,
             )
 
         # ── Dropout ───────────────────────────────────────────────────────

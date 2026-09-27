@@ -55,8 +55,8 @@ FORMAT_VERSION: int = 1
 #: Constructor arguments whose override cannot invalidate the stored weights:
 #: the two simulator knobs, plus the train-mode-only regularisers --
 #: ``dropout_p`` (``nn.Dropout`` has no parameters of its own) and the
-#: training-noise options, which only replace the circuit in train mode.  All
-#: of these are inert in the eval-mode model that comes back.
+#: training-noise options, which only replace the circuit in train mode, and
+#: ``shots``, which samples the same circuit.  None of them touches a weight.
 #: ``load_checkpoint`` takes these without an opt-in; every other argument
 #: describes the circuit the weights were trained in, so overriding it needs
 #: ``allow_architecture_override=True``.
@@ -69,6 +69,7 @@ WEIGHT_SAFE_ARGS: frozenset[str] = frozenset(
         "noise_position",
         "noise_method",
         "noise_trajectories",
+        "shots",
     }
 )
 
@@ -91,6 +92,7 @@ _LEGACY_DEFAULTS: dict[str, Any] = {
     "noise_method": "density",  # the only method before Pauli trajectories
     "noise_trajectories": 1,
     "trainable_input_scaling": False,  # added with encoding_type="reuploading"
+    "shots": None,  # exact expectation values
 }
 
 #: Set by ``load_checkpoint`` on a model it rebuilt under a forced
@@ -203,10 +205,11 @@ def load_checkpoint(
     **overrides:
         Constructor arguments that replace the stored ones.  Without
         ``allow_architecture_override``, only :data:`WEIGHT_SAFE_ARGS`
-        (``device_name``, ``diff_method``, ``dropout_p`` and the four
-        ``noise_*`` training-noise options) may be given -- typically to run a saved model on
-        a different simulator, or to fine-tune it at a different dropout rate
-        or training-noise level.
+        (``device_name``, ``diff_method``, ``dropout_p``, the four
+        ``noise_*`` training-noise options and ``shots``) may be given --
+        typically to run a saved model on a different simulator or with a
+        finite shot count, or to fine-tune it at a different dropout rate or
+        training-noise level.
 
     Returns
     -------
