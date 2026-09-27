@@ -57,6 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   many more (12 of 24 for the ring ansatz at 4 qubits and 2 layers).  `n_effective_params`
   appears in `to_dict()` and the printed summary; templates are decomposed before counting
   and broadcast tapes are rejected
+- `hqnn_forge.kernels.overlap_kernel_matrix`: the kernel estimated entry by entry from the
+  compute-uncompute circuit with optional shots and any device, and `nearest_psd` to
+  project an estimate onto the positive semi-definite cone
 
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from
