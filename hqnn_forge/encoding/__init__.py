@@ -30,6 +30,15 @@ readout_wires           Wires measured under a readout option.
 measure_z               The ⟨Z_i⟩ measurements a circuit returns.
 input_scaling_shape     Shape of the re-uploading QNode's input_scaling weights.
 
+The encoder interface:
+
+EncodingLayer           Protocol: qlayer, n_qubits, prepare_inputs; forward is
+                        qlayer(prepare_inputs(x)).  The contract is spelled out
+                        in hqnn_forge._encoding_contract.
+CircuitLayer            Protocol: qlayer and n_qubits, what the diagnostics read.
+is_encoding_layer       Runtime check for EncodingLayer (isinstance cannot do it).
+is_circuit_layer        Runtime check for CircuitLayer.
+
 Option types, for annotating calls:
 
 DeviceName              Literal of the supported PennyLane devices.
@@ -40,6 +49,12 @@ Readout                 Literal of the readout options.
 RotationAxis            Literal of the embedding rotation axes.
 """
 
+from hqnn_forge._encoding_contract import (
+    CircuitLayer,
+    EncodingLayer,
+    is_circuit_layer,
+    is_encoding_layer,
+)
 from hqnn_forge.encoding.amplitude_embedding import (
     AmplitudeEncodingLayer,
     build_amplitude_qnode,
@@ -68,9 +83,11 @@ from hqnn_forge.noise import Position
 __all__: list[str] = [
     "AmplitudeEncodingLayer",
     "AngleEmbeddingQNode",
+    "CircuitLayer",
     "DataReuploadingLayer",
     "DeviceName",
     "DiffMethod",
+    "EncodingLayer",
     "Entangler",
     "IQPEncodingLayer",
     "Position",
@@ -83,6 +100,8 @@ __all__: list[str] = [
     "build_encoding_qnode",
     "build_iqp_qnode",
     "input_scaling_shape",
+    "is_circuit_layer",
+    "is_encoding_layer",
     "measure_z",
     "readout_wires",
 ]

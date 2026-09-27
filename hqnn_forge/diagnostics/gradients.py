@@ -62,6 +62,7 @@ from typing import Any, Literal
 import torch
 import torch.nn as nn
 
+from hqnn_forge._encoding_contract import CircuitLayer
 from hqnn_forge._resolve import resolve_encoding_layer
 from hqnn_forge.initializers import block_local_init_, restricted_normal_init_
 from hqnn_forge.initializers.restricted_variance import _not_restricting_ignored
@@ -135,7 +136,7 @@ class GradientVarianceResult:
 
 def _resolve_tensors(
     target: nn.Module, caller: str = "gradient_variance", *, single: bool = False
-) -> tuple[nn.Module, dict[str, torch.Tensor], str, int, int]:
+) -> tuple[CircuitLayer, dict[str, torch.Tensor], str, int, int]:
     """
     Return ``(layer, tensors, angles, n_qubits, n_layers)`` for the layer
     inside *target*.  *caller* names the public function in the error messages.
@@ -180,7 +181,7 @@ def _resolve_tensors(
 
 def _resolve_weights(
     target: nn.Module, caller: str = "gradient_variance"
-) -> tuple[nn.Module, torch.Tensor, int, int]:
+) -> tuple[CircuitLayer, torch.Tensor, int, int]:
     """
     ``(layer, weights, n_qubits, n_layers)`` for a layer with exactly one
     trainable tensor: the Fisher diagnostics, which do not yet measure
@@ -295,6 +296,9 @@ def gradient_variance(
         name: torch.empty((n_samples, *t.shape), dtype=torch.float64)
         for name, t in tensors.items()
     }
+    # resolve_encoding_layer checked this; the narrowing adds the module API
+    # the CircuitLayer protocol cannot declare.
+    assert isinstance(layer, nn.Module)
     try:
         with eval_mode(layer):
             for s in range(n_samples):

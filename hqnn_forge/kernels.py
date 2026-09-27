@@ -76,35 +76,26 @@ References
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 import pennylane as qml
 import torch
 from torch import nn
 
-from hqnn_forge._resolve import resolve_encoding_layer
+from hqnn_forge._encoding_contract import EncodingLayer
+from hqnn_forge._resolve import require_prepare_inputs, resolve_encoding_layer
 
 __all__ = ["encoded_states", "kernel_from_states", "quantum_kernel_matrix"]
 
 
-PrepareInputs = Callable[[torch.Tensor], torch.Tensor]
-
-
-def _resolve_layer(layer: nn.Module, caller: str) -> tuple[qml.qnn.TorchLayer, int, PrepareInputs]:
+def _resolve_layer(layer: nn.Module, caller: str) -> EncodingLayer:
     """
-    ``(qlayer, n_qubits, prepare_inputs)`` of an encoding layer, or raise.
+    ``layer`` as an :class:`~hqnn_forge.encoding.EncodingLayer`, or raise.
 
     A hybrid classifier is refused, not unwrapped: the kernel is defined by the
     encoder alone, and the classifier's classical encoder would sit between
     ``X`` and the feature map (see ``resolve_encoding_layer``).
     """
-    _, qlayer, n_qubits = resolve_encoding_layer(layer, caller, allow_model=False)
-    prepare = getattr(layer, "prepare_inputs", None)
-    if not callable(prepare):
-        raise TypeError(
-            f"{caller} expects an encoding layer with a prepare_inputs method, which "
-            f"{type(layer).__name__} does not have."
-        )
+    found, qlayer, _ = resolve_encoding_layer(layer, caller, allow_model=False)
+    encoder = require_prepare_inputs(found, caller)
     # The level=0 tape drops every transform on the QNode and the replay runs
     # on default.qubit, so a transformed circuit (apply_depolarizing_noise's
     # qml.noise.insert, qml.add_noise, a compile pass) would silently give the
@@ -121,10 +112,10 @@ def _resolve_layer(layer: nn.Module, caller: str) -> tuple[qml.qnn.TorchLayer, i
             f"the layer's QNode carries {unknown}, which the replay would drop.  Inside "
             f"apply_depolarizing_noise, call it outside the block."
         )
-    return qlayer, n_qubits, prepare
+    return encoder
 
 
-def _prepare(X: torch.Tensor, prepare: PrepareInputs, name: str) -> torch.Tensor:
+def _prepare(X: torch.Tensor, encoder: EncodingLayer, name: str) -> torch.Tensor:
     """Check ``X`` is a non-empty 2-D tensor and apply the layer's ``prepare_inputs``."""
     if not isinstance(X, torch.Tensor):
         raise TypeError(f"{name} must be a torch.Tensor; got {type(X).__name__}.")
@@ -134,7 +125,7 @@ def _prepare(X: torch.Tensor, prepare: PrepareInputs, name: str) -> torch.Tensor
         raise ValueError(f"{name} has no samples.")
     # The same validation and transform forward applies (width and finiteness
     # checks, the amplitude encoder's padding and normalisation).
-    return prepare(X.detach().to(torch.float64))
+    return encoder.prepare_inputs(X.detach().to(torch.float64))
 
 
 def _simulate(prepared: torch.Tensor, qlayer: qml.qnn.TorchLayer, n_qubits: int) -> torch.Tensor:
@@ -193,8 +184,8 @@ def encoded_states(X: torch.Tensor, layer: nn.Module) -> torch.Tensor:
         :func:`hqnn_forge.noise.apply_depolarizing_noise`: the replay would
         drop it, so it refuses rather than return the untransformed states.
     """
-    qlayer, n_qubits, prepare = _resolve_layer(layer, "encoded_states")
-    return _simulate(_prepare(X, prepare, "X"), qlayer, n_qubits)
+    encoder = _resolve_layer(layer, "encoded_states")
+    return _simulate(_prepare(X, encoder, "X"), encoder.qlayer, encoder.n_qubits)
 
 
 def kernel_from_states(
@@ -318,13 +309,13 @@ def quantum_kernel_matrix(
     positive semi-definite itself; small negative eigenvalues of order 1e-15
     are rounding.
     """
-    qlayer, n_qubits, prepare = _resolve_layer(layer, "quantum_kernel_matrix")
+    encoder = _resolve_layer(layer, "quantum_kernel_matrix")
     # Validate both input sets before simulating either.
-    prepared_x = _prepare(X, prepare, "X")
+    prepared_x = _prepare(X, encoder, "X")
     if Y is None:
-        return kernel_from_states(_simulate(prepared_x, qlayer, n_qubits))
-    prepared_y = _prepare(Y, prepare, "Y")
+        return kernel_from_states(_simulate(prepared_x, encoder.qlayer, encoder.n_qubits))
+    prepared_y = _prepare(Y, encoder, "Y")
     # One replay for both sets: same circuit and weights, one tape and device.
-    states = _simulate(torch.cat([prepared_x, prepared_y]), qlayer, n_qubits)
+    states = _simulate(torch.cat([prepared_x, prepared_y]), encoder.qlayer, encoder.n_qubits)
     n_x = prepared_x.shape[0]
     return kernel_from_states(states[:n_x], states[n_x:])
