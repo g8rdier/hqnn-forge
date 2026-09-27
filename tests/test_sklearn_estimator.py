@@ -300,18 +300,24 @@ def _check_id(value: Any) -> str:
     return getattr(value, "__name__", repr(value))
 
 
-@pytest.mark.parametrize(
-    ("estimator", "check"),
-    list(
-        estimator_checks_generator(
-            _conformance_estimator(),
-            expected_failed_checks=EXPECTED_FAILED_CHECKS,
-            mark="xfail",
-            xfail_strict=True,
-        )
-    ),
-    ids=_check_id,
-)
+def _check_name(check: Any) -> str:
+    return getattr(check, "func", check).__name__
+
+
+def _conformance_params() -> list[Any]:
+    # The strict xfail marks are applied here rather than through
+    # estimator_checks_generator(mark="xfail", xfail_strict=True): xfail_strict
+    # only exists from scikit-learn 1.8, and the floor is 1.6.  Strict, so a
+    # check that starts passing has to leave EXPECTED_FAILED_CHECKS.
+    params = []
+    for estimator, check in estimator_checks_generator(_conformance_estimator()):
+        reason = EXPECTED_FAILED_CHECKS.get(_check_name(check))
+        marks = [pytest.mark.xfail(reason=reason, strict=True)] if reason else []
+        params.append(pytest.param(estimator, check, marks=marks))
+    return params
+
+
+@pytest.mark.parametrize(("estimator", "check"), _conformance_params(), ids=_check_id)
 def test_scikit_learn_conformance(
     estimator: HybridClassifierEstimator, check: Callable[[HybridClassifierEstimator], None]
 ) -> None:
