@@ -18,7 +18,7 @@ from hqnn_forge.encoding.angle_embedding import Entangler, variational_weight_sh
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 
 CPU: dict[str, Any] = {"device_name": "default.qubit", "diff_method": "backprop"}
-ENTANGLERS: list[Entangler] = ["ring", "strongly_entangling"]
+ENTANGLERS: list[Entangler] = ["ring", "strongly_entangling", "hardware_efficient"]
 
 
 def _layers(entangler: Entangler) -> list[Any]:

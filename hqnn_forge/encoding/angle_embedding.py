@@ -53,6 +53,7 @@ import torch
 import torch.nn as nn
 from pennylane.exceptions import AllocationError, DeviceError
 
+from hqnn_forge.circuits import hardware_efficient_layer, strongly_entangling_layer
 from hqnn_forge.noise import NoiseMethod, Position, TrainingNoiseMixin
 
 logger = logging.getLogger(__name__)
@@ -63,7 +64,9 @@ logger = logging.getLogger(__name__)
 RotationAxis = Literal["X", "Y", "Z"]
 DiffMethod = Literal["adjoint", "parameter-shift", "backprop", "finite-diff"]
 DeviceName = Literal["lightning.gpu", "lightning.kokkos", "lightning.qubit", "default.qubit"]
-Entangler = Literal["ring", "strongly_entangling"]
+Entangler = Literal["ring", "strongly_entangling", "hardware_efficient"]
+ENTANGLERS: tuple[str, ...] = ("ring", "strongly_entangling", "hardware_efficient")
+_ENTANGLER_CHOICES = "'ring', 'strongly_entangling' or 'hardware_efficient'"
 Readout = Literal["all", "first"]
 
 #: Devices tried, in order, after the requested one fails.  Each is a strict
@@ -109,16 +112,27 @@ def apply_variational_layers(
       layer index, ``r = ℓ mod (n-1) + 1``.  This is the block the published
       SHNN uses (Schuld et al. 2020, PennyLane template).
 
-    Both take ``weights`` of shape ``(n_layers, n_qubits, 3)`` and use
-    ``n_layers · n_qubits`` ``Rot`` and CNOT gates; they differ in gate order
-    and, from the second layer on, in which qubits the CNOTs connect.
+    * ``"hardware_efficient"``: a nearest-neighbour ``CZ(i, i+1)`` ladder,
+      then ``RY(θ)`` on every qubit (Kandala et al. 2017):
+      :func:`hqnn_forge.circuits.hardware_efficient_layer`.  One angle per
+      qubit per layer and ``n − 1`` two-qubit gates per layer, against three
+      and ``n``: a third of the parameters, with CZ native on many devices.
+
+    ``"ring"`` and ``"strongly_entangling"`` take ``weights`` of shape
+    ``(n_layers, n_qubits, 3)`` and use ``n_layers · n_qubits`` ``Rot`` and
+    CNOT gates; they differ in gate order and, from the second layer on, in
+    which qubits the CNOTs connect.  ``"hardware_efficient"`` takes
+    ``(n_layers, n_qubits)``.  :func:`variational_weight_shape` gives the shape
+    for each.  The ``"ring"`` block is
+    :func:`hqnn_forge.circuits.strongly_entangling_layer` applied per layer.
 
     ``layer_offset`` is the index of the first block within the whole ansatz,
     for circuits that interleave other gates between blocks and so apply them
     a few at a time: the ``"strongly_entangling"`` range of block ``ℓ`` is
     ``(layer_offset + ℓ) mod (n-1) + 1``, so applying the blocks one by one
     with offsets ``0 … L-1`` gives the same ranges as applying all ``L`` at
-    once.  The ``"ring"`` block does not depend on the layer index.
+    once.  The ``"ring"`` and ``"hardware_efficient"`` blocks do not depend on
+    the layer index.
     """
     if entangler == "strongly_entangling":
         # A single wire has no CNOT partner: leave the ranges to the template,
@@ -130,20 +144,15 @@ def apply_variational_layers(
         )
         qml.StronglyEntanglingLayers(weights, wires=range(n_qubits), ranges=ranges)
         return
+    if entangler == "hardware_efficient":
+        for layer in range(n_layers):
+            hardware_efficient_layer(weights[layer], n_qubits)
+        return
     if entangler != "ring":
-        raise ValueError(f"entangler must be 'ring' or 'strongly_entangling'; got {entangler!r}.")
+        raise ValueError(f"entangler must be {_ENTANGLER_CHOICES}; got {entangler!r}.")
     for layer in range(n_layers):
-        # CNOT entangling ring (cyclic: last qubit → first qubit)
-        for qubit in range(n_qubits):
-            qml.CNOT(wires=[qubit, (qubit + 1) % n_qubits])
-        # Per-qubit SU(2) rotation block
-        for qubit in range(n_qubits):
-            qml.Rot(
-                weights[layer, qubit, 0],  # φ
-                weights[layer, qubit, 1],  # θ
-                weights[layer, qubit, 2],  # ω
-                wires=qubit,
-            )
+        # CNOT ring (last qubit → first), then Rot(φ, θ, ω) on every qubit
+        strongly_entangling_layer(weights[layer], n_qubits)
 
 
 def variational_weight_shape(
@@ -155,16 +164,19 @@ def variational_weight_shape(
     The one place an encoder's variational weight shape is defined: every
     encoding layer registers its ``weights`` with this shape.  Dim 0 is always
     the layer index, which :func:`~hqnn_forge.initializers.block_local_init_`
-    and the diagnostics' ``n_layers`` fallback rely on.  Both blocks so far
-    apply one ``Rot(φ, θ, ω)`` per qubit per layer: ``(n_layers, n_qubits, 3)``.
+    and the diagnostics' ``n_layers`` fallback rely on: ``(n_layers, n_qubits,
+    3)`` for the ``Rot`` blocks, ``(n_layers, n_qubits)`` for the ``RY`` of
+    ``"hardware_efficient"``.
 
     Raises
     ------
     ValueError
         For an unknown ``entangler``.
     """
-    if entangler not in ("ring", "strongly_entangling"):
-        raise ValueError(f"entangler must be 'ring' or 'strongly_entangling'; got {entangler!r}.")
+    if entangler not in ENTANGLERS:
+        raise ValueError(f"entangler must be {_ENTANGLER_CHOICES}; got {entangler!r}.")
+    if entangler == "hardware_efficient":
+        return (n_layers, n_qubits)
     return (n_layers, n_qubits, 3)
 
 
@@ -184,8 +196,8 @@ def validate_circuit_options(
     checkpoint.
     """
     readout_wires(n_qubits, readout)
-    if entangler not in ("ring", "strongly_entangling"):
-        raise ValueError(f"entangler must be 'ring' or 'strongly_entangling'; got {entangler!r}.")
+    if entangler not in ENTANGLERS:
+        raise ValueError(f"entangler must be {_ENTANGLER_CHOICES}; got {entangler!r}.")
     if rotation is not None and rotation not in ("X", "Y", "Z"):
         raise ValueError(f"rotation must be 'X', 'Y' or 'Z'; got {rotation!r}.")
 
@@ -391,9 +403,11 @@ def _make_angle_embedding_circuit(
     rotation:
         Pauli axis used by AngleEmbedding: ``"X"`` | ``"Y"`` | ``"Z"``.
     entangler:
-        ``"ring"`` (steps 2 and 3 above) or ``"strongly_entangling"``
+        ``"ring"`` (steps 2 and 3 above), ``"strongly_entangling"``
         (``qml.StronglyEntanglingLayers``: Rot first, then a CNOT ring of
-        range ``ℓ mod (n-1) + 1``).  See :func:`apply_variational_layers`.
+        range ``ℓ mod (n-1) + 1``) or ``"hardware_efficient"`` (a CZ ladder,
+        then ``RY``; ``weights`` of shape ``(n_layers, n_qubits)``).  See
+        :func:`apply_variational_layers`.
     readout:
         ``"all"`` (step 4 above) or ``"first"`` (``[⟨Z_0⟩]`` only, as in the
         published SHNN).
@@ -503,8 +517,8 @@ def build_encoding_qnode(
         - ``"backprop"``        — auto-diff through simulator; requires default.qubit.
         - ``"finite-diff"``     — approximate; avoid for training.
     entangler:
-        ``"ring"`` (default) or ``"strongly_entangling"``; see
-        :func:`apply_variational_layers`.
+        ``"ring"`` (default), ``"strongly_entangling"`` or
+        ``"hardware_efficient"``; see :func:`apply_variational_layers`.
     readout:
         ``"all"`` (default): ⟨Z_i⟩ on every qubit.  ``"first"``: ⟨Z_0⟩ only.
 
@@ -604,8 +618,9 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
         Gradient method.  Use ``"adjoint"`` with ``lightning.qubit`` for
         exact, efficient gradients during state-vector simulation.
     entangler:
-        ``"ring"`` (default) or ``"strongly_entangling"``; see
-        :func:`apply_variational_layers`.  Same parameter count either way.
+        ``"ring"`` (default), ``"strongly_entangling"`` (the same parameter
+        count) or ``"hardware_efficient"`` (a third of it: one ``RY`` angle
+        per qubit per layer); see :func:`apply_variational_layers`.
     readout:
         ``"all"`` (default): the layer returns ``(batch, n_qubits)``.
         ``"first"``: ⟨Z_0⟩ only, ``(batch, 1)``, the published SHNN readout.
