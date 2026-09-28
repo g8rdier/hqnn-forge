@@ -106,7 +106,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - `circuit_summary` and `count_inert_parameters` raised `TypeError` with PennyLane's
   graph-based decomposition enabled (`qml.decomposition.enable_graph()`), which requires a
-  `gate_set`; both now pass one and count the same circuit as without it
+  `gate_set`; both now pass one. The library's own layers count the same in both modes, and
+  `GlobalPhase` ops the graph emits are not counted; a gate outside `LOGICAL_GATE_SET`
+  (`CRX`, `Toffoli`, ...) may be decomposed by a different rule, so its counts can differ
 - Device fallback raised `AttributeError` on PennyLane 0.45, where `qml.DeviceError` no longer
   exists; the chain now catches `pennylane.exceptions.DeviceError` and is exercised by a test
 - `disable_quantum_layer` fills the quantum layer's readout width (`n_outputs`) rather than

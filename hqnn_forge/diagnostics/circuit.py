@@ -24,6 +24,13 @@ counted separately because they are what NISQ feasibility is usually judged
 by, so ``n_two_qubit_gates`` is the two-qubit cost of the circuit: a k-wire
 ``MultiRZ`` contributes the 2(k-1) CNOTs of its ladder, not 1, while a
 two-wire ``MultiRZ`` (a ZZ rotation, native on some hardware) stays one gate.
+
+With PennyLane's graph-based decomposition enabled
+(``qml.decomposition.enable_graph()``) the library's own layers count the
+same, since every gate they emit is in the set.  A gate outside it
+(``CRX``, ``Toffoli``, ...) is decomposed by whichever rule the graph finds
+cheapest rather than by ``op.decomposition()``, so its counts can differ
+between the two modes.
 """
 
 from __future__ import annotations
@@ -39,8 +46,10 @@ import torch.nn as nn
 #: Gate names a circuit is decomposed to before its resources are counted.
 #: Every gate the library's circuits emit is in here, so the count is of the
 #: circuit as written; a template such as ``AngleEmbedding`` is expanded.
-#: ``MultiRZ`` is kept only on at most two wires; on more it is decomposed to
-#: its CNOT ladder (see _decompose_logical).
+#: ``circuit_summary`` does not decompose to exactly this set: it keeps
+#: ``MultiRZ`` only on at most two wires and decomposes a wider one to its
+#: CNOT ladder (see _decompose_logical), so ``decompose(gate_set=...)`` with
+#: this set alone counts a wide ``MultiRZ`` once and does not reproduce it.
 LOGICAL_GATE_SET: frozenset[str] = frozenset(
     {"Hadamard", "RX", "RY", "RZ", "Rot", "PhaseShift", "CNOT", "CZ", "MultiRZ"}
 )
@@ -178,11 +187,11 @@ def _resolve_layer(target: nn.Module) -> tuple[nn.Module, qml.qnn.TorchLayer, in
     return layer, qlayer, n_qubits
 
 
-def _logical_tape(
+def _written_tape(
     qlayer: qml.qnn.TorchLayer, n_qubits: int, inputs: torch.Tensor | None = None
 ) -> qml.tape.QuantumScript:
     """
-    The tape the layer executes for one sample, decomposed by _decompose_logical.
+    The tape the layer executes for one sample, as written.
 
     The weight tensors keep their ``requires_grad`` flag, so the gate
     parameters that come from trainable weights can be told apart from the
@@ -193,8 +202,14 @@ def _logical_tape(
     weights = dict(qlayer.qnode_weights.items())
     # level="top": the circuit as written, before the QNode's own transforms
     # (batch expansion) and before the device rewrites gates it cannot run.
-    tape = qml.workflow.construct_tape(qlayer.qnode, level="top")(inputs, **weights)
-    return _decompose_logical(tape)
+    return qml.workflow.construct_tape(qlayer.qnode, level="top")(inputs, **weights)
+
+
+def _logical_tape(
+    qlayer: qml.qnn.TorchLayer, n_qubits: int, inputs: torch.Tensor | None = None
+) -> qml.tape.QuantumScript:
+    """The tape the layer executes for one sample, decomposed by _decompose_logical."""
+    return _decompose_logical(_written_tape(qlayer, n_qubits, inputs))
 
 
 def _decompose_logical(tape: qml.tape.QuantumScript) -> qml.tape.QuantumScript:
@@ -206,13 +221,21 @@ def _decompose_logical(tape: qml.tape.QuantumScript) -> qml.tape.QuantumScript:
     ``MultiRZ``, rather than a stopping condition alone: PennyLane keeps an op
     that satisfies either, and graph-based decomposition
     (``qml.decomposition.enable_graph()``) refuses a call without ``gate_set``.
+
+    Graph-based decomposition also emits ``GlobalPhase`` (from state
+    preparation or ``QubitUnitary``, say) where ``op.decomposition()`` does
+    not.  It is kept, so it is not decomposed further, then dropped: a global
+    phase is not a gate and would otherwise add to ``depth`` and, on two
+    wires, to ``n_two_qubit_gates``.
     """
     (decomposed,), _ = qml.transforms.decompose(
         tape,
-        gate_set=LOGICAL_GATE_SET - {"MultiRZ"},
+        gate_set=(LOGICAL_GATE_SET - {"MultiRZ"}) | {"GlobalPhase"},
         stopping_condition=_is_two_wire_multirz,
     )
-    return decomposed
+    return decomposed.copy(
+        operations=[op for op in decomposed.operations if op.name != "GlobalPhase"]
+    )
 
 
 def _is_two_wire_multirz(op: qml.operation.Operator) -> bool:
@@ -300,10 +323,13 @@ def count_inert_parameters(tape: qml.tape.QuantumScript) -> int:
             f"broadcasting (batch size {tape.batch_size}) one gate parameter holds "
             "several values, so a count of gate parameters has no clear meaning."
         )
-    # Every gate in LOGICAL_GATE_SET has scalar parameters, so passing it does
-    # not change what stops; graph-based decomposition requires a gate_set.
+    # Every gate in the set has scalar parameters, so passing it does not
+    # change what stops; graph-based decomposition requires a gate_set, and
+    # emits GlobalPhase (see _decompose_logical).
     (tape,), _ = qml.transforms.decompose(
-        tape, gate_set=LOGICAL_GATE_SET, stopping_condition=_has_scalar_parameters
+        tape,
+        gate_set=LOGICAL_GATE_SET | {"GlobalPhase"},
+        stopping_condition=_has_scalar_parameters,
     )
     unexpanded = sorted({op.name for op in tape.operations if not _has_scalar_parameters(op)})
     if unexpanded:
@@ -328,6 +354,10 @@ def count_inert_parameters(tape: qml.tape.QuantumScript) -> int:
         if isinstance(op, qml.ops.MidMeasure):
             for w in wires:
                 support[w] = _XY
+            continue
+        if op.name == "GlobalPhase":
+            # Commutes with everything, so no wire's support changes.  Not
+            # counted: under state() the phase does reach the measurement.
             continue
         n_trainable = sum(1 for value in op.data if qml.math.requires_grad(value))
         if all(support[w] == _NONE for w in wires):
@@ -401,10 +431,15 @@ def circuit_summary(target: nn.Module) -> CircuitSummary:
       ...
     """
     layer, qlayer, n_qubits = _resolve_layer(target)
-    tape = _logical_tape(qlayer, n_qubits)
+    written = _written_tape(qlayer, n_qubits)
+    tape = _decompose_logical(written)
     resources = tape.specs["resources"]
     qnode = qlayer.qnode
-    n_inert = count_inert_parameters(tape)
+    # Counted on the tape as written, which count_inert_parameters decomposes
+    # to LOGICAL_GATE_SET itself: a wide MultiRZ stays one diagonal gate there.
+    # Its CNOT ladder would copy Z content between wires the MultiRZ leaves
+    # untouched, and parameters on them would stop counting as inert.
+    n_inert = count_inert_parameters(written)
     return CircuitSummary(
         layer_type=type(layer).__name__,
         n_qubits=n_qubits,

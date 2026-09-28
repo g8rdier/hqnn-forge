@@ -13,6 +13,7 @@ Trainable parameters are 3·n·L for both.
 
 from __future__ import annotations
 
+import math
 from math import comb
 from types import MappingProxyType
 
@@ -175,21 +176,55 @@ class TestMultiWireGateCost:
         assert s.gate_counts.get("Opaque") == 1
         assert s.n_two_qubit_gates == 2
 
+    def test_wide_multirz_does_not_hide_inert_parameters(self) -> None:
+        """
+        Inert parameters are counted on the circuit as written, where a wide
+        MultiRZ is one diagonal gate.  Through its CNOT ladder, ⟨Z_1⟩ would
+        reach wire 2 and the RY there would stop counting as inert.
+        """
+        dev = qml.device("default.qubit", wires=3)
+
+        @qml.qnode(dev, interface="torch", diff_method="backprop")
+        def circuit(inputs, weights):  # type: ignore[no-untyped-def]
+            qml.AngleEmbedding(inputs, wires=range(3))
+            qml.RY(weights[1], wires=2)
+            qml.MultiRZ(weights[0], wires=[0, 1, 2])
+            return [qml.expval(qml.PauliZ(1))]
+
+        class Layer(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.n_qubits = 3
+                self.qlayer = qml.qnn.TorchLayer(circuit, {"weights": (2,)})
+
+        layer = Layer()
+        torch.manual_seed(0)
+        x = torch.rand(3, dtype=torch.float64) * 2 * math.pi
+        weights = layer.qlayer.qnode_weights["weights"]
+        with torch.no_grad():
+            weights.copy_(torch.tensor([0.7, 1.3]))
+        layer.qlayer(x).sum().backward()
+        assert weights.grad is not None
+        assert torch.all(weights.grad.abs() < 1e-12)  # both are inert
+        assert circuit_summary(layer).n_inert_params == 2
+
 
 class TestGraphDecomposition:
     """
     With PennyLane's graph-based decomposition enabled, ``decompose`` refuses
-    a call without ``gate_set``; the diagnostics must still work and count
-    the same circuit.
+    a call without ``gate_set``; the diagnostics must still work, and count
+    the same circuit whenever every gate but templates is in the gate set.
     """
 
     @pytest.fixture
     def graph_enabled(self):  # type: ignore[no-untyped-def]
+        was_enabled = qml.decomposition.enabled_graph()
         qml.decomposition.enable_graph()
         try:
             yield
         finally:
-            qml.decomposition.disable_graph()
+            if not was_enabled:
+                qml.decomposition.disable_graph()
 
     @pytest.mark.parametrize(
         "make",
@@ -207,6 +242,46 @@ class TestGraphDecomposition:
         qml.decomposition.disable_graph()
         without_graph = (circuit_summary(layer), draw_circuit(layer))
         assert with_graph == without_graph
+
+    # Without GlobalPhase in its gate set, the graph finds no decomposition
+    # for these ops and PennyLane falls back with a DecompositionWarning.
+    @pytest.mark.filterwarnings("error::pennylane.exceptions.DecompositionWarning")
+    @pytest.mark.parametrize("prepare", ["mottonen", "unitary"])
+    def test_global_phase_is_not_counted(self, prepare: str, graph_enabled) -> None:  # type: ignore[no-untyped-def]
+        """
+        Graph decomposition of state preparation and ``QubitUnitary`` emits
+        ``GlobalPhase``, which ``op.decomposition()`` does not; left in, a
+        two-wire one counted as a two-qubit gate and added to the depth.
+        """
+        state = torch.tensor([0.1, 0.5, -0.3, 0.8], dtype=torch.float64)
+        state = state / state.norm()
+        u = torch.as_tensor(qml.matrix(qml.QFT(wires=[0, 1])), dtype=torch.complex128)
+        dev = qml.device("default.qubit", wires=2)
+
+        @qml.qnode(dev, interface="torch")
+        def circuit(inputs, weights):  # type: ignore[no-untyped-def]
+            if prepare == "mottonen":
+                qml.MottonenStatePreparation(state, wires=[0, 1])
+            else:
+                qml.QubitUnitary(u, wires=[0, 1])
+            qml.RY(weights[0], wires=0)
+            return [qml.expval(qml.PauliZ(0))]
+
+        class Layer(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.n_qubits = 2
+                self.qlayer = qml.qnn.TorchLayer(circuit, {"weights": (1,)})
+
+        layer = Layer()
+        with_graph = circuit_summary(layer)
+        qml.decomposition.disable_graph()
+        without_graph = circuit_summary(layer)
+        assert "GlobalPhase" not in with_graph.gate_counts
+        assert with_graph.n_two_qubit_gates == without_graph.n_two_qubit_gates
+        if prepare == "mottonen":
+            # Same rules for every other gate here, so the same circuit.
+            assert with_graph == without_graph
 
 
 class TestDeviceIndependence:

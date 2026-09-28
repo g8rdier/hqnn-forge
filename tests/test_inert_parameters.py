@@ -206,6 +206,16 @@ class TestHandBuiltTapes:
         )
         assert count_inert_parameters(tape) == 0  # X_1 → X_1 through the CNOT: the RZ is live
 
+    def test_global_phase_neither_mixes_nor_counts(self) -> None:
+        # Graph-based decomposition emits GlobalPhase.  It commutes with the
+        # measurement, so the RZ before it stays inert; its own parameter is
+        # not counted, since under state() a global phase is observable.
+        tape = _tape(
+            lambda: (qml.RX(_p(0.4), 0), qml.RZ(_p(0.3), 0), qml.GlobalPhase(_p(0.2), wires=0)),
+            [qml.expval(qml.PauliZ(0))],
+        )
+        assert count_inert_parameters(tape) == 1
+
     def test_non_z_measurement_disables_the_shortcut(self) -> None:
         tape = _tape(lambda: (qml.RZ(_p(0.3), 0),), [qml.expval(qml.PauliX(0))])
         assert count_inert_parameters(tape) == 0

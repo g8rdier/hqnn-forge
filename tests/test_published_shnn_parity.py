@@ -40,8 +40,7 @@ import pytest
 import torch
 from torch import nn
 
-from hqnn_forge.diagnostics import CircuitSummary, circuit_summary
-from hqnn_forge.diagnostics.circuit import _decompose_logical, _n_two_qubit_gates
+from hqnn_forge.diagnostics import LOGICAL_GATE_SET, CircuitSummary, circuit_summary
 from hqnn_forge.models import HybridBinaryClassifier
 
 pytestmark = pytest.mark.reproducibility
@@ -78,9 +77,10 @@ def _published_shnn() -> tuple[nn.Module, qml.QNode]:
 
 
 def _logical_tape(circuit: qml.QNode, **weights: torch.Tensor) -> qml.tape.QuantumScript:
-    """The tape ``circuit`` runs for one sample, decomposed as ``circuit_summary`` counts it."""
+    """The tape ``circuit`` runs for one sample, decomposed to ``LOGICAL_GATE_SET``."""
     tape = qml.workflow.construct_tape(circuit, level="top")(torch.zeros(N_QUBITS), **weights)
-    return _decompose_logical(tape)
+    (decomposed,), _ = qml.transforms.decompose(tape, gate_set=LOGICAL_GATE_SET)
+    return decomposed
 
 
 def _cnot_pairs(tape: qml.tape.QuantumScript) -> list[tuple[int, int]]:
@@ -103,7 +103,7 @@ def _published_summary(
         n_trainable_params=n_quantum_params,
         depth=int(res.depth),
         n_gates=int(res.num_gates),
-        n_two_qubit_gates=_n_two_qubit_gates(res.gate_sizes),
+        n_two_qubit_gates=sum(c for size, c in res.gate_sizes.items() if size >= 2),
         gate_counts=dict(sorted(res.gate_types.items())),
     )
     return summary, tape
