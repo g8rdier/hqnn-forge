@@ -162,21 +162,6 @@ class TestEntangler:
             apply_variational_layers(torch.zeros(1, 2, 3), 2, 1, "ladder")  # type: ignore[arg-type]
 
 
-def _z0_harmonic_in_x0(layer: nn.Module, n_points: int = 16) -> float:
-    """
-    |c_1| of ⟨Z_0⟩ as a function of feature 0, the other features fixed:
-    the Fourier probe of tests/test_data_reuploading.py on output 0 alone.
-    """
-    torch.manual_seed(0)
-    with torch.no_grad():
-        layer.qlayer.weights.uniform_(0, 2 * math.pi)
-    x = _angles(1, layer.n_qubits).repeat(n_points, 1)
-    x[:, 0] = torch.arange(n_points) * 2 * math.pi / n_points - math.pi
-    with torch.no_grad():
-        values = layer(x)[:, 0].to(torch.float64)
-    return float(torch.fft.rfft(values).abs()[1] / n_points)
-
-
 class TestBrickwork:
     """``entangler="brickwork"`` (#161): even, then odd nearest-neighbour CNOTs, then Rot."""
 
@@ -214,18 +199,6 @@ class TestBrickwork:
         cnots = [("CNOT", [0, 1]), ("CNOT", [2, 3]), ("CNOT", [1, 2]), ("CNOT", [3, 4])]
         rots = [("Rot", [q]) for q in range(5)]
         assert ops == (cnots + rots) * 2
-
-    def test_readout_zero_sees_feature_zero_after_one_layer(self) -> None:
-        """
-        The #150 blind spot, absent here: CNOT(0,1) has wire 0 as control, so
-        Z_0 keeps its own wire and ⟨Z_0⟩ depends on x_0.  Both cascades carry
-        Z_0 off wire 0 through the closing CNOT(n-1, 0) and lose x_0.
-        """
-        brickwork = QuantumEncodingLayer(n_qubits=4, n_layers=1, entangler="brickwork", **CPU)
-        assert _z0_harmonic_in_x0(brickwork) > 1e-2
-        for entangler in ("ring", "strongly_entangling"):
-            cascade = QuantumEncodingLayer(n_qubits=4, n_layers=1, entangler=entangler, **CPU)
-            assert _z0_harmonic_in_x0(cascade) < 1e-6, entangler
 
     @pytest.mark.parametrize(
         ("n_layers", "light_cone"), [(1, [0]), (2, [0, 1]), (3, [0, 1, 2, 3])]
@@ -268,38 +241,48 @@ class TestBrickwork:
             assert grad is not None and grad.abs().sum().item() > 0, model_cls.__name__
 
 
-class TestOneLayerReadoutFeatures:
+_ALL = [0, 1, 2, 3, 4]
+_CASCADE_ONE_LAYER = [[1, 2, 3, 4], [0, 1], [0, 1, 2], [0, 1, 2, 3], _ALL]
+
+
+class TestReadoutFeatures:
     """
-    Which features each readout sees after one layer (#150), as derived in
-    step 2 of ``_make_angle_embedding_circuit``: under the default ring and
-    RX embedding ⟨Z_0⟩ = c_0(w)·cos x_1⋯cos x_{n-1} and, for 0 < i < n-1,
-    ⟨Z_i⟩ = c_i(w)·cos x_0⋯cos x_i.
+    Which features each readout sees (#150), as derived in step 2 of
+    ``_make_angle_embedding_circuit``: under the default ring and RX
+    embedding, after one layer, ⟨Z_0⟩ = c_0(w)·cos x_1⋯cos x_{n-1}, for
+    0 < i < n-1 ⟨Z_i⟩ = c_i(w)·cos x_0⋯cos x_i, and ⟨Z_{n-1}⟩ adds a
+    sin x_0 sin x_1 cos x_2⋯cos x_{n-2} sin x_{n-1} term to the full product.
     """
 
     N = 5
 
-    def _one_layer(self, entangler: str = "ring", rotation: str = "X", n_layers: int = 1):
-        return QuantumEncodingLayer(
+    def _layer(self, entangler: str = "ring", rotation: str = "X", n_layers: int = 1):
+        layer = QuantumEncodingLayer(
             n_qubits=self.N,
             n_layers=n_layers,
             entangler=entangler,  # type: ignore[arg-type]
             rotation=rotation,  # type: ignore[arg-type]
             **CPU,  # type: ignore[arg-type]
         )
-
-    def test_ring_readouts_are_the_derived_cosine_products(self) -> None:
-        """Each ratio to its cosine product is a constant c_i(w), whatever the input."""
-        layer = self._one_layer()
         torch.manual_seed(0)
         with torch.no_grad():
             layer.qlayer.weights.uniform_(0, 2 * math.pi)
+        return layer
+
+    def _ring_readouts(self) -> tuple[torch.Tensor, torch.Tensor]:
+        layer = self._layer()
         torch.manual_seed(1)
         # |x| < 1.2 keeps every cosine away from zero, so the ratios are well defined
-        x = (torch.rand(6, self.N, dtype=torch.float64) * 2 - 1) * 1.2
+        x = (torch.rand(8, self.N, dtype=torch.float64) * 2 - 1) * 1.2
         with torch.no_grad():
-            out = layer(x.float()).double()
+            return x, layer(x.float()).double()
+
+    def test_ring_readouts_are_the_derived_cosine_products(self) -> None:
+        """Each ratio to its cosine product is a constant c_i(w), whatever the input."""
+        x, out = self._ring_readouts()
         cos = torch.cos(x)
-        products = [cos[:, 1:].prod(dim=1)] + [cos[:, : i + 1].prod(dim=1) for i in range(1, 4)]
+        products = [cos[:, 1:].prod(dim=1)]
+        products += [cos[:, : i + 1].prod(dim=1) for i in range(1, self.N - 1)]
         for i, product in enumerate(products):
             ratio = out[:, i] / product
             torch.testing.assert_close(
@@ -307,25 +290,61 @@ class TestOneLayerReadoutFeatures:
             )
             assert ratio[0].abs() > 1e-2, f"readout {i}: c_i(w) vanished, the check is vacuous"
 
-    def test_ring_with_rx_is_blind_to_feature_zero(self) -> None:
-        assert _z0_harmonic_in_x0(self._one_layer()) < 1e-6
+    def test_ring_last_readout_has_the_wraparound_sine_term(self) -> None:
+        """⟨Z_{n-1}⟩ is exactly a·∏cos x_j + b·sin x_0 sin x_1 ∏cos x_{2..n-2} sin x_{n-1}."""
+        x, out = self._ring_readouts()
+        cos, sin = torch.cos(x), torch.sin(x)
+        basis = torch.stack(
+            [cos.prod(dim=1), sin[:, 0] * sin[:, 1] * cos[:, 2:-1].prod(dim=1) * sin[:, -1]], dim=1
+        )
+        coef = torch.linalg.lstsq(basis, out[:, -1:]).solution
+        torch.testing.assert_close(basis @ coef, out[:, -1:], rtol=0, atol=1e-5)
+        assert coef.abs().min() > 1e-2, f"a or b vanished, the check is vacuous: {coef.flatten()}"
 
-    def test_ring_with_ry_is_not(self) -> None:
-        """⟨X⟩ = sin x under RY, so the X terms the Rot mixes in survive."""
-        assert _z0_harmonic_in_x0(self._one_layer(rotation="Y")) > 1e-2
-
-    @pytest.mark.parametrize("rotation", ["X", "Y"])
-    def test_strongly_entangling_is_blind_under_either_rotation(self, rotation: str) -> None:
-        layer = self._one_layer("strongly_entangling", rotation)
-        assert _z0_harmonic_in_x0(layer) < 1e-6
-
-    @pytest.mark.parametrize("entangler", ["ring", "strongly_entangling"])
-    def test_two_layers_see_feature_zero(self, entangler: str) -> None:
-        assert _z0_harmonic_in_x0(self._one_layer(entangler, n_layers=2)) > 1e-3
-
-    @pytest.mark.parametrize("rotation", ["X", "Y"])
-    def test_brickwork_sees_it_at_one_layer(self, rotation: str) -> None:
-        assert _z0_harmonic_in_x0(self._one_layer("brickwork", rotation)) > 1e-2
+    @pytest.mark.parametrize(
+        ("entangler", "rotation", "n_layers", "seen"),
+        [
+            ("ring", "X", 1, _CASCADE_ONE_LAYER),
+            ("ring", "Y", 1, [_ALL, [0, 1, 2], [0, 1, 2, 3], _ALL, _ALL]),
+            ("strongly_entangling", "X", 1, _CASCADE_ONE_LAYER),
+            ("strongly_entangling", "Y", 1, _CASCADE_ONE_LAYER),
+            ("ring", "X", 2, [_ALL] * 5),
+            ("ring", "Y", 2, [_ALL] * 5),
+            ("strongly_entangling", "X", 2, [_ALL] * 5),
+            ("strongly_entangling", "Y", 2, [_ALL] * 5),
+            # Each ⟨Z_i⟩ sees x_i, but ⟨Z_0⟩'s narrow light cone misses most features
+            ("brickwork", "X", 1, [[0], [0, 1], [0, 1, 2], [2, 3], [2, 3, 4]]),
+            ("brickwork", "Y", 1, [[0, 1], [0, 1, 2, 3], [0, 1, 2, 3], [2, 3, 4], [2, 3, 4]]),
+            ("brickwork", "X", 2, [[0, 1], [0, 1, 2, 3], [0, 1, 2, 3], _ALL, _ALL]),
+            ("brickwork", "Y", 2, [[0, 1, 2, 3], _ALL, _ALL, _ALL, _ALL]),
+            ("ring", "Z", 2, [[]] * 5),
+        ],
+    )
+    def test_features_each_readout_sees(
+        self, entangler: str, rotation: str, n_layers: int, seen: list[list[int]]
+    ) -> None:
+        """
+        The first harmonic of ⟨Z_i⟩ in x_j, the other features fixed: above
+        1e-5 where readout i sees feature j (products of cosines can be as
+        small as 2e-4 here), below 1e-7 where it is blind.
+        """
+        layer = self._layer(entangler, rotation, n_layers)
+        n_points = 16
+        torch.manual_seed(1)
+        base = (torch.rand(1, self.N) * 2 - 1) * math.pi
+        for j in range(self.N):
+            x = base.repeat(n_points, 1)
+            x[:, j] = torch.arange(n_points) * 2 * math.pi / n_points - math.pi
+            with torch.no_grad():
+                values = layer(x).to(torch.float64)
+            harmonic = torch.fft.rfft(values, dim=0).abs()[1] / n_points
+            for i in range(self.N):
+                if j in seen[i]:
+                    assert harmonic[i] > 1e-5, f"⟨Z_{i}⟩ should see x_{j}: {harmonic[i]:.2e}"
+                else:
+                    assert harmonic[i] < 1e-7, (
+                        f"⟨Z_{i}⟩ should be blind to x_{j}: {harmonic[i]:.2e}"
+                    )
 
 
 class TestReadout:

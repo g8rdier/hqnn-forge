@@ -374,22 +374,35 @@ def _make_angle_embedding_circuit(
 
        The same conjugation decides which *features* a readout sees.  After
        one layer with the default ``rotation="X"``, the X and Y terms the
-       ``Rot`` mixes in land on operators with an ``X`` on some wire, whose
-       expectation in the RX-embedded product state is 0, so only the Z
-       image survives:
+       ``Rot`` mixes in land, for i < n-1, on operators with an ``X`` on some
+       wire, whose expectation in the RX-embedded product state is 0, so only
+       the Z image survives:
 
            ⟨Z_0⟩ = c_0(w) · cos x_1 ⋯ cos x_{n-1}      (no x_0)
            ⟨Z_i⟩ = c_i(w) · cos x_0 ⋯ cos x_i          (0 < i < n-1)
+
+       For i = n-1 the wrap-around CNOT(n-1, 0) carries Y_{n-1} to
+       ∝ Y_0 Y_1 Z_2 ⋯ Z_{n-2} Y_{n-1}, and ⟨Y⟩ = -sin x, so ⟨Z_{n-1}⟩ =
+       a(w) · cos x_0 ⋯ cos x_{n-1} + b(w) · sin x_0 sin x_1 cos x_2 ⋯
+       cos x_{n-2} sin x_{n-1}.
 
        Readout 0 is blind to its own feature, and carries a product of n-1
        cosines, which is small for inputs spread over (-π, π).  With
        ``rotation="Y"`` the X terms survive (⟨X⟩ = sin x) and ⟨Z_0⟩ does see
        x_0; with ``entangler="strongly_entangling"`` the image of Z_0 leaves
        wire 0 before its ``Rot`` is reached, so ⟨Z_0⟩ ignores x_0 under either
-       rotation.  From two layers on every readout sees every feature.  Use
-       ``n_layers >= 2``, or ``entangler="brickwork"``, whose CNOT(0, 1) has
-       wire 0 as control and so keeps Z_0 on its own wire, when a single
-       readout must see every feature (#150).
+       rotation.  For both cascades, from two layers on every readout sees
+       every feature under RX or RY.  (Under ``rotation="Z"`` no readout sees
+       any feature at any depth: RZ on |0⟩ is only a phase, #212.)
+
+       Under ``readout="all"`` the blind spot costs nothing, since readouts
+       1 … n-1 together cover x_0.  Under ``readout="first"`` use
+       ``n_layers >= 2`` with either cascade (#150).  ``entangler="brickwork"``
+       is *not* a remedy there: its CNOT(0, 1) has wire 0 as control, so Z_0
+       keeps its own wire and each ⟨Z_i⟩ sees x_i after one layer, but the
+       same narrow light cone leaves ⟨Z_0⟩ seeing only x_0 (RX) or x_0, x_1
+       (RY), and at 5 qubits still missing x_2 … x_4 (RX) or x_4 (RY) after
+       two layers.
 
     3. **Per-qubit SU(2) rotation block**:
        ``qml.Rot(φ, θ, ω, wires=i)`` applies Rz(ω)·Ry(θ)·Rz(φ), covering the
@@ -632,9 +645,9 @@ class QuantumEncodingLayer(nn.Module):
         Number of qubits / input feature dimensions.  Default: 8.
     n_layers:
         Number of entangling + rotation blocks in the VQC ansatz.  Default: 2.
-        At 1, ⟨Z_0⟩ does not depend on feature 0 under the default ring
-        with ``rotation="X"``, nor under ``"strongly_entangling"`` with any
-        rotation; see step 2 of :func:`_make_angle_embedding_circuit`.
+        At 1, ⟨Z_0⟩ does not see feature 0 under the default ring and RX,
+        so ``readout="first"`` wants 2 or more; see step 2 of
+        :func:`_make_angle_embedding_circuit`.
     rotation:
         Pauli axis for AngleEmbedding: ``"X"`` | ``"Y"`` | ``"Z"``.
     device_name:
