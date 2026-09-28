@@ -4,7 +4,8 @@ hqnn_forge.encoding
 Quantum feature-map modules for projecting classical tabular vectors into
 an n-qubit Hilbert space.
 
-Every public name of the encoder submodules is exported here, and
+Every encoder layer and QNode factory, the circuit helpers they share and
+the option types in their signatures are exported here, and
 ``from hqnn_forge.encoding import …`` is the documented import path; a new
 encoder adds its layer and QNode factory to this list.
 
@@ -27,12 +28,14 @@ Circuit building blocks shared by the encoders:
 apply_variational_layers  The entangler + Rot blocks, inside a QNode.
 readout_wires           Wires measured under a readout option.
 measure_z               The ⟨Z_i⟩ measurements a circuit returns.
+input_scaling_shape     Shape of the re-uploading QNode's input_scaling weights.
 
 Option types, for annotating calls:
 
 DeviceName              Literal of the supported PennyLane devices.
 DiffMethod              Literal of the supported differentiation methods.
 Entangler               Literal of the entangler options.
+Position                Literal of where training noise is inserted (from hqnn_forge.noise).
 Readout                 Literal of the readout options.
 RotationAxis            Literal of the embedding rotation axes.
 """
@@ -57,8 +60,10 @@ from hqnn_forge.encoding.angle_embedding import (
 from hqnn_forge.encoding.data_reuploading import (
     DataReuploadingLayer,
     build_data_reuploading_qnode,
+    input_scaling_shape,
 )
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer, build_iqp_qnode
+from hqnn_forge.noise import Position
 
 __all__: list[str] = [
     "AmplitudeEncodingLayer",
@@ -68,6 +73,7 @@ __all__: list[str] = [
     "DiffMethod",
     "Entangler",
     "IQPEncodingLayer",
+    "Position",
     "QuantumEncodingLayer",
     "Readout",
     "RotationAxis",
@@ -76,6 +82,7 @@ __all__: list[str] = [
     "build_data_reuploading_qnode",
     "build_encoding_qnode",
     "build_iqp_qnode",
+    "input_scaling_shape",
     "measure_z",
     "readout_wires",
 ]

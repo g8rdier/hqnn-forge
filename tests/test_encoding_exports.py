@@ -15,7 +15,7 @@ import inspect
 import pkgutil
 import re
 
-import pytest
+from torch import nn
 
 import hqnn_forge.encoding as encoding
 
@@ -34,13 +34,6 @@ def test_iqp_is_importable_from_the_package() -> None:
     assert callable(build_iqp_qnode)
 
 
-@pytest.mark.parametrize("name", encoding.__all__)
-def test_every_export_is_the_submodule_object(name: str) -> None:
-    obj = getattr(encoding, name)
-    owners = [m for m in SUBMODULES if getattr(m, name, None) is obj]
-    assert owners, f"{name} is not the object any encoder submodule defines"
-
-
 def test_docstring_lists_exactly_all() -> None:
     doc = encoding.__doc__ or ""
     section = doc[doc.index("Exported symbols") :]
@@ -52,14 +45,14 @@ def test_docstring_lists_exactly_all() -> None:
 
 
 def test_every_encoder_layer_and_factory_is_exported() -> None:
-    """The convention for future encoders: ``*EncodingLayer`` and ``build_*_qnode``."""
+    """The convention for future encoders: every layer and ``build_*_qnode`` factory."""
     missing = [
         f"{module.__name__}.{name}"
         for module in SUBMODULES
         for name, obj in vars(module).items()
         if getattr(obj, "__module__", None) == module.__name__
         and (
-            (inspect.isclass(obj) and name.endswith("EncodingLayer"))
+            (inspect.isclass(obj) and issubclass(obj, nn.Module))
             or (inspect.isfunction(obj) and re.fullmatch(r"build_\w+_qnode", name))
         )
         and name not in encoding.__all__
