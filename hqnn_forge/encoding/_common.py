@@ -52,7 +52,10 @@ FALLBACK_CHAIN: tuple[str, ...] = ("lightning.qubit", "default.qubit")
 #: one training step at batch 64 (``examples/benchmark_batching.py
 #: --crossover``, README): backprop is 15x faster at 8 qubits and still 2x at
 #: 12, while at 14 lightning is faster and backprop's memory, which grows
-#: fourfold per two qubits, has passed 1 GB against lightning's 22 MB.
+#: fourfold per two qubits, has passed 1 GB against lightning's 22 MB.  At 13
+#: backprop was still faster (0.5 s against 0.9 s) but took +526 MB against
+#: +18 MB, so the switch comes one qubit early, to bound memory rather than to
+#: win the last bit of speed.
 AUTO_BACKPROP_MAX_QUBITS = 12
 
 

@@ -205,19 +205,23 @@ class TestTrainingNoise:
 
     @requires_lightning
     @pytest.mark.parametrize("cls", LAYERS)
-    def test_default_lightning_adjoint_layer_damps_output_and_gradient(
+    def test_lightning_adjoint_layer_damps_output_and_gradient(
         self, cls: type, x: torch.Tensor
     ) -> None:
         """
-        The library default: the noiseless QNode is lightning.qubit + adjoint,
-        wrapped for batching, and the train-mode one is rebuilt from its
+        The noiseless QNode on lightning.qubit + adjoint (the default until
+        #349, and what "auto" picks above 12 qubits) is wrapped for batching, and the train-mode one is rebuilt from its
         circuit function.  End noise must still scale output and gradient by
         exactly 1 - 4p/3 relative to the noiseless layer.
         """
         p = 0.2
         torch.manual_seed(0)
-        noisy = cls(n_qubits=N_QUBITS, n_layers=2, noise_level=p, noise_position="end")
-        clean = cls(n_qubits=N_QUBITS, n_layers=2)
+        lightning = {"device_name": "lightning.qubit", "diff_method": "adjoint"}
+        noisy = cls(
+            n_qubits=N_QUBITS, n_layers=2, noise_level=p, noise_position="end", **lightning
+        )
+        clean = cls(n_qubits=N_QUBITS, n_layers=2, **lightning)
+        assert clean.qlayer.qnode.device.name == "lightning.qubit"
         with torch.no_grad():
             clean.qlayer.weights.copy_(noisy.qlayer.weights)
         noisy.train()

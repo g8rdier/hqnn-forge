@@ -284,12 +284,19 @@ class TestMechanics:
         assert {a: "seen"}[b] == "seen"
 
 
-class TestDefaultDevice:
+class TestLightningDevice:
     @pytest.mark.skipif(not _lightning_available(), reason="pennylane-lightning not installed")
     @pytest.mark.parametrize("layer_cls", [QuantumEncodingLayer, IQPEncodingLayer])
-    def test_estimates_on_the_library_default_device(self, layer_cls: type) -> None:
-        """Every other test pins default.qubit/backprop; the default is lightning/adjoint."""
-        layer = layer_cls(n_qubits=3, n_layers=2)
+    def test_estimates_on_lightning_with_adjoint(self, layer_cls: type) -> None:
+        """
+        Every other test pins default.qubit/backprop, which is also what the
+        default "auto" picks at this size; lightning/adjoint is what it picks
+        above 12 qubits.
+        """
+        layer = layer_cls(
+            n_qubits=3, n_layers=2, device_name="lightning.qubit", diff_method="adjoint"
+        )
+        assert layer.qlayer.qnode.device.name == "lightning.qubit"
         before = layer.qlayer.weights.detach().clone()
         result = gradient_variance(layer, n_samples=5, generator=_gen())
         assert result.total_variance > 0.0
