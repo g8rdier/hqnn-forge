@@ -52,12 +52,13 @@ def train_mode(module: nn.Module) -> Iterator[None]:
     """
     Train ``module`` for the ``with`` block without unfreezing what the caller froze.
 
-    If ``module`` is in train mode on entry, its submodules keep the modes
-    they have: a model in train mode with a batch-norm layer put in eval mode
-    trains with that layer still frozen.  If ``module`` itself is in eval
-    mode -- a model fresh from ``load_checkpoint`` or ``predict`` code, say --
-    there is no training configuration to respect, and every submodule is put
-    in train mode.  On exit, including when the block raises, every submodule
+    If any submodule is in train mode on entry, every submodule keeps the mode
+    it has: a model in train mode with a batch-norm layer put in eval mode
+    trains with that layer still frozen, and so does a model put in eval mode
+    with only its head switched back to train mode.  Only if ``module`` and all
+    its submodules are in eval mode -- a model fresh from ``load_checkpoint``
+    or ``predict`` code, say -- is there no training configuration to respect,
+    and every submodule is put in train mode.  On exit, including when the block raises, every submodule
     gets back the ``training`` flag it had on entry, as with :func:`eval_mode`.
 
     Parameters
@@ -71,7 +72,7 @@ def train_mode(module: nn.Module) -> Iterator[None]:
     ...     loss = loss_fn(model(x), y)
     """
     modes = _modes(module)
-    if not module.training:
+    if not any(training for _, training in modes):
         module.train()
     try:
         yield

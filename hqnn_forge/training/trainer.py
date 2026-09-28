@@ -35,7 +35,7 @@ import torch
 import torch.nn as nn
 
 from hqnn_forge.evaluation import METRICS, find_optimal_threshold
-from hqnn_forge.utils.modes import eval_mode, train_mode
+from hqnn_forge.utils.modes import _modes, _restore, eval_mode, train_mode
 
 LossFn = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
 
@@ -153,11 +153,11 @@ def train_model(
     max_epochs:
         Upper bound on the number of epochs.  Default: 100.
     batch_size:
-        Mini-batch size.  The last batch may be smaller, but never a single
-        sample: a remainder of one is merged into the batch before it, which
-        then holds ``batch_size + 1``, because batch norm in train mode fails
-        on one sample.  Only a training set of one sample is a batch of one.
-        Default: 256.
+        Mini-batch size.  The last batch may be smaller, but for
+        ``batch_size > 1`` never a single sample: a remainder of one is merged
+        into the batch before it, which then holds ``batch_size + 1``, because
+        batch norm in train mode fails on one sample.  With ``batch_size=1``
+        every batch is one sample, as asked.  Default: 256.
     monitor:
         ``"mcc"`` (default), ``"f1"``, ``"balanced_accuracy"`` or ``"val_loss"``.
     patience:
@@ -182,8 +182,10 @@ def train_model(
     submodule the caller put in eval mode -- a frozen batch-norm layer, say --
     stays in eval mode, with its statistics untouched, unless the whole model
     arrived in eval mode, which is then trained in train mode throughout.
-    Validation runs in eval mode through ``eval_mode``.  On return every
-    submodule has the mode it had on entry.
+    Validation runs in eval mode through ``eval_mode``.  Every epoch starts
+    from the modes training began with, so an ``on_epoch_end`` callback that
+    puts the model in eval mode does not carry over into the next epoch.  On
+    return every submodule has the mode it had on entry.
     """
     if monitor != "val_loss" and monitor not in METRICS:
         raise ValueError(
@@ -223,15 +225,19 @@ def train_model(
     n = X_train.shape[0]
 
     # Batch boundaries; a trailing batch of one sample is merged into the one
-    # before it (see batch_size above).
+    # before it, unless every batch is meant to be one (see batch_size above).
     bounds = [*range(0, n, batch_size), n]
-    if len(bounds) > 2 and bounds[-1] - bounds[-2] == 1:
+    if batch_size > 1 and len(bounds) > 2 and bounds[-1] - bounds[-2] == 1:
         del bounds[-2]
 
     # The caller's per-submodule modes, not model.train(), which recurses and
     # would unfreeze a submodule the caller put in eval mode (#174).
     with train_mode(model):
+        # Validation restores its own modes, but a callback need not, so every
+        # epoch starts from these, as the per-epoch model.train() used to.
+        epoch_modes = _modes(model)
         for epoch in range(1, max_epochs + 1):
+            _restore(epoch_modes)
             # ── train ────────────────────────────────────────────────────────
             perm = torch.randperm(n, generator=generator)
             total, seen = 0.0, 0

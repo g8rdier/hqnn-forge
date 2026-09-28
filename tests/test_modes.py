@@ -103,6 +103,15 @@ class TestTrainMode:
             assert not _inner_dropout(net).training
         assert _modes(net) == before
 
+    def test_an_eval_root_keeps_a_submodule_left_in_train_mode(self) -> None:
+        """Everything frozen but the inner block: the root's flag alone must not decide."""
+        net = _net().eval()
+        net[1].train()
+        before = _modes(net)
+        with train_mode(net):
+            assert _modes(net) == before
+        assert _modes(net) == before
+
     def test_an_eval_model_trains_throughout(self) -> None:
         net = _net().eval()
         with train_mode(net):

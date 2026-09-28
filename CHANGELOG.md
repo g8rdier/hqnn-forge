@@ -138,8 +138,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `train_model` no longer calls `model.train()` each epoch, which unfroze submodules the
   caller had put in eval mode (a frozen batch-norm layer's statistics kept moving); it trains
   under `train_mode` and returns the model in the modes it had on entry, so a model passed in
-  eval mode now comes back in eval mode. A trailing batch of one sample is merged into the
-  batch before it, so a batch-norm model no longer fails when `n % batch_size == 1`
+  eval mode now comes back in eval mode. With `batch_size > 1`, a trailing batch of one sample
+  is merged into the batch before it, so a batch-norm model no longer fails when
+  `n % batch_size == 1`
 
 ### Removed
 - `black` from the `dev` extra; `ruff format` is the only formatter, sharing the
