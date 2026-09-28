@@ -194,8 +194,9 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
     noise_channel:
         The channel ``noise_level`` is the strength of: ``"depolarizing"``
         (default), ``"amplitude_damping"``, ``"phase_damping"``,
-        ``"bit_flip"`` or ``"phase_flip"``; see :mod:`hqnn_forge.noise`.  The
-        trajectory method samples the Pauli ones only.
+        ``"bit_flip"`` or ``"phase_flip"``; see :mod:`hqnn_forge.noise`.  With
+        ``noise_method="trajectories"``, amplitude damping needs
+        ``diff_method="backprop"`` or ``"parameter-shift"`` and no ``shots``.
 
     Attributes
     ----------
