@@ -81,6 +81,29 @@ That is what the default, `device_name="auto", diff_method="auto"`, does:
 and so a checkpoint, records `"auto"`, so a model reloaded elsewhere picks for that machine.
 Pass both names explicitly to pin a backend.
 
+### Running on hardware
+
+[`examples/hardware_workflow.py`](examples/hardware_workflow.py) trains a small classifier the
+way a quantum device requires, on `default.qubit` standing in for one: `shots`, parameter-shift
+gradients checked against backprop, SPSA, the circuit executions each step costs (counted
+with `qml.Tracker`), and test MCC under shot and depolarizing noise (`shot_sweep`,
+`noise_sweep`). One step on a batch of 32 costs 1568 circuits with parameter-shift and 64 with
+SPSA; SPSA trained with 1000 shots scored within 0.01 test MCC of exact training.
+
+For a real device, change `DEVICE` to the plugin's device name (for example
+`"braket.aws.qubit"` or `"qiskit.remote"`) and set up its credentials as the plugin documents.
+The library creates the device from its name, so device options go in PennyLane's
+[configuration file](https://docs.pennylane.ai/en/stable/introduction/configuration.html),
+which `qml.device` reads for every device:
+
+```toml
+# config.toml
+[braket.aws.qubit]
+device_arn = "arn:aws:braket:::device/qpu/..."
+```
+
+An option that must be a Python object rather than a string cannot be passed this way.
+`seed` reaches simulators only.
 ---
 
 ## Quick Start
