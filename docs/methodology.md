@@ -102,8 +102,8 @@ validation temperature in its history. Temperature scaling is monotone, so it le
 ranking-based number above unchanged. `HybridClassifierEstimator(calibration="temperature")`
 (or `"platt"`) fits one on its validation split and applies it in `predict_proba`, mapping the
 decision threshold through it so that `predict` does not change (#359). With focal loss the
-fitted temperature was below 1 on the test data used for it (0.3 to 1.0): the model is
-under-confident, and calibration sharpens it.
+fitted temperature was 0.3 to 1.0 on the synthetic data of the estimator's tests: the model
+was under-confident, and calibration sharpened it.
 
 ## Statistics
 
