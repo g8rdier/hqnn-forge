@@ -349,6 +349,16 @@ class TestFailures:
         with pytest.raises(ValueError, match=r"\['init_strategy'\]"):
             load_checkpoint(path, init_strategy="block_local")
 
+    def test_init_seed_override_is_refused(self, saved: tuple) -> None:
+        # The same reasoning as init_strategy: init_seed has no effect on the
+        # loaded weights, but it records where the initial weights came from,
+        # so an override would bake false provenance into get_config().  It
+        # stays out of WEIGHT_SAFE_ARGS on purpose.
+        _, path = saved
+        assert "init_seed" not in ckpt.WEIGHT_SAFE_ARGS
+        with pytest.raises(ValueError, match=r"\['init_seed'\]"):
+            load_checkpoint(path, init_seed=3)
+
     def test_weight_safe_overrides_need_no_opt_in(self, saved: tuple) -> None:
         _, path = saved
         loaded = load_checkpoint(path, **CPU)

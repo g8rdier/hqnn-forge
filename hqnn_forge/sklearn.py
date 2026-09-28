@@ -50,9 +50,9 @@ except ImportError as exc:  # pragma: no cover - exercised only without scikit-l
     ) from exc
 
 from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
-from hqnn_forge.models.base import as_seed, seeded_rng
 from hqnn_forge.training import TrainingHistory, train_model
 from hqnn_forge.utils import FocalLoss
+from hqnn_forge.utils.rng import as_seed, seeded_rng
 
 ModelName = Literal["serial", "parallel"]
 LossName = Literal["focal", "bce"]
@@ -94,9 +94,11 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         ``monitor="val_loss"``.
     random_state:
         Seeds weight initialisation, dropout, the validation split and batch
-        order.  The torch draws come from a private RNG seeded with it, so a
-        seeded ``fit`` is reproducible and leaves the global torch RNG exactly
-        as it was; ``None`` draws them from the global RNG.
+        order.  The initial weights are the model's ``init_seed=random_state``
+        draws; dropout and batch order use seeds spawned from it, so they are
+        independent of the init.  A seeded ``fit`` is reproducible and leaves
+        the global torch RNG exactly as it was; ``None`` draws everything from
+        the global RNG.
 
     Attributes
     ----------
@@ -235,26 +237,35 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         # A NumPy integer, as scikit-learn tools pass, is taken as the int it is.
         seed = as_seed(self.random_state, "random_state")
         rng = np.random.default_rng(seed)
-        # Everything torch draws during the fit -- the initial weights and the
-        # dropout masks -- comes from a private RNG seeded with random_state, so
-        # a seeded fit is reproducible and the caller's global RNG is left
-        # exactly where it was (#175).  Batch order has its own generator.
-        with seeded_rng(seed):
-            model = self._build(X_arr.shape[1], init_seed=seed)
-            loss_fn = self._loss()
+        # Three independent torch streams, none of them the caller's (#175):
+        # the model seeds its initial weights from random_state itself, and
+        # training -- the dropout masks and the batch order -- runs on seeds
+        # spawned from it, so neither replays the numbers the init drew.  The
+        # global RNG is restored afterwards, so a seeded fit leaves it exactly
+        # where it was.
+        model = self._build(X_arr.shape[1], init_seed=seed)
+        loss_fn = self._loss()
+        if seed is None:
+            dropout_seed: int | None = None
+            generator = None
+        else:
+            dropout_seed, batch_seed = (
+                int(child.generate_state(1)[0]) for child in np.random.SeedSequence(seed).spawn(2)
+            )
+            generator = torch.Generator().manual_seed(batch_seed)
 
-            X_t = torch.from_numpy(X_arr)
-            if self.validation_fraction > 0:
-                tr, va = self._stratified_holdout(y01, self.validation_fraction, rng)
-                val: tuple[torch.Tensor, torch.Tensor] | tuple[None, None] = (
-                    X_t[va],
-                    torch.from_numpy(y01[va]).float(),
-                )
-            else:
-                tr = np.arange(y01.size)
-                val = (None, None)
+        X_t = torch.from_numpy(X_arr)
+        if self.validation_fraction > 0:
+            tr, va = self._stratified_holdout(y01, self.validation_fraction, rng)
+            val: tuple[torch.Tensor, torch.Tensor] | tuple[None, None] = (
+                X_t[va],
+                torch.from_numpy(y01[va]).float(),
+            )
+        else:
+            tr = np.arange(y01.size)
+            val = (None, None)
 
-            generator = torch.Generator().manual_seed(seed) if seed is not None else None
+        with seeded_rng(dropout_seed):
             history = train_model(
                 model,
                 loss_fn,

@@ -7,9 +7,9 @@ Skipped where scikit-learn is not installed (optional dependency).
 
 Everything is seeded (``random_state=0``), so the runs are deterministic.  The
 accuracy bars (> 0.7 on a linearly separable task) test that the wrapper
-trains the model, not how well a 2-qubit model optimises: at seed 0 the fits
-score 0.94-0.99, but some other seeds land in a poor optimum (~0.55-0.6), so
-the seed is part of the fixture rather than incidental.
+trains the model, not how well a 2-qubit model optimises.  The tests that
+assert learning use ``LEARN``, whose bars were measured to hold across seeds
+(see below), rather than a seed that happens to work at ``FAST``.
 """
 
 from __future__ import annotations
@@ -42,12 +42,15 @@ FAST = dict(
 )
 
 
-# The two tests that assert learning, not only plumbing, need more than FAST's
-# budget to hold across seeds: at FAST, 4 of 10 seeds fail the cross-validation
-# check and 2 of 10 the pipeline one, on main as well as here, because the
-# 2-qubit model sometimes stalls.  With LEARN, over random_state 0-19, the
-# 3-fold mean MCC was 0.15-0.95 (19 of 20 above 0.45) and the pipeline's
-# training accuracy 0.74-1.00; both thresholds sit below the worst seed.
+# The tests that assert learning, not only plumbing, need more than FAST's
+# budget to hold across seeds, because the 2-qubit, 1-layer model sometimes
+# stalls.  Over random_state 0-9 at FAST, the cross-validation check
+# (mean MCC > 0.3) failed for 3 seeds on main and 4 here, the pipeline check
+# (accuracy > 0.7) for 1 on main and 2 here, and the serial fit (> 0.7) for
+# 2 here; seed 0 is among the failures here.  With LEARN, over random_state
+# 0-19: serial accuracy 0.95-1.00, parallel 1.00, 3-fold mean MCC 0.20-0.93
+# (19 of 20 above 0.41) and pipeline accuracy 0.74-1.00.  Every bar sits below
+# the worst seed and well above chance.
 LEARN = {**FAST, "n_layers": 2, "max_epochs": 40}
 
 
@@ -79,7 +82,7 @@ class TestFitPredict:
     @pytest.mark.parametrize("model", ["serial", "parallel"])
     def test_shapes_and_learning(self, data: tuple, model: str) -> None:
         X, y = data
-        est = HybridClassifierEstimator(model=model, **FAST).fit(X, y)
+        est = HybridClassifierEstimator(model=model, **LEARN).fit(X, y)
         proba = est.predict_proba(X)
         assert proba.shape == (80, 2)
         np.testing.assert_allclose(proba.sum(axis=1), 1.0, atol=1e-6)
@@ -87,7 +90,7 @@ class TestFitPredict:
         assert pred.shape == (80,) and set(pred) <= {0, 1}
         assert est.score(X, y) > 0.7
         assert est.n_features_in_ == 3 and list(est.classes_) == [0, 1]
-        assert est.history_.n_epochs == 15
+        assert est.history_.n_epochs == LEARN["max_epochs"]
 
     def test_string_labels_and_positive_class(self, data: tuple) -> None:
         X, y = data
@@ -152,14 +155,14 @@ class TestSklearnTooling:
         scores = cross_val_score(
             HybridClassifierEstimator(**LEARN), X, y, cv=3, scoring="matthews_corrcoef"
         )
-        assert scores.shape == (3,) and scores.mean() > 0.1
+        assert scores.shape == (3,) and scores.mean() > 0.15
 
     def test_pipeline(self, data: tuple) -> None:
         X, y = data
         pipe = make_pipeline(StandardScaler(), HybridClassifierEstimator(**LEARN)).fit(
             X * 50 + 7, y
         )
-        assert pipe.score(X * 50 + 7, y) > 0.65
+        assert pipe.score(X * 50 + 7, y) > 0.7
 
     def test_grid_search(self, data: tuple) -> None:
         X, y = data

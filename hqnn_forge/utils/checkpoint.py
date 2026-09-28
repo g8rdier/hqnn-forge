@@ -97,7 +97,10 @@ FORMAT_VERSION: int = 1
 #: three are inert in the eval-mode model that comes back.
 #: ``load_checkpoint`` takes these without an opt-in; every other argument
 #: describes the circuit the weights were trained in, so overriding it needs
-#: ``allow_architecture_override=True``.
+#: ``allow_architecture_override=True``.  That includes ``init_strategy`` and
+#: ``init_seed``, although the loaded state dict overwrites what they draw:
+#: they record where the initial weights came from, and an override would
+#: falsify that.
 WEIGHT_SAFE_ARGS: frozenset[str] = frozenset(
     {"device_name", "diff_method", "dropout_p", "noise_level", "noise_position"}
 )

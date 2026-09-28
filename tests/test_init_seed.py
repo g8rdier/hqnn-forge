@@ -21,6 +21,7 @@ from hqnn_forge.models import (
     ParallelHybridClassifier,
 )
 from hqnn_forge.utils import load_checkpoint, save_checkpoint
+from hqnn_forge.utils.rng import seeded_rng
 
 CPU = dict(device_name="default.qubit", diff_method="backprop")
 CLASSES = [
@@ -82,6 +83,70 @@ class TestInitSeed:
         assert load_checkpoint(tmp_path / "m.pt").get_config()["init_seed"] == 3
 
 
+@pytest.mark.parametrize(
+    ("cls", "kwargs"),
+    [
+        # The classical branch is built before the width check raises.
+        pytest.param(
+            ParallelHybridClassifier,
+            dict(n_input_features=5, n_qubits=3, use_classical_encoder=False),
+            id="parallel-width",
+        ),
+        # The classical encoder is built before the IQP rotation check raises.
+        pytest.param(
+            HybridBinaryClassifier,
+            dict(n_input_features=5, n_qubits=3, encoding_type="iqp", embedding_rotation="Y"),
+            id="serial-iqp-rotation",
+        ),
+    ],
+)
+def test_a_failed_build_leaves_the_global_rng_alone(cls: type, kwargs: dict) -> None:
+    torch.manual_seed(123)
+    before = torch.random.get_rng_state()
+    with pytest.raises(ValueError):
+        cls(**CPU, **kwargs, init_seed=7)
+    assert torch.equal(torch.random.get_rng_state(), before)
+
+
+class TestSeededRng:
+    def test_draws_are_those_of_manual_seed(self) -> None:
+        torch.manual_seed(9)
+        expected = torch.rand(5)
+        torch.manual_seed(0)
+        with seeded_rng(9) as reseed:
+            first = torch.rand(5)
+            reseed()
+            again = torch.rand(5)
+        torch.testing.assert_close(first, expected, rtol=0, atol=0)
+        torch.testing.assert_close(again, expected, rtol=0, atol=0)
+
+    def test_state_is_restored_when_the_block_raises(self) -> None:
+        torch.manual_seed(123)
+        before = torch.random.get_rng_state()
+        with pytest.raises(RuntimeError), seeded_rng(9):
+            torch.rand(5)
+            raise RuntimeError
+        assert torch.equal(torch.random.get_rng_state(), before)
+
+    def test_none_runs_on_the_global_rng(self) -> None:
+        torch.manual_seed(4)
+        expected = torch.rand(5)
+        torch.manual_seed(4)
+        with seeded_rng(None) as reseed:
+            reseed()
+            torch.testing.assert_close(torch.rand(5), expected, rtol=0, atol=0)
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+    def test_cuda_state_is_restored(self) -> None:
+        torch.cuda.init()
+        torch.cuda.manual_seed_all(123)
+        before = torch.cuda.get_rng_state_all()
+        with seeded_rng(7):
+            torch.rand(5, device="cuda")
+        after = torch.cuda.get_rng_state_all()
+        assert all(torch.equal(a, b) for a, b in zip(after, before))
+
+
 class TestEstimator:
     @pytest.fixture
     def data(self) -> tuple[np.ndarray, np.ndarray]:
@@ -124,3 +189,28 @@ class TestEstimator:
     def test_the_fitted_model_records_the_seed(self, data: tuple) -> None:
         X, y = data
         assert self._estimator(random_state=4).fit(X, y).model_.get_config()["init_seed"] == 4
+
+    def test_training_draws_are_not_the_init_stream(
+        self, data: tuple, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """
+        Dropout and batch order run on seeds spawned from random_state, not on
+        random_state itself -- else the first dropout masks would replay the
+        numbers the initial weights were drawn from.
+        """
+        import hqnn_forge.sklearn as sk
+
+        seen: dict[str, Any] = {}
+        real = sk.train_model
+
+        def spy(*args: Any, **kwargs: Any) -> Any:
+            seen["draw"] = torch.rand(8)
+            seen["generator"] = kwargs["generator"]
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(sk, "train_model", spy)
+        X, y = data
+        self._estimator(random_state=4).fit(X, y)
+        init_stream = torch.rand(8, generator=torch.Generator().manual_seed(4))
+        assert not torch.equal(seen["draw"], init_stream)
+        assert seen["generator"].initial_seed() != 4

@@ -52,7 +52,8 @@ follow the same rule.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -63,6 +64,7 @@ import torch.nn as nn
 from hqnn_forge.initializers import block_local_init_, restricted_normal_init_
 from hqnn_forge.initializers.restricted_variance import _not_restricting_ignored
 from hqnn_forge.utils.modes import eval_mode
+from hqnn_forge.utils.rng import seeded_rng
 
 InitName = Literal["uniform", "restricted", "block_local"]
 InitFn = Callable[[torch.Tensor], Any]
@@ -194,30 +196,16 @@ def _make_init(
     )
 
 
-class _seeded:
+@contextmanager
+def _seeded(generator: torch.Generator) -> Iterator[None]:
     """
-    Run the library initialisers (which use the global RNG) from ``generator``.
-
-    ``torch.manual_seed`` reseeds every initialised accelerator RNG, not just
-    the CPU one, so the CUDA state is saved and restored alongside it.  Other
-    accelerator backends (MPS, XPU) expose no state accessor to save; their
-    RNG is reseeded and not restored, which is why the initialisers are only
-    driven through this helper and never the estimator's own draws.
+    Run the library initialisers (which use the global RNG) from ``generator``:
+    a seed drawn from it drives :func:`hqnn_forge.utils.rng.seeded_rng`, which
+    restores the caller's CPU and CUDA RNG state afterwards.
     """
-
-    def __init__(self, generator: torch.Generator) -> None:
-        self.generator = generator
-
-    def __enter__(self) -> None:
-        self.saved = torch.get_rng_state()
-        self.saved_cuda = torch.cuda.get_rng_state_all() if torch.cuda.is_initialized() else None
-        seed = int(torch.randint(0, 2**62, (1,), generator=self.generator))
-        torch.manual_seed(seed)
-
-    def __exit__(self, *exc: object) -> None:
-        torch.set_rng_state(self.saved)
-        if self.saved_cuda is not None:
-            torch.cuda.set_rng_state_all(self.saved_cuda)
+    seed = int(torch.randint(0, 2**62, (1,), generator=generator))
+    with seeded_rng(seed):
+        yield
 
 
 def _local_z0(outputs: torch.Tensor) -> torch.Tensor:

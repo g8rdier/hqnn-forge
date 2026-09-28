@@ -89,8 +89,8 @@ from hqnn_forge.initializers.restricted_variance import (
     block_local_init_,
     restricted_normal_init_,
 )
-from hqnn_forge.models.base import as_seed, seeded_rng
 from hqnn_forge.utils.modes import eval_mode
+from hqnn_forge.utils.rng import as_seed, seeded_rng
 
 MulticlassStrategy = Literal["softmax", "one_vs_rest"]
 
@@ -180,102 +180,101 @@ class MulticlassHybridClassifier(nn.Module):
         init_seed: int | None = None,
     ) -> None:
         super().__init__()
+        init_seed = as_seed(init_seed)
         # Building the layers draws from the global RNG (nn.Linear and
         # TorchLayer defaults), all of it overwritten by _initialise_weights.
-        # With init_seed those draws are undone too, so the caller's stream is
-        # exactly where it was.
-        init_seed = as_seed(init_seed)
-        caller_rng = torch.random.get_rng_state() if init_seed is not None else None
-        self._config: dict[str, Any] = dict(
-            n_input_features=n_input_features,
-            n_qubits=n_qubits,
-            n_layers=n_layers,
-            n_classes=n_classes,
-            strategy=strategy,
-            use_classical_encoder=use_classical_encoder,
-            dropout_p=dropout_p,
-            device_name=device_name,
-            diff_method=diff_method,
-            init_strategy=init_strategy,
-            encoding_type=encoding_type,
-            init_std=init_std,
-            init_seed=init_seed,
-        )
-
-        if n_classes < 2:
-            raise ValueError(f"n_classes must be ≥ 2; got {n_classes}.")
-        if strategy not in ("softmax", "one_vs_rest"):
-            raise ValueError(f"strategy must be 'softmax' or 'one_vs_rest'; got {strategy!r}.")
-        if init_strategy not in ("restricted", "block_local", "normal"):
-            raise ValueError(
-                f"init_strategy must be 'restricted', 'block_local' or 'normal'; "
-                f"got {init_strategy!r}."
-            )
-        if not 0.0 <= dropout_p < 1.0:
-            raise ValueError(f"dropout_p must be in [0, 1); got {dropout_p}.")
-        if init_std <= 0.0:
-            raise ValueError(f"init_std must be > 0; got {init_std}.")
-        if init_strategy != "normal" and init_std != _DEFAULT_INIT_STD:
-            raise ValueError(
-                f"init_std applies to init_strategy='normal' only; "
-                f"'{init_strategy}' derives its own sigma from the circuit size, so "
-                f"init_std={init_std} would be recorded in the config and ignored."
+        # With init_seed the whole build runs inside seeded_rng, so the
+        # caller's stream is exactly where it was afterwards -- also when a
+        # check below raises after some layers were built.
+        with seeded_rng(init_seed) as reseed:
+            self._config: dict[str, Any] = dict(
+                n_input_features=n_input_features,
+                n_qubits=n_qubits,
+                n_layers=n_layers,
+                n_classes=n_classes,
+                strategy=strategy,
+                use_classical_encoder=use_classical_encoder,
+                dropout_p=dropout_p,
+                device_name=device_name,
+                diff_method=diff_method,
+                init_strategy=init_strategy,
+                encoding_type=encoding_type,
+                init_std=init_std,
+                init_seed=init_seed,
             )
 
-        self.n_input_features = n_input_features
-        self.n_qubits = n_qubits
-        self.n_layers = n_layers
-        self.n_classes = n_classes
-        self.strategy = strategy
-        self.init_strategy = init_strategy
-        self.init_std = init_std
-        self.use_classical_encoder = use_classical_encoder
-
-        # ── Classical encoder ─────────────────────────────────────────────
-        if use_classical_encoder:
-            self.classical_encoder: nn.Module = nn.Sequential(
-                nn.Linear(n_input_features, n_qubits),
-                nn.Tanh(),
-            )
-        else:
-            if n_input_features != n_qubits:
+            if n_classes < 2:
+                raise ValueError(f"n_classes must be ≥ 2; got {n_classes}.")
+            if strategy not in ("softmax", "one_vs_rest"):
+                raise ValueError(f"strategy must be 'softmax' or 'one_vs_rest'; got {strategy!r}.")
+            if init_strategy not in ("restricted", "block_local", "normal"):
                 raise ValueError(
-                    f"When use_classical_encoder=False, n_input_features "
-                    f"({n_input_features}) must equal n_qubits ({n_qubits})."
+                    f"init_strategy must be 'restricted', 'block_local' or 'normal'; "
+                    f"got {init_strategy!r}."
                 )
-            self.classical_encoder = nn.Identity()
+            if not 0.0 <= dropout_p < 1.0:
+                raise ValueError(f"dropout_p must be in [0, 1); got {dropout_p}.")
+            if init_std <= 0.0:
+                raise ValueError(f"init_std must be > 0; got {init_std}.")
+            if init_strategy != "normal" and init_std != _DEFAULT_INIT_STD:
+                raise ValueError(
+                    f"init_std applies to init_strategy='normal' only; "
+                    f"'{init_strategy}' derives its own sigma from the circuit size, so "
+                    f"init_std={init_std} would be recorded in the config and ignored."
+                )
 
-        # ── Quantum encoding layer (shared by every class head) ───────────
-        self.quantum_layer: QuantumEncodingLayer | IQPEncodingLayer
-        if encoding_type == "angle":
-            self.quantum_layer = QuantumEncodingLayer(
-                n_qubits=n_qubits,
-                n_layers=n_layers,
-                device_name=device_name,
-                diff_method=diff_method,
-            )
-        elif encoding_type == "iqp":
-            self.quantum_layer = IQPEncodingLayer(
-                n_qubits=n_qubits,
-                n_layers=n_layers,
-                n_repeats=1,
-                device_name=device_name,
-                diff_method=diff_method,
-            )
-        else:
-            raise ValueError(f"Unsupported encoding_type: {encoding_type}")
+            self.n_input_features = n_input_features
+            self.n_qubits = n_qubits
+            self.n_layers = n_layers
+            self.n_classes = n_classes
+            self.strategy = strategy
+            self.init_strategy = init_strategy
+            self.init_std = init_std
+            self.use_classical_encoder = use_classical_encoder
 
-        # ── Dropout ───────────────────────────────────────────────────────
-        self.dropout = nn.Dropout(p=dropout_p) if dropout_p > 0.0 else nn.Identity()
+            # ── Classical encoder ─────────────────────────────────────────────
+            if use_classical_encoder:
+                self.classical_encoder: nn.Module = nn.Sequential(
+                    nn.Linear(n_input_features, n_qubits),
+                    nn.Tanh(),
+                )
+            else:
+                if n_input_features != n_qubits:
+                    raise ValueError(
+                        f"When use_classical_encoder=False, n_input_features "
+                        f"({n_input_features}) must equal n_qubits ({n_qubits})."
+                    )
+                self.classical_encoder = nn.Identity()
 
-        # ── Class heads: one row per class ────────────────────────────────
-        self.head = nn.Linear(n_qubits, n_classes)
+            # ── Quantum encoding layer (shared by every class head) ───────────
+            self.quantum_layer: QuantumEncodingLayer | IQPEncodingLayer
+            if encoding_type == "angle":
+                self.quantum_layer = QuantumEncodingLayer(
+                    n_qubits=n_qubits,
+                    n_layers=n_layers,
+                    device_name=device_name,
+                    diff_method=diff_method,
+                )
+            elif encoding_type == "iqp":
+                self.quantum_layer = IQPEncodingLayer(
+                    n_qubits=n_qubits,
+                    n_layers=n_layers,
+                    n_repeats=1,
+                    device_name=device_name,
+                    diff_method=diff_method,
+                )
+            else:
+                raise ValueError(f"Unsupported encoding_type: {encoding_type}")
 
-        # ── Small-angle restricted-variance initialisation ─────────────────
-        with seeded_rng(init_seed):
+            # ── Dropout ───────────────────────────────────────────────────────
+            self.dropout = nn.Dropout(p=dropout_p) if dropout_p > 0.0 else nn.Identity()
+
+            # ── Class heads: one row per class ────────────────────────────────
+            self.head = nn.Linear(n_qubits, n_classes)
+
+            # ── Small-angle restricted-variance initialisation ─────────────────
+            reseed()
             self._initialise_weights()
-        if caller_rng is not None:
-            torch.random.set_rng_state(caller_rng)
 
     # ------------------------------------------------------------------
     def _initialise_weights(self) -> None:
@@ -393,8 +392,11 @@ class MulticlassHybridClassifier(nn.Module):
         Constructor arguments of this model, as a fresh dict.
 
         ``type(model)(**model.get_config())`` builds a model with the same
-        architecture (weights are re-initialised; load a ``state_dict`` for
-        those).  Used by ``hqnn_forge.utils.checkpoint``.
+        architecture (load a ``state_dict`` for the trained weights).  Its
+        initial weights are fresh draws only if ``init_seed`` is ``None``: a
+        model built with ``init_seed`` rebuilds the *same* initial weights, so
+        for restarts or ensemble members pass ``init_seed=None`` or a new seed.
+        Used by ``hqnn_forge.utils.checkpoint``.
         """
         return dict(self._config)
 

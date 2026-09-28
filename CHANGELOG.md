@@ -64,10 +64,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   interpolation of scikit-learn's `average_precision_score` and tied probabilities as one
   operating point; threshold-free, so it stays out of `METRICS` and `find_optimal_threshold`
   refuses it
-
 - `init_seed` on `HybridBinaryClassifier`, `ParallelHybridClassifier` and
   `MulticlassHybridClassifier`: seeds weight initialisation from a private RNG, so the same
-  seed gives the same weights and the global torch RNG is left exactly as it was
+  seed gives the same weights and the global torch RNG is left exactly as it was, also when
+  the constructor raises. It is recorded in `get_config()`, so rebuilding from a seeded
+  model's config repeats its initial weights
+
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from
   `checkpoint._LEGACY_DEFAULTS` — the behaviour from before each argument existed — with a
@@ -109,11 +111,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gates before counting, so `n_two_qubit_gates` is the circuit's two-qubit cost: a k-wire
   `MultiRZ` counts as its 2(k-1) CNOTs instead of once. No circuit in the library emits such a
   gate today, so no current summary changes
-
 - `HybridClassifierEstimator.fit` no longer reseeds the global torch RNG: with `random_state`
-  set, initial weights and dropout masks come from a private RNG seeded with it, and the
-  caller's stream is restored afterwards. A given `random_state` therefore yields different
-  initial weights than before, and a NumPy integer `random_state` is accepted
+  set, the model draws its initial weights with `init_seed=random_state`, dropout masks and
+  batch order come from seeds spawned from it, and the caller's stream is restored
+  afterwards. A given `random_state` therefore yields different initial weights, dropout
+  masks and batch order than before
+
 ### Fixed
 - `circuit_summary` and `count_inert_parameters` raised `TypeError` with PennyLane's
   graph-based decomposition enabled (`qml.decomposition.enable_graph()`), which requires a
@@ -128,6 +131,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `QuantumEncodingLayer` and `build_encoding_qnode` reject an unknown `rotation` axis at
   construction, where `entangler` and `readout` are already rejected; it used to construct
   cleanly and fail inside PennyLane on the first forward pass
+- `HybridClassifierEstimator.fit` raised on a NumPy integer `random_state` (as scikit-learn
+  tooling passes) in `torch.Generator().manual_seed`; it is now taken as the int it is
 
 ### Removed
 - `black` from the `dev` extra; `ruff format` is the only formatter, sharing the
