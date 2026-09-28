@@ -49,6 +49,8 @@ except ImportError as exc:  # pragma: no cover - exercised only without scikit-l
         "were added in 1.6, so an older install fails this import too."
     ) from exc
 
+from hqnn_forge.evaluation.calibration import PlattScaler, TemperatureScaler
+from hqnn_forge.evaluation.thresholds import find_optimal_threshold
 from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
 from hqnn_forge.training import TrainingHistory, train_model
 from hqnn_forge.utils import FocalLoss
@@ -56,6 +58,11 @@ from hqnn_forge.utils.rng import as_seed, seeded_rng
 
 ModelName = Literal["serial", "parallel"]
 LossName = Literal["focal", "bce"]
+CalibrationName = Literal["temperature", "platt"]
+CALIBRATORS: dict[str, type[TemperatureScaler | PlattScaler]] = {
+    "temperature": TemperatureScaler,
+    "platt": PlattScaler,
+}
 
 
 class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
@@ -92,6 +99,22 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         searches a threshold for the metric monitors only, so ``"optimal"``
         falls back to 0.5 both without a validation split and under
         ``monitor="val_loss"``.
+    calibration:
+        ``None`` (default): the model's own probabilities.  ``"temperature"``
+        or ``"platt"``: a :class:`~hqnn_forge.evaluation.TemperatureScaler` or
+        :class:`~hqnn_forge.evaluation.PlattScaler` fitted on the validation
+        logits after training, which minimises the validation log loss, and
+        applied in ``predict_proba``.  Focal loss, the default, trades
+        calibration for focus on hard examples, so its probabilities tend to
+        be under-confident.  Needs ``validation_fraction > 0``.  Both maps
+        are increasing in the logit (Platt's whenever its slope is positive),
+        so they change no ranking, and with ``threshold="optimal"`` the
+        threshold is mapped through the same function: ``predict`` returns
+        exactly what it would uncalibrated.  A Platt slope ≤ 0 (a model
+        anti-correlated with the labels) reverses the order instead, and the
+        threshold is then searched again on the calibrated validation
+        probabilities.  A fixed threshold applies to the calibrated
+        probabilities as given.
     random_state:
         Seeds weight initialisation, dropout, the validation split and batch
         order.  The initial weights are the model's ``init_seed=random_state``
@@ -110,6 +133,8 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
     history_ : TrainingHistory
     threshold_ : float
         Decision threshold used by ``predict``.
+    calibrator_ : TemperatureScaler, PlattScaler or None
+        The fitted calibration, or ``None`` without ``calibration``.
     """
 
     def __init__(
@@ -132,6 +157,7 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         patience: int | None = 10,
         monitor: str = "mcc",
         threshold: float | Literal["optimal"] = "optimal",
+        calibration: CalibrationName | None = None,
         random_state: int | None = None,
     ) -> None:
         self.model = model
@@ -152,6 +178,7 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         self.patience = patience
         self.monitor = monitor
         self.threshold = threshold
+        self.calibration = calibration
         self.random_state = random_state
 
     # ------------------------------------------------------------------
@@ -234,6 +261,15 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
                 f"validation_fraction must lie in [0, 1); got {self.validation_fraction}."
             )
         self._check_threshold(self.threshold)
+        if self.calibration is not None and self.calibration not in CALIBRATORS:
+            raise ValueError(
+                f"calibration must be None, 'temperature' or 'platt'; got {self.calibration!r}."
+            )
+        if self.calibration is not None and self.validation_fraction == 0:
+            raise ValueError(
+                f"calibration={self.calibration!r} is fitted on the validation split; set "
+                f"validation_fraction > 0."
+            )
         y01 = (y_arr == classes[1]).astype(np.int64)
 
         # A NumPy integer, as scikit-learn tools pass, is taken as the int it is.
@@ -289,12 +325,33 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
             threshold = float(self.threshold)
         model.eval()
 
+        calibrator: TemperatureScaler | PlattScaler | None = None
+        if self.calibration is not None and val[0] is not None and val[1] is not None:
+            with torch.no_grad():
+                val_logits = model(val[0]).reshape(-1)
+            calibrator = CALIBRATORS[self.calibration].fit(val_logits, val[1])
+            if self.threshold == "optimal":
+                if isinstance(calibrator, PlattScaler) and calibrator.a <= 0:
+                    # A decreasing map reverses the order, so the old
+                    # threshold has no image: search again, as train_model
+                    # did, on the probabilities predict will now threshold.
+                    threshold = find_optimal_threshold(
+                        val[1].long(), calibrator(val_logits), metric=self.monitor
+                    ).threshold
+                else:
+                    # An increasing map: the threshold's image splits every
+                    # input exactly as before, so calibration changes the
+                    # probabilities and not one prediction.
+                    t = torch.tensor(threshold, dtype=torch.float64)
+                    threshold = float(calibrator(torch.logit(t)))
+
         # Fitted attributes are published only once training has succeeded, so a
         # failed refit leaves the estimator on its previous fit rather than on an
         # untrained model that ``check_is_fitted`` would wave through.
         self.classes_ = classes
         self.history_: TrainingHistory = history
         self.threshold_ = threshold
+        self.calibrator_ = calibrator
         self.model_ = model
         return self
 
@@ -302,7 +359,12 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         """Class probabilities, shape ``(n_samples, 2)``, columns in ``classes_`` order."""
         check_is_fitted(self, "model_")
         X_arr = validate_data(self, X, dtype=np.float32, reset=False)
-        positive = self.model_.predict_proba(torch.from_numpy(X_arr)).numpy().astype(np.float64)
+        X_t = torch.from_numpy(X_arr)
+        if self.calibrator_ is None:
+            positive = self.model_.predict_proba(X_t).numpy().astype(np.float64)
+        else:
+            with torch.no_grad():
+                positive = self.calibrator_(self.model_(X_t).reshape(-1)).numpy()
         return np.column_stack([1.0 - positive, positive])
 
     def predict(self, X: npt.ArrayLike) -> npt.NDArray[Any]:

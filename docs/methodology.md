@@ -99,7 +99,11 @@ known to change calibration, so compare these columns before reading a probabili
 probability. `TemperatureScaler` and `PlattScaler` (`hqnn_forge.evaluation`) fix
 calibration after training, fitted on the validation split; `train_model` records the
 validation temperature in its history. Temperature scaling is monotone, so it leaves every
-ranking-based number above unchanged.
+ranking-based number above unchanged. `HybridClassifierEstimator(calibration="temperature")`
+(or `"platt"`) fits one on its validation split and applies it in `predict_proba`, mapping the
+decision threshold through it so that `predict` does not change (#359). With focal loss the
+fitted temperature was below 1 on the test data used for it (0.3 to 1.0): the model is
+under-confident, and calibration sharpens it.
 
 ## Statistics
 
