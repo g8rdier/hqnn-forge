@@ -8,6 +8,7 @@ temperature and the benchmark's calibration columns (#319).
 from __future__ import annotations
 
 import warnings
+from typing import Any
 
 import numpy as np
 import pytest
@@ -16,11 +17,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from hqnn_forge.evaluation import (
+    MulticlassTemperatureScaler,
     PlattScaler,
     TemperatureScaler,
     brier_score,
+    classwise_ece,
     expected_calibration_error,
+    multiclass_brier_score,
     reliability_curve,
+    top_label_ece,
 )
 from hqnn_forge.training import train_model
 
@@ -272,3 +277,129 @@ class TestBenchmark:
             assert all(0 <= f.brier <= 1 and 0 <= f.ece <= 1 for f in folds)
             assert record["brier_mean"] == pytest.approx(np.mean([f.brier for f in folds]))
             assert record["ece_mean"] == pytest.approx(np.mean([f.ece for f in folds]))
+
+
+# ---------------------------------------------------------------------------
+# Multiclass (#360)
+# ---------------------------------------------------------------------------
+
+
+def _multiclass(n: int = 300, k: int = 4, seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
+    rng = np.random.default_rng(seed)
+    logits = rng.normal(size=(n, k)) * 2
+    prob = np.exp(logits) / np.exp(logits).sum(1, keepdims=True)
+    y = np.array([rng.choice(k, p=row) for row in prob])
+    return y, prob
+
+
+class TestMulticlassBrier:
+    def test_matches_scikit_learn(self) -> None:
+        from sklearn.metrics import brier_score_loss
+
+        y, prob = _multiclass()
+        assert multiclass_brier_score(y, prob) == pytest.approx(brier_score_loss(y, prob))
+
+    def test_known_values(self) -> None:
+        k = 4
+        y = np.array([0, 1, 2, 3, 1])
+        assert multiclass_brier_score(y, np.eye(k)[y]) == 0.0
+        assert multiclass_brier_score(y, np.full((5, k), 1 / k)) == pytest.approx(1 - 1 / k)
+        # Certain and wrong: two squared errors of 1.
+        assert multiclass_brier_score(y, np.eye(k)[(y + 1) % k]) == 2.0
+
+    def test_two_classes_count_both_columns(self) -> None:
+        y, prob = _multiclass(k=2)
+        assert multiclass_brier_score(y, prob) == pytest.approx(2 * brier_score(y, prob[:, 1]))
+
+
+class TestMulticlassECE:
+    def test_top_label_by_hand(self) -> None:
+        # Confidence 0.9 right once and wrong once (frequency 0.5), and 0.6
+        # right twice (frequency 1): |0.5 − 0.9| · ½ + |1 − 0.6| · ½ = 0.4.
+        prob = np.array([[0.9, 0.05, 0.05], [0.9, 0.05, 0.05], [0.2, 0.6, 0.2], [0.2, 0.2, 0.6]])
+        y = np.array([0, 1, 1, 2])
+        assert top_label_ece(y, prob) == pytest.approx(0.4)
+
+    def test_top_label_is_zero_when_confidence_is_frequency(self) -> None:
+        # Two samples at confidence 0.5 in two classes, one right and one wrong.
+        prob = np.array([[0.5, 0.5, 0.0], [0.5, 0.5, 0.0]])
+        assert top_label_ece(np.array([0, 1]), prob) == pytest.approx(0.0)
+
+    def test_classwise_is_the_mean_of_one_vs_rest_eces(self) -> None:
+        y, prob = _multiclass()
+        per_class = [
+            expected_calibration_error((y == k).astype(int), prob[:, k]) for k in range(4)
+        ]
+        assert classwise_ece(y, prob) == pytest.approx(np.mean(per_class))
+        quantile = [
+            expected_calibration_error((y == k).astype(int), prob[:, k], strategy="quantile")
+            for k in range(4)
+        ]
+        assert classwise_ece(y, prob, strategy="quantile") == pytest.approx(np.mean(quantile))
+
+    def test_classwise_by_hand(self) -> None:
+        # Class 0: p = 0.8, 0.8 with labels 1, 0 → |0.5 − 0.8| = 0.3; p = 0.2,
+        # 0.2 with labels 0, 0 → 0.2; ECE 0.25.  Class 1 mirrors it: 0.25.
+        prob = np.array([[0.8, 0.2], [0.8, 0.2], [0.2, 0.8], [0.2, 0.8]])
+        y = np.array([0, 1, 1, 1])
+        assert classwise_ece(y, prob) == pytest.approx(0.25)
+
+    def test_calibrated_sampling_gives_a_small_ece(self) -> None:
+        # Labels drawn from the probabilities themselves: calibrated by
+        # construction, so the ECEs are sampling noise only.
+        y, prob = _multiclass(n=20000)
+        assert top_label_ece(y, prob) < 0.02
+        assert classwise_ece(y, prob) < 0.02
+
+
+class TestMulticlassTemperature:
+    def test_recovers_an_over_confidence_factor(self) -> None:
+        # Labels drawn from softmax(z), logits reported as 3z: T ≈ 3 undoes it.
+        rng = np.random.default_rng(1)
+        z = rng.normal(size=(20000, 3))
+        prob = np.exp(z) / np.exp(z).sum(1, keepdims=True)
+        y = np.array([rng.choice(3, p=row) for row in prob])
+        scaler = MulticlassTemperatureScaler.fit(3 * z, y)
+        assert scaler.temperature == pytest.approx(3.0, rel=0.05)
+
+    def test_keeps_the_argmax_and_never_raises_the_nll(self) -> None:
+        y, prob = _multiclass(seed=2)
+        logits = torch.from_numpy(np.log(prob) * 0.4)  # under-confident
+        scaler = MulticlassTemperatureScaler.fit(logits, y)
+        calibrated = scaler(logits)
+        assert torch.equal(calibrated.argmax(1), logits.argmax(1))
+        target = torch.from_numpy(y)
+        before = torch.nn.functional.cross_entropy(logits, target)
+        after = torch.nn.functional.nll_loss(calibrated.log(), target)
+        assert after <= before + 1e-12
+        assert scaler.temperature < 1
+
+    def test_at_the_nll_optimum(self) -> None:
+        y, prob = _multiclass(seed=3)
+        logits = torch.from_numpy(np.log(prob) * 2.5)
+        scaler = MulticlassTemperatureScaler.fit(logits, y)
+        t = torch.tensor(scaler.temperature, dtype=torch.float64, requires_grad=True)
+        torch.nn.functional.cross_entropy(logits / t, torch.from_numpy(y)).backward()
+        assert t.grad is not None and abs(t.grad.item()) < 1e-6
+
+    def test_needs_two_classes(self) -> None:
+        with pytest.raises(ValueError, match="at least two classes"):
+            MulticlassTemperatureScaler.fit(np.zeros((4, 3)), np.array([1, 1, 1, 1]))
+
+
+class TestMulticlassValidation:
+    @pytest.mark.parametrize(
+        ("y", "prob", "match"),
+        [
+            (np.array([0, 1]), np.array([0.2, 0.8]), r"shape \(n, K\)"),
+            (np.array([0, 1]), np.array([[0.2, 0.8]]), "differ in length"),
+            (np.array([0, 3]), np.array([[0.2, 0.8], [0.5, 0.5]]), "class labels 0"),
+            (np.array([0.0, 0.5]), np.array([[0.2, 0.8], [0.5, 0.5]]), "integer class labels"),
+            (np.array([0, 1]), np.array([[0.2, 0.7], [0.5, 0.5]]), "sum to 1"),
+            (np.array([0, 1]), np.array([[-0.2, 1.2], [0.5, 0.5]]), r"in \[0, 1\]"),
+        ],
+    )
+    @pytest.mark.parametrize("fn", [multiclass_brier_score, top_label_ece, classwise_ece])
+    def test_bad_input(self, fn: Any, y: np.ndarray, prob: np.ndarray, match: str) -> None:
+        with pytest.raises(ValueError, match=match):
+            fn(y, prob)
