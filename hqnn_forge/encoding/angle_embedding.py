@@ -391,7 +391,8 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
         average.  See :mod:`hqnn_forge.noise`.
     noise_trajectories:
         Draws averaged per sample with ``noise_method="trajectories"``.
-        Default 1; must be 1 for ``"density"``.
+        Default 1; must be 1 for ``"density"``.  Use 8 or more at noise of a
+        few percent per gate (#347; see :mod:`hqnn_forge.noise`).
 
     Attributes
     ----------

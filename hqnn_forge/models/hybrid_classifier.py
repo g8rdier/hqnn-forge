@@ -178,7 +178,9 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
         ``"density"`` on average).  See
         :class:`~hqnn_forge.encoding.QuantumEncodingLayer`.
     noise_trajectories:
-        Draws averaged per sample with ``"trajectories"``.  Default: 1.
+        Draws averaged per sample with ``"trajectories"``.  Default: 1.  Use 8
+        or more at noise of a few percent per gate: fewer draws occasionally
+        made training collapse (#347; see :mod:`hqnn_forge.noise`).
     trainable_input_scaling:
         With ``encoding_type="reuploading"`` only: a trainable per-upload
         scale on the features, initialised to 1.  Default: ``False``.

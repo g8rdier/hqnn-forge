@@ -64,7 +64,8 @@ The noiseless model is trained once per seed, taking about 5 s. Total training t
 
 - **Keep `noise_method="density"` as the default** wherever it fits in memory (up to about 6
   qubits). It never failed here.
-- **Beyond that, use `"trajectories"` with `noise_trajectories ≥ 4`**, and check the runs,
+- **Beyond that, use `"trajectories"` with `noise_trajectories ≥ 4`** (raised to **≥ 8** by
+  the follow-up in `trajectory-collapse-study.md`, #347, which found no collapse at k = 8), and check the runs,
   especially at noise strengths of a few percent per gate. With 5 seeds, a collapse is visible
   as an outlier in the seed spread.
 - **Do not switch the default automatically by qubit count** on this evidence. The occasional
@@ -80,4 +81,5 @@ The noiseless model is trained once per seed, taking about 5 s. Total training t
   #269–#297), so they aren't used here. The script's `run_one` is the unit to port once those
   land.
 - The learning rate and schedule were not tuned per method. A lower learning rate may prevent
-  the collapses; that is the obvious follow-up.
+  the collapses; that is the obvious follow-up. (#347 tested it: it does not; k = 8 does. See
+  `trajectory-collapse-study.md`.)
