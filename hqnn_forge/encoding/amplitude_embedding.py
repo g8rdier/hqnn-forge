@@ -183,6 +183,7 @@ def build_amplitude_qnode(
     entangler: Entangler = "ring",
     readout: Readout = "all",
     shots: int | None = None,
+    seed: int | None = None,
 ) -> qml.QNode:
     """
     Build and return a PennyLane QNode for the amplitude feature map.
@@ -216,7 +217,7 @@ def build_amplitude_qnode(
 
     device_name, diff_method = resolve_backend(device_name, diff_method, n_qubits, shots=shots)
     validate_shots(shots, diff_method)
-    device = resolve_device(device_name, n_qubits)
+    device = resolve_device(device_name, n_qubits, seed=seed)
     circuit_fn = _make_amplitude_embedding_circuit(
         n_qubits, n_layers, diff_method, entangler, readout
     )
@@ -371,6 +372,7 @@ class AmplitudeEncodingLayer(TrainingNoiseMixin, nn.Module):
         noise_method: NoiseMethod = "density",
         noise_trajectories: int = 1,
         shots: int | None = None,
+        seed: int | None = None,
     ) -> None:
         super().__init__()
 
@@ -401,6 +403,7 @@ class AmplitudeEncodingLayer(TrainingNoiseMixin, nn.Module):
             entangler=entangler,
             readout=readout,
             shots=shots,
+            seed=seed,
         )
 
         weight_shapes: dict[str, tuple[int, ...]] = {
@@ -417,6 +420,7 @@ class AmplitudeEncodingLayer(TrainingNoiseMixin, nn.Module):
             shots=shots,
         )
         self.shots = shots
+        self.seed = seed
 
     # ------------------------------------------------------------------
     def prepare_inputs(self, x: torch.Tensor) -> torch.Tensor:
@@ -495,5 +499,5 @@ class AmplitudeEncodingLayer(TrainingNoiseMixin, nn.Module):
             f"n_layers={self.n_layers}, "
             f"n_features={self.n_features}, "
             f"n_params={sum(p.numel() for p in self.parameters())}{options}"
-            f"{self._noise_repr()}{shots_repr(self.shots)}"
+            f"{self._noise_repr()}{shots_repr(self.shots, self.seed)}"
         )

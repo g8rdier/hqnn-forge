@@ -320,12 +320,29 @@ def validate_shots(shots: int | None, diff_method: str) -> None:
         )
 
 
-def shots_repr(shots: int | None) -> str:
-    """The ``extra_repr`` fragment for a finite shot count; empty for exact values."""
-    return "" if shots is None else f", shots={shots}"
+def shots_repr(shots: int | None, seed: int | None = None) -> str:
+    """The ``extra_repr`` fragment for a shot count and device seed; empty for neither."""
+    return ("" if shots is None else f", shots={shots}") + (
+        "" if seed is None else f", seed={seed}"
+    )
 
 
-def resolve_device(device_name: DeviceName, n_qubits: int) -> qml.devices.Device:
+def validate_seed(seed: int | None) -> None:
+    """
+    Raise ``ValueError`` unless ``seed`` is ``None`` or a non-negative ``int``.
+
+    NumPy's generators, which PennyLane's simulators use, take no negative
+    seed; ``bool`` is refused as it is for ``shots``.
+    """
+    if seed is None:
+        return
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ValueError(f"seed must be None or a non-negative int; got {seed!r}.")
+
+
+def resolve_device(
+    device_name: DeviceName, n_qubits: int, *, seed: int | None = None
+) -> qml.devices.Device:
     """
     Create *device_name*, falling back along :data:`FALLBACK_CHAIN` when a
     backend is not installed or has no usable hardware, with one
@@ -350,6 +367,13 @@ def resolve_device(device_name: DeviceName, n_qubits: int) -> qml.devices.Device
         the README for their prerequisites.
     n_qubits:
         Number of qubits to allocate.
+    seed:
+        Seed of the device's own random generator, which draws the shot
+        samples.  ``None`` leaves PennyLane's default, which seeds from the
+        global NumPy generator: ``torch.manual_seed`` does not reach it, so
+        shot-based results then differ from run to run.  ``default.qubit``,
+        ``default.mixed`` and the lightning devices honour it; a plugin device
+        is passed it as given.  See :func:`validate_seed`.
 
     Returns
     -------
@@ -365,15 +389,17 @@ def resolve_device(device_name: DeviceName, n_qubits: int) -> qml.devices.Device
     which can only happen if PennyLane itself is broken (``default.qubit``
     has no dependencies).
     """
+    validate_seed(seed)
+    kwargs: dict[str, object] = {} if seed is None else {"seed": seed}
     if device_name not in KNOWN_DEVICES:
-        dev = qml.device(device_name, wires=n_qubits)
+        dev = qml.device(device_name, wires=n_qubits, **kwargs)
         logger.debug("Quantum device initialised: %s (%d qubits)", device_name, n_qubits)
         return dev
     start = FALLBACK_CHAIN.index(device_name) + 1 if device_name in FALLBACK_CHAIN else 0
     candidates = [device_name, *FALLBACK_CHAIN[start:]]
     for attempt, name in enumerate(candidates):
         try:
-            dev = qml.device(name, wires=n_qubits)
+            dev = qml.device(name, wires=n_qubits, **kwargs)
         except DEVICE_FAILURES as exc:
             if attempt == len(candidates) - 1 or is_out_of_memory(exc):
                 raise

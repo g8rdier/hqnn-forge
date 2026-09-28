@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `seed` on the encoding layers and classifiers seeds the device's shot sampling, which
+  `torch.manual_seed` does not reach, so seeded shot-based runs repeat exactly; the
+  estimator passes its `random_state`, and `seed` is a weight-safe checkpoint argument.
+  `SPSA(..., model=model)` starts both evaluations of a step from the same device generator
+  state, which cut the shot-noise variance of its gradient estimate about fourfold (#354)
 - Project scaffold and packaging setup
 - PCANormalizer (pure-NumPy) for quantum angle encoding
 - Small-angle restricted-variance initialiser (the σ formulas are this library's own

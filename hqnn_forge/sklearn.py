@@ -92,7 +92,8 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         falls back to 0.5 both without a validation split and under
         ``monitor="val_loss"``.
     random_state:
-        Seeds weight initialisation, the validation split and batch order.
+        Seeds weight initialisation, the validation split, batch order and
+        the device's shot sampling (the model's ``seed``).
         Weight initialisation runs off the global torch RNG, so a seeded
         ``fit`` reseeds it process-wide (see #175).
 
@@ -162,6 +163,9 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
             diff_method=self.diff_method,
             init_strategy=self.init_strategy,
             encoding_type=self.encoding_type,
+            # Seeds the devices' shot sampling too, which torch.manual_seed
+            # does not reach; inert for exact simulation.
+            seed=self.random_state,
         )
         if self.model == "serial":
             return HybridBinaryClassifier(**common)
