@@ -61,6 +61,7 @@ import torch
 import torch.nn as nn
 
 from hqnn_forge.initializers import block_local_init_, restricted_normal_init_
+from hqnn_forge.initializers.restricted_variance import _not_restricting_ignored
 from hqnn_forge.utils.modes import eval_mode
 
 InitName = Literal["uniform", "restricted", "block_local"]
@@ -175,14 +176,16 @@ def _make_init(
     if init == "restricted":
 
         def restricted(w: torch.Tensor) -> None:
-            with _seeded(generator):
+            # Small sizes are measured on purpose here, not a misuse.
+            with _seeded(generator), _not_restricting_ignored():
                 restricted_normal_init_(w, n_qubits=n_qubits, n_layers=n_layers)
 
         return init, restricted
     if init == "block_local":
 
         def block_local(w: torch.Tensor) -> None:
-            with _seeded(generator):
+            # Small sizes are measured on purpose here, not a misuse.
+            with _seeded(generator), _not_restricting_ignored():
                 block_local_init_(w, n_qubits=n_qubits)
 
         return init, block_local

@@ -25,7 +25,11 @@ import torch
 
 from hqnn_forge.encoding import QuantumEncodingLayer
 from hqnn_forge.initializers import block_local_init_, restricted_normal_init_
-from hqnn_forge.models import HybridBinaryClassifier
+from hqnn_forge.models import (
+    HybridBinaryClassifier,
+    MulticlassHybridClassifier,
+    ParallelHybridClassifier,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -219,6 +223,12 @@ class TestRestrictedVarianceInit:
         assert restricted_normal_init_(tensor, n_qubits=4, n_layers=2) is tensor
 
 
+def _not_restricting(record: pytest.WarningsRecorder) -> warnings.WarningMessage:
+    """The one init warning in *record*, whatever else torch or PennyLane emitted."""
+    [match] = [w for w in record if "restricts nothing" in str(w.message)]
+    return match
+
+
 class TestWiderThanUniformWarning:
     """
     #167: the initialisers warn when the σ they draw is not narrower than a
@@ -231,15 +241,20 @@ class TestWiderThanUniformWarning:
         sigma = math.pi / math.sqrt(n_qubits * n_layers)
         with pytest.warns(UserWarning, match="restricts nothing") as record:
             restricted_normal_init_(torch.empty(n_layers, n_qubits, 3), n_qubits, n_layers)
-        message = str(record[0].message)
+        warning = _not_restricting(record)
+        message = str(warning.message)
         assert f"σ = {sigma:.4f}" in message and "std 1.8138" in message
-        assert record[0].filename == __file__, "stacklevel should point at the caller"
+        assert "n_qubits * n_layers <= 3" in message
+        assert warning.filename == __file__, "stacklevel should point at the caller"
 
     @pytest.mark.parametrize(("n_qubits", "n_layers"), [(3, 1), (1, 3), (2, 1)])
     def test_block_local_warns_on_its_widest_layer(self, n_qubits: int, n_layers: int) -> None:
+        sigma = math.pi / math.sqrt(n_qubits * n_layers)
         with pytest.warns(UserWarning, match="block_local_init_") as record:
             block_local_init_(torch.empty(n_layers, n_qubits, 3), n_qubits=n_qubits)
-        assert record[0].filename == __file__
+        warning = _not_restricting(record)
+        assert f"σ = {sigma:.4f}" in str(warning.message)
+        assert warning.filename == __file__
 
     @pytest.mark.parametrize(("n_qubits", "n_layers"), [(4, 1), (2, 2), (8, 2)])
     def test_silent_once_narrower(self, n_qubits: int, n_layers: int) -> None:
@@ -254,7 +269,19 @@ class TestWiderThanUniformWarning:
             warnings.simplefilter("error")
             restricted_normal_init_(torch.empty(1, 1, 3), 1, 1, scale=1.0)
 
-    def test_classifier_surfaces_it_and_the_normal_strategy_does_not(self) -> None:
+    def test_a_wider_scale_names_itself_not_the_pi_rule(self) -> None:
+        """σ = 4/sqrt(4) = 2 > 1.81 at n * L = 4: the n * L <= 3 rule would mislead."""
+        with pytest.warns(UserWarning, match="restricts nothing") as record:
+            restricted_normal_init_(torch.empty(2, 2, 3), 2, 2, scale=4.0)
+        message = str(_not_restricting(record).message)
+        assert "scale=4" in message and "σ = 2.0000" in message
+        assert "<= 3" not in message
+
+    @pytest.mark.parametrize(
+        "cls", [HybridBinaryClassifier, ParallelHybridClassifier, MulticlassHybridClassifier]
+    )
+    @pytest.mark.parametrize("init_strategy", ["restricted", "block_local"])
+    def test_classifier_warns_at_the_users_line(self, cls: type, init_strategy: str) -> None:
         kwargs = dict(
             n_input_features=2,
             n_qubits=2,
@@ -262,11 +289,14 @@ class TestWiderThanUniformWarning:
             device_name="default.qubit",
             diff_method="backprop",
         )
-        with pytest.warns(UserWarning, match="restricts nothing"):
-            HybridBinaryClassifier(**kwargs)  # type: ignore[arg-type]
+        with pytest.warns(UserWarning, match="restricts nothing") as record:
+            cls(init_strategy=init_strategy, **kwargs)
+        warning = _not_restricting(record)
+        assert warning.filename == __file__, "attributed inside hqnn_forge, not to the caller"
+        assert "init_strategy='normal'" in str(warning.message)
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
-            HybridBinaryClassifier(init_strategy="normal", **kwargs)  # type: ignore[arg-type]
+            cls(init_strategy="normal", **kwargs)
 
 
 class TestBlockLocalInit:

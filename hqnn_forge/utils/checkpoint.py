@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 import hqnn_forge
+from hqnn_forge.initializers.restricted_variance import _not_restricting_ignored
 
 if TYPE_CHECKING:
     # Type-only: importing this at runtime would be circular, since
@@ -316,7 +317,10 @@ def load_checkpoint(
             f"checkpoint config does not match {class_name}'s constructor: {'; '.join(details)}."
         )
 
-    model = cls(**config)
+    # The constructor's weight draw is overwritten below, so a warning about
+    # it (a toy size whose restricted init restricts nothing) is noise here.
+    with _not_restricting_ignored():
+        model = cls(**config)
     # Before load_state_dict, so the stored tensors -- already read onto
     # map_location -- are copied into parameters that live there too.  Building
     # the model alone always puts it on the CPU.

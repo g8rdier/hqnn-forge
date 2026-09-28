@@ -70,6 +70,23 @@ def saved(tmp_path: Path) -> tuple[torch.nn.Module, Path]:
 
 
 class TestRoundTrip:
+    @pytest.mark.parametrize("init_strategy", ["restricted", "block_local"])
+    def test_toy_size_reloads_without_the_init_warning(
+        self, init_strategy: str, tmp_path: Path
+    ) -> None:
+        """The rebuild's weight draw is overwritten, so its #167 warning must not surface."""
+        with pytest.warns(UserWarning, match="restricts nothing"):
+            model = HybridBinaryClassifier(
+                n_input_features=2, n_qubits=2, n_layers=1, init_strategy=init_strategy, **CPU
+            )
+        path = tmp_path / "toy.pt"
+        save_checkpoint(model, path)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            loaded = load_checkpoint(path)
+        for key, value in model.state_dict().items():
+            torch.testing.assert_close(loaded.state_dict()[key], value)
+
     @pytest.mark.parametrize("cls, extra", MODELS)
     def test_identical_outputs_after_reload(self, cls: type, extra: dict, tmp_path: Path) -> None:
         model = _trained(cls, extra)

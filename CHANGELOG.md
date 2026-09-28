@@ -94,7 +94,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `restricted_normal_init_` and `block_local_init_` emit a `UserWarning` naming both standard
   deviations when the σ they draw is not narrower than a uniform draw over [0, 2π)
   (2π/sqrt(12) ≈ 1.81 rad), which at the default `scale = π` means `n_qubits * n_layers <= 3`;
-  such a toy circuit was silently initialised wider than the regime the init exists to avoid
+  such a toy circuit was silently initialised wider than the regime the init exists to avoid.
+  The warning is attributed to the first frame outside `hqnn_forge`, so a classifier built at
+  such a size reports the user's own line. `load_checkpoint` and `gradient_variance`, whose
+  draws are discarded or deliberately small, do not emit it
 
 ### Fixed
 - Device fallback raised `AttributeError` on PennyLane 0.45, where `qml.DeviceError` no longer

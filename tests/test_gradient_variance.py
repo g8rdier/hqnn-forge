@@ -13,6 +13,7 @@ which quotes its own ranges.
 from __future__ import annotations
 
 import math
+import warnings
 
 import pennylane as qml
 import pytest
@@ -208,6 +209,13 @@ class TestPhysics:
 
 
 class TestMechanics:
+    @pytest.mark.parametrize("init", ["restricted", "block_local"])
+    def test_toy_sizes_do_not_warn(self, init: str) -> None:
+        """Comparing inits where restricted restricts nothing is the point, not a misuse (#167)."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            gradient_variance(_layer(2, 1), n_samples=3, init=init, generator=_gen())
+
     def test_result_fields(self) -> None:
         r = gradient_variance(_layer(3, 2), n_samples=5, init="block_local", input_scale=1.0)
         assert isinstance(r, GradientVarianceResult)

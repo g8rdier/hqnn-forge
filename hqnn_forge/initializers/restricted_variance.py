@@ -166,30 +166,56 @@ from __future__ import annotations
 
 import math
 import warnings
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 import torch
+
+from hqnn_forge._warnings import external_stacklevel
 
 #: Standard deviation of an angle drawn uniformly from [0, 2π): 2π/sqrt(12).
 UNIFORM_STD = 2 * math.pi / math.sqrt(12)
 
 
-def _warn_if_not_restricting(std: float, name: str, n_qubits: int, n_layers: int) -> None:
+def _warn_if_not_restricting(
+    std: float, name: str, n_qubits: int, n_layers: int, scale: float
+) -> None:
     """
     Warn when ``std`` is not narrower than a uniform draw over [0, 2π).
 
     The relative slack of 1e-9 makes the boundary case, σ equal to the uniform
     std (``n_qubits * n_layers == 3`` at ``scale = π``), warn regardless of
-    how the two expressions round.
+    how the two expressions round.  The warning is attributed to the first
+    frame outside ``hqnn_forge``, so a classifier built in a user's script
+    reports that script's line.
     """
     if std >= UNIFORM_STD * (1 - 1e-9):
-        warnings.warn(
-            f"{name}: σ = {std:.4f} rad at n_qubits={n_qubits}, n_layers={n_layers} is not "
-            f"narrower than a uniform draw over [0, 2π) (std {UNIFORM_STD:.4f} rad), so this "
-            f"initialisation restricts nothing.  With scale=π that happens for "
-            f"n_qubits * n_layers <= 3; see hqnn_forge.initializers.restricted_variance.",
-            UserWarning,
-            stacklevel=3,
+        rule = (
+            "  At scale=π that happens for n_qubits * n_layers <= 3."
+            if math.isclose(scale, math.pi)
+            else ""
         )
+        warnings.warn(
+            f"{name}: σ = {std:.4f} rad at scale={scale:.4g}, n_qubits={n_qubits}, "
+            f"n_layers={n_layers} is not narrower than a uniform draw over [0, 2π) "
+            f"(std {UNIFORM_STD:.4f} rad), so this initialisation restricts nothing.{rule}  "
+            f"For a classifier, pass init_strategy='normal' or build a larger "
+            f"n_qubits * n_layers; see hqnn_forge.initializers.restricted_variance.",
+            UserWarning,
+            stacklevel=external_stacklevel(),
+        )
+
+
+@contextmanager
+def _not_restricting_ignored() -> Iterator[None]:
+    """
+    Silence the warning above for draws that are meant to be small or are
+    discarded: a diagnostic comparing inits at toy sizes, or a model rebuilt
+    only to receive a checkpoint's weights.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*restricts nothing", category=UserWarning)
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +287,7 @@ def restricted_normal_init_(
         )
 
     std = scale / math.sqrt(n_qubits * n_layers)
-    _warn_if_not_restricting(std, "restricted_normal_init_", n_qubits, n_layers)
+    _warn_if_not_restricting(std, "restricted_normal_init_", n_qubits, n_layers, scale)
     with torch.no_grad():
         tensor.normal_(mean=0.0, std=std)
     return tensor
@@ -331,15 +357,11 @@ def block_local_init_(
         raise ValueError(f"n_qubits must be ≥ 1; got {n_qubits}.")
 
     n_layers: int = tensor.shape[0]
-    stds = torch.tensor(
-        [scale / math.sqrt(n_qubits * (n_layers + layer)) for layer in range(n_layers)],
-        dtype=tensor.dtype,
-        device=tensor.device,
-    )
-    if n_layers:
-        _warn_if_not_restricting(
-            scale / math.sqrt(n_qubits * n_layers), "block_local_init_", n_qubits, n_layers
-        )
+    sigmas = [scale / math.sqrt(n_qubits * (n_layers + layer)) for layer in range(n_layers)]
+    if sigmas:
+        # Layer 0 is the widest.
+        _warn_if_not_restricting(sigmas[0], "block_local_init_", n_qubits, n_layers, scale)
+    stds = torch.tensor(sigmas, dtype=tensor.dtype, device=tensor.device)
     with torch.no_grad():
         tensor.normal_(mean=0.0, std=1.0)
         tensor.mul_(stds.view(-1, *([1] * (tensor.dim() - 1))))
