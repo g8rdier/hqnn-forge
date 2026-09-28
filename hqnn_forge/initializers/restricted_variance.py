@@ -195,7 +195,7 @@ def restricted_normal_init_(
 
 
 # ---------------------------------------------------------------------------
-# Block-local variant: each layer initialised with its own restricted σ
+# Block-local variant: the restricted σ, tapered by layer
 # ---------------------------------------------------------------------------
 
 
@@ -205,7 +205,7 @@ def block_local_init_(
     scale: float = math.pi,
 ) -> torch.Tensor:
     """
-    Fill *tensor* **in-place** with per-block restricted-normal values.
+    Fill *tensor* **in-place** with restricted-normal values tapered by layer.
 
     For a circuit of ``L = tensor.shape[0]`` layers, layer ℓ is drawn with
 
