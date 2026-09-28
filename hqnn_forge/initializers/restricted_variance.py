@@ -168,6 +168,7 @@ import math
 import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 
 import torch
 
@@ -175,6 +176,9 @@ from hqnn_forge._warnings import external_stacklevel
 
 #: Standard deviation of an angle drawn uniformly from [0, 2π): 2π/sqrt(12).
 UNIFORM_STD = 2 * math.pi / math.sqrt(12)
+
+# Set by _not_restricting_ignored() below.
+_SUPPRESSED: ContextVar[bool] = ContextVar("_not_restricting_suppressed", default=False)
 
 
 def _warn_if_not_restricting(
@@ -189,6 +193,8 @@ def _warn_if_not_restricting(
     frame outside ``hqnn_forge``, so a classifier built in a user's script
     reports that script's line.
     """
+    if _SUPPRESSED.get():
+        return
     if std >= UNIFORM_STD * (1 - 1e-9):
         rule = (
             "  At scale=π that happens for n_qubits * n_layers <= 3."
@@ -212,10 +218,17 @@ def _not_restricting_ignored() -> Iterator[None]:
     Silence the warning above for draws that are meant to be small or are
     discarded: a diagnostic comparing inits at toy sizes, or a model rebuilt
     only to receive a checkpoint's weights.
+
+    A context variable rather than ``warnings.catch_warnings``: that mutates
+    the process-global filter list, which is not thread-safe, and every exit
+    resets the once-per-location registry, so any other warning raised inside
+    (a PennyLane deprecation in a sampling loop, say) would print every time.
     """
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message=r".*restricts nothing", category=UserWarning)
+    token = _SUPPRESSED.set(True)
+    try:
         yield
+    finally:
+        _SUPPRESSED.reset(token)
 
 
 # ---------------------------------------------------------------------------

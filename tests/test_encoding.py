@@ -25,6 +25,7 @@ import torch
 
 from hqnn_forge.encoding import QuantumEncodingLayer
 from hqnn_forge.initializers import block_local_init_, restricted_normal_init_
+from hqnn_forge.initializers.restricted_variance import _not_restricting_ignored
 from hqnn_forge.models import (
     HybridBinaryClassifier,
     MulticlassHybridClassifier,
@@ -276,6 +277,36 @@ class TestWiderThanUniformWarning:
         message = str(_not_restricting(record).message)
         assert "scale=4" in message and "σ = 2.0000" in message
         assert "<= 3" not in message
+
+    def test_block_local_passes_its_scale_through(self) -> None:
+        """Layer 0 of 2 x 2 at scale = 4 is 4/sqrt(2 * 2) = 2, and at scale = 1 it is 0.5."""
+        with pytest.warns(UserWarning, match="block_local_init_") as record:
+            block_local_init_(torch.empty(2, 2, 3), n_qubits=2, scale=4.0)
+        message = str(_not_restricting(record).message)
+        assert "scale=4" in message and "σ = 2.0000" in message
+        assert "<= 3" not in message
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            block_local_init_(torch.empty(1, 1, 3), n_qubits=1, scale=1.0)
+
+    def test_suppression_leaves_other_warnings_and_the_filters_alone(self) -> None:
+        """
+        _not_restricting_ignored() silences only the init check, by flag rather
+        than by message: other warnings, even with the same wording, still get
+        through, and the global filter list is never touched.
+        """
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            filters = list(warnings.filters)
+            with _not_restricting_ignored():
+                assert warnings.filters == filters
+                restricted_normal_init_(torch.empty(1, 1, 3), 1, 1)
+                warnings.warn("someone else's warning that restricts nothing", UserWarning)
+        assert [str(w.message) for w in record] == [
+            "someone else's warning that restricts nothing"
+        ]
+        with pytest.warns(UserWarning, match="restricts nothing"):
+            restricted_normal_init_(torch.empty(1, 1, 3), 1, 1)
 
     @pytest.mark.parametrize(
         "cls", [HybridBinaryClassifier, ParallelHybridClassifier, MulticlassHybridClassifier]
