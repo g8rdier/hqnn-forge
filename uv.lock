@@ -709,7 +709,7 @@ sklearn = [
 
 [package.metadata]
 requires-dist = [
-    { name = "matplotlib", marker = "extra == 'examples'", specifier = ">=3.10" },
+    { name = "matplotlib", marker = "extra == 'examples'" },
     { name = "mypy", marker = "extra == 'dev'" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "pennylane", specifier = ">=0.45" },
