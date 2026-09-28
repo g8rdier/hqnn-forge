@@ -521,9 +521,6 @@ class TestKnownArgs:
         _, path = saved
         payload = torch.load(path, weights_only=True)
         payload["known_args"] = bad
-        if bad is None:  # read like a file from before known_args: loads cleanly
-            load_checkpoint(_save_payload(payload, tmp_path / "none.pt"))
-            return
         with pytest.raises(ValueError, match="known_args"):
             load_checkpoint(_save_payload(payload, tmp_path / "bad.pt"))
 
@@ -546,8 +543,15 @@ class TestRealOldCheckpoint:
             model = load_checkpoint(
                 DATA / f"checkpoint_pre159_{name}.pt", allow_version_mismatch=True
             )
-        message = str(record[0].message)
-        for added in ("embedding_rotation", "entangler", "readout", "encoder_activation"):
+        (backfill,) = [w for w in record if issubclass(w.category, RuntimeWarning)]
+        message = str(backfill.message)
+        for added in (
+            "embedding_rotation",
+            "entangler",
+            "readout",
+            "encoder_activation",
+            "init_std",
+        ):
             assert added in message
         with torch.no_grad():
             torch.testing.assert_close(
@@ -643,7 +647,20 @@ FIRST_CHECKPOINTED_ARGS = {
         "init_strategy",
         "encoding_type",
     },
-    MulticlassHybridClassifier: CONSTRUCTOR_ARGS[MulticlassHybridClassifier],
+    MulticlassHybridClassifier: {
+        "n_input_features",
+        "n_qubits",
+        "n_layers",
+        "n_classes",
+        "strategy",
+        "use_classical_encoder",
+        "dropout_p",
+        "device_name",
+        "diff_method",
+        "init_strategy",
+        "init_std",
+        "encoding_type",
+    },
 }
 
 

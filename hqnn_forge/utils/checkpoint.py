@@ -103,8 +103,9 @@ WEIGHT_SAFE_ARGS: frozenset[str] = frozenset(
 
 #: Constructor arguments the classifiers have gained since checkpoints were
 #: first written, mapped to the behaviour that predates each one.  A config
-#: missing one of these is a checkpoint older than the argument, and
-#: ``load_checkpoint`` fills it from here -- with a warning, never silently.
+#: missing one of these, in a file whose ``known_args`` is absent or does not
+#: list it, is a checkpoint older than the argument, and ``load_checkpoint``
+#: fills it from here -- with a warning, never silently.
 #: The values are written out rather than read from the signature on purpose:
 #: they must stay the *old* behaviour even if the constructor default changes,
 #: and every addition to this table is then a deliberate line in a diff.  A
@@ -247,8 +248,11 @@ def load_checkpoint(
         If the file is not a checkpoint or is incomplete, on an unknown format
         version, a library version mismatch (unless allowed), an unknown class,
         an override outside :data:`WEIGHT_SAFE_ARGS` without
-        ``allow_architecture_override``, or a config with unexpected fields or
-        with missing ones outside :data:`_LEGACY_DEFAULTS`.
+        ``allow_architecture_override``, a malformed ``known_args``, or a config
+        with unexpected fields or with missing ones that cannot be filled: a
+        name outside :data:`_LEGACY_DEFAULTS`, a name in
+        :data:`_NO_LEGACY_DEFAULT`, or a name the file's ``known_args`` lists
+        (the config was edited or truncated).
 
     Warns
     -----
@@ -325,8 +329,10 @@ def load_checkpoint(
     missing = sorted(expected - set(config))
     unexpected = sorted(set(config) - expected)
 
-    known_args = payload.get("known_args")
-    if known_args is not None:
+    # Only an absent key means a file from before known_args; a key holding
+    # None or anything else that is not a list of names is malformed, not old.
+    if "known_args" in payload:
+        known_args = payload["known_args"]
         if not isinstance(known_args, list) or not all(isinstance(a, str) for a in known_args):
             raise ValueError(
                 f"checkpoint 'known_args' must be a list of names; got {known_args!r}."
@@ -402,9 +408,9 @@ def _init_parameter_names(cls: type) -> set[str]:
     A checkpoint is expected to carry every one of them, not only those
     without a default: get_config records them all, and a default that changed
     between versions would otherwise silently change the rebuilt model.  A
-    checkpoint older than an argument is the one exception, and
-    :func:`load_checkpoint` fills those from :data:`_LEGACY_DEFAULTS` with a
-    warning rather than in silence.
+    checkpoint older than an argument is the one exception: unless the file's
+    ``known_args`` lists the name, :func:`load_checkpoint` fills it from
+    :data:`_LEGACY_DEFAULTS` with a warning rather than in silence.
     """
     return {
         name
