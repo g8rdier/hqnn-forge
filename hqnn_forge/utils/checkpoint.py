@@ -71,6 +71,7 @@ WEIGHT_SAFE_ARGS: frozenset[str] = frozenset(
         "noise_trajectories",
         "shots",
         "noise_channel",
+        "readout_error",
     }
 )
 
@@ -95,6 +96,7 @@ _LEGACY_DEFAULTS: dict[str, Any] = {
     "trainable_input_scaling": False,  # added with encoding_type="reuploading"
     "shots": None,  # exact expectation values
     "noise_channel": "depolarizing",  # the only channel before #313
+    "readout_error": None,  # no training-time readout error before #358
 }
 
 #: Set by ``load_checkpoint`` on a model it rebuilt under a forced

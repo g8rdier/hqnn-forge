@@ -36,13 +36,20 @@ channel                   effect on ⟨Z⟩ at ``"end"``      ``p`` range
 ``"phase_damping"``       unchanged (T2 dephasing)       [0, 1]
 ``"bit_flip"``            ``(1 − 2p) ⟨Z⟩``               [0, 1]
 ``"phase_flip"``          unchanged                      [0, 1]
+readout error             ``(1 − p01 − p10) ⟨Z⟩``        each in [0, 1]
+(``p01``, ``p10``)        ``+ (p10 − p01)``
 ========================  =============================  ===================
 
 Dephasing and phase flips commute with a Z measurement, so they act only
-through gates that follow them (``position="all"``).  A symmetric readout
-error -- each measured bit flipped with probability ``p`` -- is exactly
-``"bit_flip"`` at ``"end"``; an asymmetric one (``p(0→1) ≠ p(1→0)``) is not
-modelled.  Training noise by trajectories covers every channel; see
+through gates that follow them (``position="all"``).  A readout error flips
+each measured bit, 0 → 1 with probability ``p01`` and 1 → 0 with ``p10``; on
+hardware ``p10`` is usually the larger, as the qubit relaxes during
+measurement.  It is classical, so it acts on the expectation values directly
+(:func:`readout_error_map`), with no mixed-state simulation:
+:func:`apply_readout_error` applies it post hoc, ``noise_sweep(...,
+channel="readout")`` sweeps it, and the layers' and classifiers'
+``readout_error=(p01, p10)`` trains with it (#358).  The symmetric case
+``p01 = p10 = p`` is exactly ``"bit_flip"`` at ``"end"``.  Training noise by trajectories covers every channel; see
 *Damping channels as trajectories* below for how the two damping channels are
 sampled and what that rules out.
 
@@ -499,6 +506,7 @@ class TrainingNoiseMixin:
     noise_position: Position
     noise_method: NoiseMethod
     noise_trajectories: int
+    readout_error: tuple[float, float] | None
     _training_noise_qnode: qml.QNode | None
 
     def _init_training_noise(
@@ -512,9 +520,14 @@ class TrainingNoiseMixin:
         *,
         shots: int | None = None,
         noise_channel: Channel = "depolarizing",
+        readout_error: tuple[float, float] | None = None,
     ) -> None:
         """
         Validate the options and build the train-mode QNode (``None`` without noise).
+
+        ``readout_error``, a pair ``(p01, p10)``, is applied to the layer's
+        output in train mode on top of any channel; see
+        :func:`readout_error_map`.
 
         ``noise_channel`` is the channel ``noise_level`` is the strength of.
         The trajectory method samples amplitude damping by weighted Kraus
@@ -547,6 +560,10 @@ class TrainingNoiseMixin:
         self.noise_position = noise_position
         self.noise_method = noise_method
         self.noise_trajectories = noise_trajectories
+        validate_readout_error(readout_error)
+        self.readout_error = (
+            None if readout_error is None else (float(readout_error[0]), float(readout_error[1]))
+        )
         self._training_noise_qnode = None
         if noise_level == 0.0:
             return
@@ -576,17 +593,29 @@ class TrainingNoiseMixin:
         )
 
     def _run_circuit(self, x: torch.Tensor) -> torch.Tensor:
-        """``qlayer(x)``, through the noisy QNode in train mode when there is one."""
+        """
+        ``qlayer(x)``, through the noisy QNode in train mode when there is one,
+        then through a readout error: :func:`apply_readout_error`'s if a block
+        is open, else the layer's own ``readout_error`` in train mode.
+        """
         if self.training and self._training_noise_qnode is not None:
-            return run_with_training_noise(
+            out = run_with_training_noise(
                 self.qlayer, self._training_noise_qnode, x, self.noise_trajectories
             )
-        return self.qlayer(x)  # type: ignore[no-any-return]
+        else:
+            out = self.qlayer(x)
+        readout = getattr(self.qlayer, "_hqnn_readout_error", None)
+        if readout is None and self.training:
+            readout = self.readout_error
+        if readout is not None:
+            out = readout_error_map(out, *readout)
+        return out  # type: ignore[no-any-return]
 
     def _noise_repr(self) -> str:
         """The ``extra_repr`` fragment for the training noise; empty without it."""
+        readout = "" if self.readout_error is None else f", readout_error={self.readout_error}"
         if not self.noise_level:
-            return ""
+            return readout
         text = f", noise_level={self.noise_level}, noise_position={self.noise_position!r}"
         if self.noise_channel != "depolarizing":
             text += f", noise_channel={self.noise_channel!r}"
@@ -595,7 +624,78 @@ class TrainingNoiseMixin:
                 f", noise_method={self.noise_method!r}, "
                 f"noise_trajectories={self.noise_trajectories}"
             )
-        return text
+        return text + readout
+
+
+def validate_readout_error(readout_error: object, name: str = "readout_error") -> None:
+    """
+    Raise ``ValueError`` unless ``readout_error`` is ``None`` or a pair
+    ``(p01, p10)`` of probabilities in [0, 1].
+    """
+    if readout_error is None:
+        return
+    try:
+        pair: tuple[object, ...] = tuple(readout_error)  # type: ignore[arg-type]
+    except TypeError:
+        pair = ()
+    if len(pair) != 2:
+        raise ValueError(f"{name} must be None or a pair (p01, p10); got {readout_error!r}.")
+    for label, value in zip(("p01", "p10"), pair, strict=True):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not 0.0 <= value <= 1.0
+        ):
+            raise ValueError(f"{name}: {label} must be a number in [0, 1]; got {value!r}.")
+
+
+def readout_error_map(expectations: torch.Tensor, p01: float, p10: float) -> torch.Tensor:
+    """
+    ⟨Z⟩ of each measured qubit after an asymmetric readout error.
+
+    Each measured bit reads 1 instead of 0 with probability ``p01`` and 0
+    instead of 1 with probability ``p10``: a classical confusion matrix on the
+    qubit's outcome distribution.  With ``P(0) = (1 + ⟨Z⟩)/2`` that gives
+
+        ⟨Z⟩ → (1 − p01 − p10) ⟨Z⟩ + (p10 − p01),
+
+    exactly, for every single-qubit ⟨Z⟩ readout, which is all the layers
+    measure.  ``p01 = p10 = p`` is ``"bit_flip"`` at ``position="end"``.  On a
+    shot-based layer the map is applied to the sampled estimate, so the mean
+    is exact but the spread of a flipped sample is not modelled.
+    """
+    return (1.0 - p01 - p10) * expectations + (p10 - p01)
+
+
+@contextmanager
+def apply_readout_error(model: nn.Module, p01: float, p10: float) -> Iterator[nn.Module]:
+    """
+    Evaluate ``model`` with an asymmetric readout error for the ``with`` block.
+
+    Applies :func:`readout_error_map` to the quantum layer's output, in train
+    and eval mode alike, without touching the weights, and on top of an open
+    :func:`apply_depolarizing_noise` or :func:`apply_shots` block.  A layer's
+    own training-time ``readout_error`` is replaced, not added to, while the
+    block is open.
+
+    Raises
+    ------
+    ValueError
+        If ``p01`` or ``p10`` is not in [0, 1].
+    TypeError
+        If ``model`` has no quantum layer.
+    RuntimeError
+        If a block is already open on the same layer.
+    """
+    validate_readout_error((p01, p10), "(p01, p10)")
+    qlayer, _ = _resolve_qlayer(model, "apply_readout_error")
+    if getattr(qlayer, "_hqnn_readout_error", None) is not None:
+        raise RuntimeError("apply_readout_error cannot be nested on the same layer.")
+    qlayer._hqnn_readout_error = (float(p01), float(p10))
+    try:
+        yield model
+    finally:
+        qlayer._hqnn_readout_error = None
 
 
 @contextmanager
@@ -674,10 +774,19 @@ def apply_depolarizing_noise(
         qlayer._hqnn_noise_depth -= 1
 
 
+def _readout_pair(error: object) -> tuple[float, float]:
+    """``(p01, p10)`` from a pair, or ``(p, p)`` from one number; validated."""
+    pair = (error, error) if isinstance(error, (int, float)) else error
+    validate_readout_error(pair, "each readout error")
+    values: tuple[float, ...] = tuple(pair)  # type: ignore[arg-type]
+    return float(values[0]), float(values[1])
+
+
 class NoiseSweepPoint(NamedTuple):
     """One noise level of a sweep."""
 
-    p: float
+    #: The channel strength, or ``(p01, p10)`` for ``channel="readout"``.
+    p: float | tuple[float, float]
     probabilities: torch.Tensor
     score: float | None
 
@@ -685,10 +794,10 @@ class NoiseSweepPoint(NamedTuple):
 def noise_sweep(
     model: nn.Module,
     X: torch.Tensor,
-    ps: Iterable[float],
+    ps: Iterable[float] | Iterable[float | tuple[float, float]],
     *,
     position: Position = "all",
-    channel: Channel = "depolarizing",
+    channel: Channel | Literal["readout"] = "depolarizing",
     y: torch.Tensor | None = None,
     score_fn: Callable[[torch.Tensor, torch.Tensor], float] | None = None,
 ) -> list[NoiseSweepPoint]:
@@ -702,9 +811,12 @@ def noise_sweep(
     X:
         Inputs to evaluate.
     ps:
-        Channel strengths, each in the channel's range; consumed once.
+        Channel strengths, each in the channel's range; consumed once.  With
+        ``channel="readout"``, readout errors instead: a pair ``(p01, p10)``,
+        or one number ``p`` for the symmetric ``(p, p)``.
     position, channel:
-        Passed to :func:`apply_depolarizing_noise`.
+        Passed to :func:`apply_depolarizing_noise`.  ``channel="readout"``
+        sweeps :func:`apply_readout_error` instead, and ignores ``position``.
     y, score_fn:
         If both are given, ``score_fn(y, probabilities)`` is recorded per level,
         e.g. ``lambda y, p: find_optimal_threshold(y, p).score``.
@@ -733,7 +845,16 @@ def noise_sweep(
     # Materialised and range-checked up front: the levels may arrive as a
     # generator, and a bad one at the end would otherwise be found only after
     # every earlier (O(4^n)) evaluation had already been paid for.
-    levels = [float(p) for p in ps]
+    if channel == "readout":
+        errors = [_readout_pair(e) for e in ps]
+        points = []
+        for p01, p10 in errors:
+            with apply_readout_error(model, p01, p10):
+                probs = predict(X)
+            score = float(score_fn(y, probs)) if score_fn is not None and y is not None else None
+            points.append(NoiseSweepPoint((p01, p10), probs, score))
+        return points
+    levels = [float(p) for p in ps]  # type: ignore[arg-type]
     validate_noise(0.0, position, channel=channel)
     max_p = CHANNELS[channel].max_p
     invalid = [p for p in levels if not 0.0 <= p <= max_p]

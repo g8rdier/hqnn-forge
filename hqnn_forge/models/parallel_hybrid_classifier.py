@@ -221,6 +221,11 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
         ``"bit_flip"`` or ``"phase_flip"``; see :mod:`hqnn_forge.noise`.  With
         ``noise_method="trajectories"``, amplitude damping needs
         ``diff_method="backprop"`` or ``"parameter-shift"`` and no ``shots``.
+    readout_error:
+        ``(p01, p10)``: in train mode, each measured bit reads 1 instead of 0
+        with probability ``p01`` and 0 instead of 1 with ``p10``, applied
+        exactly to the ⟨Z⟩ readouts (see
+        :func:`hqnn_forge.noise.readout_error_map`).  Default ``None``.
 
     Attributes
     ----------
@@ -265,6 +270,7 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
         trainable_input_scaling: bool = False,
         shots: int | None = None,
         noise_channel: Channel = "depolarizing",
+        readout_error: tuple[float, float] | None = None,
     ) -> None:
         super().__init__()
         self._config = dict(
@@ -290,6 +296,7 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
             trainable_input_scaling=trainable_input_scaling,
             shots=shots,
             noise_channel=noise_channel,
+            readout_error=readout_error,
         )
 
         # Validated before the classical branch is built, as before the shared
@@ -329,6 +336,7 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
             trainable_input_scaling=trainable_input_scaling,
             shots=shots,
             noise_channel=noise_channel,
+            readout_error=readout_error,
         )
 
         # ── Classical head ────────────────────────────────────────────────
