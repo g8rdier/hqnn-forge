@@ -30,7 +30,10 @@ samples, ``default.qubit``):
 * ``total_variance`` falls by roughly 5x from 2 to 6 qubits under uniform
   init, even with the local cost at 2 layers.  The CNOT ring is a cascade, so
   the backward light cone of Z_0 covers every qubit within one layer and the
-  "local" cost behaves like a global one.
+  "local" cost behaves like a global one.  ``entangler="brickwork"`` is the
+  exception: its light cone does not grow with the register, and its
+  ``total_variance`` stays flat from 4 to 8 qubits at 2 layers (see
+  :mod:`hqnn_forge.initializers.restricted_variance`).
 * With inputs spread over (-π, π) -- what both classifiers produce, and what
   ``PCANormalizer(scale_to_pi=True)`` produces -- the restricted-variance init
   gives the same gradient variance as uniform init: the angle embedding

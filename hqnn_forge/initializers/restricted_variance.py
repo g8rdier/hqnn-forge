@@ -106,7 +106,10 @@ larger qubit counts; a locality-preserving entangler is the lever for that.
 even then odd, with no wrap-around, so each layer widens the backward light
 cone of a readout by at most two qubits on each side.  The weights ⟨Z_0⟩
 depends on sit on qubit {0} after one layer, {0, 1} after two and
-{0, …, 3} after three.  Measured under the same protocol, now as the **total** gradient
+{0, …, 3} after three; its inputs reach one layer further, since the
+embedding sits before the first CNOT pairs: x_0, x_1 after one layer and
+x_0 … x_3 after two, so at n=4 two layers already make ⟨Z_0⟩ depend on
+every input.  Measured under the same protocol, now as the **total** gradient
 variance (summed over all weights) at inputs ±π, because the weights outside
 the light cone of ⟨Z_0⟩ have exactly zero gradient and would dilute a
 per-weight mean by 1/n on their own:
@@ -117,8 +120,9 @@ per-weight mean by 1/n on their own:
 
 The ring loses about 2x per two qubits in total (the 3x above is per weight,
 over a weight count that grows with n).  Brickwork loses nothing over the
-measured range: at 2 layers its ⟨Z_0⟩ light cone is 2 qubits wide whatever
-``n_qubits`` is, so adding qubits only adds weights with zero gradient.  The
+measured range: at 2 layers the light cone of ⟨Z_0⟩'s weights is 2 qubits
+wide (of its inputs, 4) whatever ``n_qubits`` is, so adding qubits only adds
+weights with zero gradient.  The
 restricted init's ratio to uniform init for brickwork is:
 
     inputs uniform in   n=4    n=6    n=8
@@ -128,12 +132,15 @@ restricted init's ratio to uniform init for brickwork is:
 so on a circuit that keeps its readouts local the restricted init adds no
 variance at 4 qubits and costs some at 6 and 8, near zero input as well.  The escape
 from the decay is the entangler's, not the initialiser's.  It lasts while
-the light cone is narrower than the register: ⟨Z_0⟩'s covers every qubit
-from about ``n_layers = n_qubits / 2 + 1``, a middle qubit's from about
+the light cone is narrower than the register: ⟨Z_0⟩'s weight light cone
+covers every qubit from about ``n_layers = n_qubits / 2 + 1`` (its input
+light cone one layer earlier), a middle qubit's from about
 ``n_qubits / 4 + 1``, and past that brickwork's readouts are global too.
 
 ``tests/test_gradient_variance.py`` pins the statements above so a change
-that alters them is noticed.
+that alters them is noticed; of the brickwork tables, it pins the 4 → 8
+decays and the ±π ratio at 8 qubits, while the {0} row and the 6-qubit
+column are measurements only.
 
 Functions
 ---------

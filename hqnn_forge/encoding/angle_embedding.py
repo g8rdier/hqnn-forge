@@ -30,7 +30,10 @@ Design Rationale
   its exponential decay with qubit count.  The cascaded CNOT ring puts every
   qubit in the backward light cone of each ⟨Z_i⟩ within two layers (of ⟨Z_0⟩
   and ⟨Z_{n-1}⟩ within one), so at the default depth the per-qubit readouts
-  are global costs in the sense of Cerezo et al. (2021).
+  are global costs in the sense of Cerezo et al. (2021).  The escape is the
+  entangler: with ``entangler="brickwork"`` the readouts stay local at
+  shallow depth and the total gradient variance does not fall from 4 to 8
+  qubits (see :func:`apply_variational_layers`).
 
 References
 ----------
@@ -46,7 +49,7 @@ from __future__ import annotations
 import logging
 import warnings
 from collections.abc import Callable
-from typing import Literal, get_args
+from typing import Literal, assert_never, get_args
 
 import pennylane as qml
 import torch
@@ -154,11 +157,13 @@ def apply_variational_layers(
             # CNOT entangling ring (cyclic: last qubit → first qubit)
             for qubit in range(n_qubits):
                 qml.CNOT(wires=[qubit, (qubit + 1) % n_qubits])
-        else:
+        elif entangler == "brickwork":
             # Brickwork: even nearest-neighbour pairs, then odd ones
             for start in (0, 1):
                 for qubit in range(start, n_qubits - 1, 2):
                     qml.CNOT(wires=[qubit, qubit + 1])
+        else:
+            assert_never(entangler)
         # Per-qubit SU(2) rotation block
         for qubit in range(n_qubits):
             qml.Rot(
@@ -382,8 +387,12 @@ def _make_angle_embedding_circuit(
        onto other wires (at 4 qubits, to wire 2, whose last-layer ``Rot`` is
        then live while wire 0's is dead), and the count under ``"first"`` is
        only a lower bound: 8 of the 12 weights autograd finds dead at 4
-       qubits and 2 layers.  The weight tensor keeps its
-       ``(n_layers, n_qubits, 3)`` shape either way.
+       qubits and 2 layers.  With ``entangler="brickwork"`` the narrow light
+       cone of ⟨Z_0⟩ leaves more dead under ``"first"``: 16 of 24 at 4
+       qubits and 2 layers (the last-layer ``Rot`` off wire 0, wire 0's ω,
+       and layer 0's ``Rot`` on wires 2 and 3), 17 by autograd.  The weight
+       tensor keeps its ``(n_layers, n_qubits, 3)`` shape for every
+       entangler.
 
     4. **Measurement**:
        Returns ``[qml.expval(qml.PauliZ(i)) for i in range(n_qubits)]``.

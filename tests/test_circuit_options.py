@@ -37,9 +37,9 @@ N_LAYERS = 3  # > n-1 so the range rule wraps: ranges 1, 2, 3 for 4 qubits
 BATCH = 5
 
 
-def _angles(n: int = BATCH) -> torch.Tensor:
+def _angles(n: int = BATCH, n_qubits: int = N_QUBITS) -> torch.Tensor:
     torch.manual_seed(1)
-    return torch.rand(n, N_QUBITS) * 2 * math.pi - math.pi
+    return torch.rand(n, n_qubits) * 2 * math.pi - math.pi
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +170,7 @@ def _z0_harmonic_in_x0(layer: nn.Module, n_points: int = 16) -> float:
     torch.manual_seed(0)
     with torch.no_grad():
         layer.qlayer.weights.uniform_(0, 2 * math.pi)
-    x = _angles(1).repeat(n_points, 1)
+    x = _angles(1, layer.n_qubits).repeat(n_points, 1)
     x[:, 0] = torch.arange(n_points) * 2 * math.pi / n_points - math.pi
     with torch.no_grad():
         values = layer(x)[:, 0].to(torch.float64)
@@ -255,8 +255,7 @@ class TestBrickwork:
         for cls in (QuantumEncodingLayer, IQPEncodingLayer, DataReuploadingLayer):
             layer = cls(n_qubits=N_QUBITS, n_layers=2, entangler="brickwork", **CPU)
             assert layer.qlayer.weights.shape == (2, N_QUBITS, 3)
-            if cls is not IQPEncodingLayer:  # its repr shows no entangler at all
-                assert "entangler='brickwork'" in layer.extra_repr()
+            assert "entangler='brickwork'" in layer.extra_repr()
             layer(x).sum().backward()
             assert layer.qlayer.weights.grad.abs().sum().item() > 0, cls.__name__
         for model_cls in (HybridBinaryClassifier, ParallelHybridClassifier):
@@ -265,7 +264,8 @@ class TestBrickwork:
             )
             assert model.quantum_layer.entangler == "brickwork"
             model(torch.randn(3, 6)).sum().backward()
-            assert model.quantum_layer.qlayer.weights.grad is not None, model_cls.__name__
+            grad = model.quantum_layer.qlayer.weights.grad
+            assert grad is not None and grad.abs().sum().item() > 0, model_cls.__name__
 
 
 class TestReadout:

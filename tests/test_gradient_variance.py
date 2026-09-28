@@ -141,22 +141,25 @@ class TestMeasuredInitClaims:
 
 
 @pytest.fixture(scope="module")
-def entangler_sweep() -> dict[tuple[str, str, int], float]:
+def entangler_sweep(measured: dict) -> dict[tuple[str, str, int], float]:
     """
-    Total gradient variance per (entangler, init, n_qubits), 4 and 8 qubits,
-    2 layers, inputs over (-π, π), 150 draws, seed 0.
+    Total gradient variance per (entangler, init, n_qubits), 2 layers, inputs
+    over (-π, π), seed 0: only the keys TestBrickworkDecay reads.  The ring
+    comes from ``measured`` (200 draws; total = mean × 6n weights), the
+    brickwork runs take 150 draws.
     """
-    out: dict[tuple[str, str, int], float] = {}
-    for entangler in ("ring", "brickwork"):
+    out: dict[tuple[str, str, int], float] = {
+        ("ring", "uniform", n): measured["uniform", n, math.pi] * 6 * n for n in (4, 8)
+    }
 
-        def build(q: int, l: int, entangler: str = entangler) -> QuantumEncodingLayer:
-            return QuantumEncodingLayer(n_qubits=q, n_layers=l, entangler=entangler, **CPU)
+    def build(q: int, l: int) -> QuantumEncodingLayer:
+        return QuantumEncodingLayer(n_qubits=q, n_layers=l, entangler="brickwork", **CPU)
 
-        for init in ("uniform", "restricted"):
-            for r in gradient_variance_sweep(
-                build, (4, 8), n_samples=150, init=init, generator=_gen()
-            ):
-                out[entangler, init, r.n_qubits] = r.total_variance
+    for init, qubit_counts in (("uniform", (4, 8)), ("restricted", (8,))):
+        for r in gradient_variance_sweep(
+            build, qubit_counts, n_samples=150, init=init, generator=_gen()
+        ):
+            out["brickwork", init, r.n_qubits] = r.total_variance
     return out
 
 
@@ -166,7 +169,9 @@ class TestBrickworkDecay:
     (#161).  Over five seeds at 300 draws, total variance from 4 to 8 qubits
     fell 4.1–5.4x for the ring and 0.90–1.02x for brickwork, and brickwork's
     restricted/uniform ratio at 8 qubits was 0.77–0.83.  At the 150 draws
-    used here, over six seeds: 4.1–5.5x, 0.88–1.08x and 0.70–0.95.
+    used here for brickwork, over six seeds: 0.88–1.08x and 0.70–0.95.  The
+    ring's decay comes from ``measured``, whose per-weight 8.1–10.7x
+    (TestMeasuredInitClaims) is 4.1–5.4x in total.
     """
 
     @staticmethod
@@ -179,12 +184,13 @@ class TestBrickworkDecay:
         assert brickwork < 1.5, brickwork
         assert ring > 2.5 * brickwork, (ring, brickwork)
 
-    def test_restricted_init_adds_nothing_on_brickwork(self, entangler_sweep: dict) -> None:
+    def test_restricted_init_costs_variance_on_brickwork(self, entangler_sweep: dict) -> None:
+        """Below 1: at 8 qubits the restricted init loses variance, it never adds it."""
         ratio = (
             entangler_sweep["brickwork", "restricted", 8]
             / entangler_sweep["brickwork", "uniform", 8]
         )
-        assert 0.5 < ratio < 1.15, ratio
+        assert 0.5 < ratio < 1.0, ratio
 
 
 class TestPhysics:
