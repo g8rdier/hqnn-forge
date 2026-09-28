@@ -42,12 +42,14 @@ def _pyplot() -> Any:
 
 def _axes(ax: Axes | None, figsize: tuple[float, float]) -> tuple[Figure, Axes]:
     if ax is not None:
-        # root=True: for an axes on a sub-figure, ax.figure is the SubFigure,
-        # which has no savefig; the root Figure is what the caller can save.
-        fig = ax.get_figure(root=True)
-        if fig is None:
+        # For an axes on a sub-figure, ax.figure is the SubFigure, which has no
+        # savefig. Its .figure is the root Figure (and a Figure's .figure is
+        # itself), which works on every matplotlib with sub-figures, unlike
+        # ax.get_figure(root=True), new in 3.10.
+        parent = ax.figure
+        if parent is None:  # a removed or never-attached axes; the stubs leave out None
             raise ValueError("ax is not attached to a figure.")
-        return fig, ax
+        return parent.figure, ax
     fig, new_ax = _pyplot().subplots(figsize=figsize)
     return fig, new_ax
 

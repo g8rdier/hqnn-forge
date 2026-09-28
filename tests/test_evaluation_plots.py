@@ -16,6 +16,7 @@ import pytest
 matplotlib = pytest.importorskip("matplotlib")
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
 from hqnn_forge.evaluation import plots
@@ -191,7 +192,7 @@ class TestSubfigureAxes:
     """
 
     @staticmethod
-    def _draw(kind: str, ax: object) -> Figure:
+    def _draw(kind: str, ax: Axes) -> Figure:
         if kind == "confusion":
             return plots.plot_confusion_matrix([0, 1, 1], [0, 1, 0], ax=ax)
         if kind == "boxplot":
@@ -212,10 +213,19 @@ class TestSubfigureAxes:
         inner = root.subfigures(1, 2)[0].subfigures(2, 1)[1]
         assert self._draw("confusion", inner.subplots()) is root
 
+    def test_confusion_contents_land_on_the_subfigure(self) -> None:
+        # The root is returned, but the colorbar is stolen from the sub-figure
+        # axes and lives on that sub-figure, not on the root beside it.
+        root = plt.figure()
+        sub = root.subfigures(1, 2)[1]
+        ax = sub.subplots()
+        self._draw("confusion", ax)
+        assert len(sub.axes) == 2 and ax in sub.axes
+        assert root.axes == sub.axes  # the root lists its sub-figures' axes, none of its own
+        assert [t.get_text() for t in ax.texts] == ["1", "0", "1", "1"]
+
     def test_detached_axes_raises(self) -> None:
         ax = plt.figure().add_subplot()
         ax.remove()
-        if ax.get_figure(root=True) is not None:
-            pytest.skip("this matplotlib keeps the figure on a removed axes")
         with pytest.raises(ValueError, match="not attached"):
             plots.plot_confusion_matrix([0, 1], [0, 1], ax=ax)
