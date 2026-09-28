@@ -45,10 +45,13 @@ class TestHandComputed:
 
     def test_step_not_trapezoid(self) -> None:
         """
-        Two operating points, (1/2, 1) and (1, 1/2): step AP is 1/2 + 1/2·1/2
-        = 3/4; the trapezoid over the same points, anchored at (0, 1), is 7/8.
+        Operating points (1/2, 1), (1/2, 1/2), (1, 2/3): step AP is
+        1/2 + 0 + 1/2·2/3 = 5/6.  The trapezoid over the same points, anchored
+        at (0, 1), averages the precisions either side of the last recall gain
+        instead: 1/2 + 0 + 1/2·(1/2 + 2/3)/2 = 19/24.  Precision changes across
+        that gain, which is what lets the two rules disagree.
         """
-        assert pr_auc([1, 0, 1, 0], [0.9, 0.5, 0.1, 0.1]) == pytest.approx(3 / 4)
+        assert pr_auc([1, 0, 1], [0.9, 0.7, 0.5]) == pytest.approx(5 / 6)
 
     def test_perfect_ranking_is_one(self) -> None:
         assert pr_auc([0, 0, 1, 1], [0.1, 0.2, 0.8, 0.9]) == 1.0
