@@ -15,13 +15,13 @@
 |---|---|
 | **Small-angle init** | Gaussian initialisation: global σ = π/√(n·L), or a per-layer schedule σ_ℓ = π/√(n·(L+ℓ)) that starts at the global σ and narrows by up to √2 towards the last layer (this library's own heuristics, in the spirit of Zhang et al. 2022). Measured with `hqnn_forge.diagnostics.gradient_variance` on a 2-layer circuit with a ⟨Z_0⟩ cost: no gain over uniform init for inputs spread over (−π, π), which is what both classifiers feed the circuit, and a gain growing from 1.1x to 1.75x between 4 and 8 qubits only near zero input. Over (−π, π) the variance falls ~3x per two qubits under either init — see the module docstring |
 | **Adjoint differentiation** | Exact gradients via `lightning.qubit` — no finite-difference approximation |
-| **Custom angle encoding** | 8-qubit angle-embedding feature map with strongly-entangled VQC ansatz |
+| **Custom angle encoding** | Angle-embedding feature map (8 qubits by default) with a CNOT-ring VQC ansatz; strongly-entangling and brickwork entanglers are options |
 | **Imbalance-robust losses** | Focal Loss & inverse-frequency weighted BCE |
 | **Pure-NumPy pre-processing** | PCA + standardisation without scikit-learn runtime dependency |
 | **Three hybrid topologies** | Serial `HybridBinaryClassifier`, parallel `ParallelHybridClassifier` (classical MLP branch ‖ quantum branch) and multiclass `MulticlassHybridClassifier` (softmax or one-vs-rest heads on a shared quantum layer), with angle or IQP encoding |
-| **Data-driven decision threshold** | `find_optimal_threshold` picks the threshold that maximises MCC, F1 or balanced accuracy on validation probabilities, instead of the default 0.5 that is rarely the right operating point on imbalanced data; `parameter_efficiency` reports the score per thousand trainable parameters |
-| **Quantum ablation** | `disable_quantum_layer` replaces a trained model's quantum-layer output with a constant for the duration of a `with` block, so re-scoring it shows how much the circuit actually contributes |
-| **Checkpoints** | `save_checkpoint` / `load_checkpoint` store a classifier's class, constructor arguments and weights, and rebuild the model from the file alone |
+| **Data-driven decision threshold** | `find_optimal_threshold` picks the threshold that maximises MCC, F1 or balanced accuracy on validation probabilities, instead of the default 0.5 that is rarely the right operating point on imbalanced data |
+| **Quantum ablation** | `disable_quantum_layer` replaces a trained model's quantum-layer output with a constant for the duration of a `with` block, so re-scoring a `ParallelHybridClassifier` shows how much the circuit adds to its classical branch (in the serial `HybridBinaryClassifier` the circuit is the only path, so the ablated model is a constant predictor) |
+| **Checkpoints** | `save_checkpoint` / `load_checkpoint` store a classifier's class, constructor arguments and weights, and rebuild the model from that file; a file written by a different `hqnn_forge` version is refused unless `allow_version_mismatch=True` |
 
 ---
 
@@ -188,15 +188,17 @@ hqnn_forge/
 ├── preprocessing/   PCA + normalisation, stratified folds, SMOTE (no sklearn runtime dep)
 ├── models/          Full hybrid architectures
 ├── training/        Train/validate loop with early stopping
-├── evaluation/      Decision threshold search, confusion metrics, score per parameter,
-│                    paired Wilcoxon tests, plots
+├── evaluation/      Decision threshold search, confusion metrics, PR-AUC, score per
+│                    parameter, paired Wilcoxon tests, plots (needs matplotlib)
 ├── diagnostics/     Circuit cost (depth, gates, inert parameters), gradient variance,
 │                    Fisher information and effective dimension
 ├── data/            Dataset loader (Kaggle credit-card fraud)
-├── utils/           Imbalance-robust losses, checkpoint save/load, quantum-layer ablation
+├── utils/           Imbalance-robust losses, checkpoint save/load, quantum-layer ablation,
+│                    eval-mode context manager
 ├── kernels.py       Quantum kernel matrices from the encoding layers (QSVM)
 ├── noise.py         Depolarizing noise, post hoc for robustness sweeps or during training
-└── sklearn.py       scikit-learn estimator wrapper (cross_val_score, GridSearchCV, Pipeline)
+└── sklearn.py       scikit-learn estimator wrapper (cross_val_score, GridSearchCV, Pipeline);
+                     needs the `sklearn` extra
 ```
 
 ---
