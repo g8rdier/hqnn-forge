@@ -148,9 +148,8 @@ class TestInputValidation:
 # Test 5: Initialiser properties
 # ---------------------------------------------------------------------------
 
-# Statistical assertions on initialiser output need enough draws to separate
-# the two strategies: per-layer sample count is n_qubits * 3.  At 16 qubits and
-# 16 layers every tolerance below clears the worst deviation observed over 5000
+# Statistical assertions on initialiser output draw n_qubits * 3 samples per
+# layer.  At 16 qubits and 16 layers every tolerance below clears the worst deviation observed over 5000
 # seeds, so the tests hold for any seed rather than relying on INIT_SEED alone:
 #
 #   restricted std, relative error   worst 0.091  tolerance 0.20  (2.2x)
@@ -167,7 +166,7 @@ STD_TOLERANCE = 0.20  # relative
 SLOPE_TOLERANCE = 0.25  # in log-log space
 # One layer's std from 768 draws (256 qubits): worst relative error over 5000
 # seeds 0.100, so STD_TOLERANCE leaves 2x.
-RATIO_N_QUBITS = 256
+LAYER_STD_N_QUBITS = 256
 # The first/last std ratio sqrt((2L - 1)/L) is only 1.39 at 16 layers, so it
 # needs 3072 draws per layer (1024 qubits): over 5000 seeds its worst relative
 # deviation is 0.063, and a flat tensor never comes closer than 0.236 to it.
@@ -177,19 +176,18 @@ TAPER_N_QUBITS = 1024
 TAPER_TOLERANCE = 0.14  # relative
 
 
-def _log_std_fit(tensor: torch.Tensor) -> tuple[float, float]:
+def _log_std_slope(tensor: torch.Tensor) -> float:
     """
-    Least-squares fit of log(per-layer std) against log(layer_index + 1).
+    Least-squares slope of log(per-layer std) against log(layer_index + 1).
 
-    Returns ``(slope, intercept)``.  A constant sigma across layers gives slope
-    0; ``sigma_l = c / sqrt(l + 1)`` gives slope -0.5 and intercept log(c).
+    A constant sigma across layers gives slope 0.
     """
     w = tensor.double()
     y = torch.log(w.flatten(start_dim=1).std(dim=1))
     x = torch.log(torch.arange(1, w.shape[0] + 1, dtype=torch.float64))
     x_mean, y_mean = x.mean(), y.mean()
     slope = ((x - x_mean) * (y - y_mean)).sum() / ((x - x_mean) ** 2).sum()
-    return slope.item(), (y_mean - slope * x_mean).item()
+    return slope.item()
 
 
 def _restricted() -> torch.Tensor:
@@ -211,7 +209,7 @@ class TestRestrictedVarianceInit:
 
     def test_variance_is_flat_across_layers(self) -> None:
         """One shared sigma: log-std has zero slope in depth."""
-        slope, _ = _log_std_fit(_restricted())
+        slope = _log_std_slope(_restricted())
         assert abs(slope) < SLOPE_TOLERANCE
 
     def test_returns_same_tensor(self) -> None:
@@ -251,9 +249,9 @@ class TestBlockLocalInit:
         for n_layers in (2, 32):
             torch.manual_seed(INIT_SEED)
             tensor = block_local_init_(
-                torch.empty(n_layers, RATIO_N_QUBITS, 3), n_qubits=RATIO_N_QUBITS
+                torch.empty(n_layers, LAYER_STD_N_QUBITS, 3), n_qubits=LAYER_STD_N_QUBITS
             )
-            expected = math.pi / math.sqrt(RATIO_N_QUBITS * n_layers)
+            expected = math.pi / math.sqrt(LAYER_STD_N_QUBITS * n_layers)
             assert tensor[0].std().item() == pytest.approx(expected, rel=STD_TOLERANCE)
 
     def test_first_layer_wider_than_last(self) -> None:

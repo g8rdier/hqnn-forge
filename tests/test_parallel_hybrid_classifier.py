@@ -198,8 +198,9 @@ class TestInitStrategies:
         """
         ``block_local`` uses sigma_l = pi / sqrt(n_qubits * (L + l)) (#166).
         From the same seed that is exactly the ``restricted`` weights times
-        sqrt(L / (L + l)) on layer l, which also checks the model hands the
-        initialiser its full depth.
+        sqrt(L / (L + l)) on layer l.  This checks the model passes the
+        initialiser its whole weight tensor, whose first dimension is the
+        depth L.
         """
         restricted = _build_for_init("restricted").quantum_layer.qlayer.weights.data
         tapered = _build_for_init("block_local").quantum_layer.qlayer.weights.data
