@@ -126,21 +126,87 @@ class TestMultiWireGateCost:
         assert s.gate_counts.get("MultiRZ") == 1
         assert "CNOT" not in s.gate_counts
 
-    def test_the_decomposition_is_the_same_unitary(self) -> None:
-        """What is counted is the circuit that runs: same output before and after."""
-        layer = _multirz_layer(3)
+    @pytest.mark.parametrize("n_wires", [2, 3, 4])
+    def test_the_decomposition_is_the_same_unitary(self, n_wires: int) -> None:
+        """
+        What is counted is the circuit that runs.  Compared as full unitaries:
+        the layer's own ⟨Z_0⟩ commutes with a diagonal MultiRZ, so its output
+        would not notice a dropped or mis-wired ladder.
+        """
+        layer = _multirz_layer(n_wires)
         x = torch.tensor([0.3, -1.1, 0.7, 2.0], dtype=torch.float64)
-        weights = torch.tensor([0.9], dtype=torch.float64)
-        dev = qml.device("default.qubit", wires=4)
         with torch.no_grad():
-            layer.qlayer.weights.copy_(weights)
-        tape = _logical_tape(layer.qlayer, 4, inputs=x)
-        (logical,) = qml.execute([tape], dev)
-        with torch.no_grad():
-            direct = layer.qlayer(x.float()).double()
-        assert float(torch.as_tensor(logical).detach()) == pytest.approx(
-            float(direct[0]), abs=1e-6
-        )
+            layer.qlayer.weights.copy_(torch.tensor([0.9]))
+        qnode = layer.qlayer.qnode
+        weights = dict(layer.qlayer.qnode_weights.items())
+        written = qml.workflow.construct_tape(qnode, level="top")(x, **weights)
+        counted = _logical_tape(layer.qlayer, 4, inputs=x)
+        wires = list(range(4))
+        u_written = qml.matrix(written, wire_order=wires)
+        u_counted = qml.matrix(counted, wire_order=wires)
+        # The CNOT-ladder decomposition is exact, global phase included.
+        assert torch.allclose(torch.as_tensor(u_counted), torch.as_tensor(u_written), atol=1e-6)
+
+    def test_wide_gate_without_decomposition_still_counts(self) -> None:
+        """An opaque 3-wire gate survives decomposition; it counts once, not zero."""
+
+        class Opaque(qml.operation.Operation):
+            num_wires = 3
+            num_params = 0
+
+        dev = qml.device("default.qubit", wires=3)
+
+        @qml.qnode(dev, interface="torch")
+        def circuit(inputs, weights):  # type: ignore[no-untyped-def]
+            qml.AngleEmbedding(inputs, wires=range(3))
+            qml.RY(weights[0], wires=0)
+            qml.CNOT(wires=[0, 1])
+            Opaque(wires=[0, 1, 2])
+            return [qml.expval(qml.PauliZ(0))]
+
+        class OpaqueLayer(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.n_qubits = 3
+                self.qlayer = qml.qnn.TorchLayer(circuit, {"weights": (1,)})
+
+        with pytest.warns(UserWarning):
+            s = circuit_summary(OpaqueLayer())
+        assert s.gate_counts.get("Opaque") == 1
+        assert s.n_two_qubit_gates == 2
+
+
+class TestGraphDecomposition:
+    """
+    With PennyLane's graph-based decomposition enabled, ``decompose`` refuses
+    a call without ``gate_set``; the diagnostics must still work and count
+    the same circuit.
+    """
+
+    @pytest.fixture
+    def graph_enabled(self):  # type: ignore[no-untyped-def]
+        qml.decomposition.enable_graph()
+        try:
+            yield
+        finally:
+            qml.decomposition.disable_graph()
+
+    @pytest.mark.parametrize(
+        "make",
+        [
+            lambda: QuantumEncodingLayer(n_qubits=3, n_layers=1, **CPU),
+            lambda: IQPEncodingLayer(n_qubits=3, n_layers=1, **CPU),
+            lambda: _multirz_layer(3),
+        ],
+        ids=["angle", "iqp", "multirz3"],
+    )
+    def test_same_summary_and_drawing(self, make, graph_enabled) -> None:  # type: ignore[no-untyped-def]
+        torch.manual_seed(0)
+        layer = make()
+        with_graph = (circuit_summary(layer), draw_circuit(layer))
+        qml.decomposition.disable_graph()
+        without_graph = (circuit_summary(layer), draw_circuit(layer))
+        assert with_graph == without_graph
 
 
 class TestDeviceIndependence:

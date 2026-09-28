@@ -98,12 +98,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The warning is attributed to the first frame outside `hqnn_forge`, so a classifier built at
   such a size reports the user's own line. `load_checkpoint` and `gradient_variance`, whose
   draws are discarded or deliberately small, do not emit it
-- `circuit_summary` decomposes a gate on more than two wires into one- and two-qubit gates
-  before counting, so `n_two_qubit_gates` is the circuit's two-qubit cost: a k-wire `MultiRZ`
-  counts as its 2(k-1) CNOTs instead of once. No circuit in the library emits such a gate
-  today, so no current summary changes
+- `circuit_summary` decomposes a `MultiRZ` on more than two wires into one- and two-qubit
+  gates before counting, so `n_two_qubit_gates` is the circuit's two-qubit cost: a k-wire
+  `MultiRZ` counts as its 2(k-1) CNOTs instead of once. No circuit in the library emits such a
+  gate today, so no current summary changes
 
 ### Fixed
+- `circuit_summary` and `count_inert_parameters` raised `TypeError` with PennyLane's
+  graph-based decomposition enabled (`qml.decomposition.enable_graph()`), which requires a
+  `gate_set`; both now pass one and count the same circuit as without it
 - Device fallback raised `AttributeError` on PennyLane 0.45, where `qml.DeviceError` no longer
   exists; the chain now catches `pennylane.exceptions.DeviceError` and is exercised by a test
 - `disable_quantum_layer` fills the quantum layer's readout width (`n_outputs`) rather than

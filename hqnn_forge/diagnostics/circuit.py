@@ -16,9 +16,10 @@ device-specific decomposition.  ``lightning.qubit``'s adjoint path, for
 example, rewrites every ``Rot`` as ``RZ·RY·RZ``, which would make the same
 model report different counts depending on the simulator it happens to run
 on.  The gate set counted against is ``LOGICAL_GATE_SET``; everything is
-decomposed until only those gates remain, and a gate on more than two wires
-(a ``MultiRZ`` on k wires, say) is decomposed further, into one- and
-two-qubit gates, even when its name is in the set.  Two-qubit gates are
+decomposed until only those gates remain, except that a ``MultiRZ`` on more
+than two wires is decomposed further, into one- and two-qubit gates, even
+though its name is in the set (a gate with no decomposition at all is left
+as it is and counts once).  Two-qubit gates are
 counted separately because they are what NISQ feasibility is usually judged
 by, so ``n_two_qubit_gates`` is the two-qubit cost of the circuit: a k-wire
 ``MultiRZ`` contributes the 2(k-1) CNOTs of its ladder, not 1, while a
@@ -37,8 +38,9 @@ import torch.nn as nn
 
 #: Gate names a circuit is decomposed to before its resources are counted.
 #: Every gate the library's circuits emit is in here, so the count is of the
-#: circuit as written; a template such as ``AngleEmbedding`` is expanded.  A
-#: gate stops only if it also acts on at most two wires (see _is_logical).
+#: circuit as written; a template such as ``AngleEmbedding`` is expanded.
+#: ``MultiRZ`` is kept only on at most two wires; on more it is decomposed to
+#: its CNOT ladder (see _decompose_logical).
 LOGICAL_GATE_SET: frozenset[str] = frozenset(
     {"Hadamard", "RX", "RY", "RZ", "Rot", "PhaseShift", "CNOT", "CZ", "MultiRZ"}
 )
@@ -60,11 +62,12 @@ class CircuitSummary:
     depth:
         Longest path of gates through the logical circuit.
     n_gates:
-        Total gate count after decomposition to ``LOGICAL_GATE_SET``.
+        Total gate count after decomposition to ``LOGICAL_GATE_SET`` (with
+        ``MultiRZ`` kept only on at most two wires).
     n_two_qubit_gates:
         Two-qubit gates (CNOT, CZ, two-wire MultiRZ) after gates on more
         than two wires have been decomposed into them, i.e. the circuit's
-        two-qubit cost.
+        two-qubit cost.  A wider gate with no decomposition counts once.
     gate_counts:
         Count per gate name, sorted by name.  This field is a mapping, so the
         dataclass is frozen for immutability but is **not** hashable.
@@ -179,7 +182,7 @@ def _logical_tape(
     qlayer: qml.qnn.TorchLayer, n_qubits: int, inputs: torch.Tensor | None = None
 ) -> qml.tape.QuantumScript:
     """
-    The tape the layer executes for one sample, decomposed to LOGICAL_GATE_SET.
+    The tape the layer executes for one sample, decomposed by _decompose_logical.
 
     The weight tensors keep their ``requires_grad`` flag, so the gate
     parameters that come from trainable weights can be told apart from the
@@ -191,13 +194,38 @@ def _logical_tape(
     # level="top": the circuit as written, before the QNode's own transforms
     # (batch expansion) and before the device rewrites gates it cannot run.
     tape = qml.workflow.construct_tape(qlayer.qnode, level="top")(inputs, **weights)
-    (decomposed,), _ = qml.transforms.decompose(tape, stopping_condition=_is_logical)
+    return _decompose_logical(tape)
+
+
+def _decompose_logical(tape: qml.tape.QuantumScript) -> qml.tape.QuantumScript:
+    """
+    ``tape`` decomposed to ``LOGICAL_GATE_SET``, with ``MultiRZ`` kept only on
+    at most two wires, so a wider one counts at its two-qubit cost.
+
+    The wire rule is a ``stopping_condition`` next to a ``gate_set`` without
+    ``MultiRZ``, rather than a stopping condition alone: PennyLane keeps an op
+    that satisfies either, and graph-based decomposition
+    (``qml.decomposition.enable_graph()``) refuses a call without ``gate_set``.
+    """
+    (decomposed,), _ = qml.transforms.decompose(
+        tape,
+        gate_set=LOGICAL_GATE_SET - {"MultiRZ"},
+        stopping_condition=_is_two_wire_multirz,
+    )
     return decomposed
 
 
-def _is_logical(op: qml.operation.Operator) -> bool:
-    """In ``LOGICAL_GATE_SET`` and on at most two wires, so it counts at its two-qubit cost."""
-    return op.name in LOGICAL_GATE_SET and len(op.wires) <= 2
+def _is_two_wire_multirz(op: qml.operation.Operator) -> bool:
+    return op.name == "MultiRZ" and len(op.wires) <= 2
+
+
+def _n_two_qubit_gates(gate_sizes: Mapping[int, int]) -> int:
+    """
+    Gates on two or more wires.  After _decompose_logical only a gate that has
+    no decomposition can still act on more than two; it counts once rather
+    than dropping out of the count.
+    """
+    return sum(count for size, count in gate_sizes.items() if size >= 2)
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +300,11 @@ def count_inert_parameters(tape: qml.tape.QuantumScript) -> int:
             f"broadcasting (batch size {tape.batch_size}) one gate parameter holds "
             "several values, so a count of gate parameters has no clear meaning."
         )
-    (tape,), _ = qml.transforms.decompose(tape, stopping_condition=_has_scalar_parameters)
+    # Every gate in LOGICAL_GATE_SET has scalar parameters, so passing it does
+    # not change what stops; graph-based decomposition requires a gate_set.
+    (tape,), _ = qml.transforms.decompose(
+        tape, gate_set=LOGICAL_GATE_SET, stopping_condition=_has_scalar_parameters
+    )
     unexpanded = sorted({op.name for op in tape.operations if not _has_scalar_parameters(op)})
     if unexpanded:
         raise ValueError(
@@ -381,7 +413,7 @@ def circuit_summary(target: nn.Module) -> CircuitSummary:
         ),
         depth=int(resources.depth),
         n_gates=int(resources.num_gates),
-        n_two_qubit_gates=resources.gate_sizes.get(2, 0),
+        n_two_qubit_gates=_n_two_qubit_gates(resources.gate_sizes),
         gate_counts=dict(sorted(resources.gate_types.items())),
         device_name=str(qnode.device.name),
         diff_method=str(qnode.diff_method),

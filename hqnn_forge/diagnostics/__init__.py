@@ -10,7 +10,8 @@ CircuitSummary           Frozen record: qubits, depth, gate counts, trainable pa
 circuit_summary          Build a CircuitSummary from an encoding layer or a hybrid classifier.
 draw_circuit             Text drawing of the same circuit, for logs and notebooks.
 count_inert_parameters   Trainable gate parameters that can never reach a measurement.
-LOGICAL_GATE_SET         The gate names circuits are decomposed to before counting.
+LOGICAL_GATE_SET         Gate names circuits are decomposed to before counting
+                         (MultiRZ kept only on at most two wires).
 gradient_variance        Variance of the cost gradient over random weight draws.
 gradient_variance_sweep  The same over a grid of qubit and layer counts.
 GradientVarianceResult   Result of gradient_variance.
