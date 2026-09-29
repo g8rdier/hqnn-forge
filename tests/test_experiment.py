@@ -133,6 +133,26 @@ class TestContents:
         split_seeds = {(f["dataset"], f["split_seed"]) for f in record["folds"]}
         assert len(split_seeds) == 2  # one outer split per dataset
 
+    def test_recorded_smote_seed_is_the_one_drawn_with(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No rows of the SMOTE draw are recorded, so check the seed at the call.
+        drawn: list[tuple[list[int], int]] = []
+        real = benchmark.oversample_fold
+
+        def spy(X: Any, y: Any, train_idx: Any, val_idx: Any, **kwargs: Any) -> Any:
+            drawn.append((sorted(train_idx.tolist()), kwargs["random_state"]))
+            return real(X, y, train_idx, val_idx, **kwargs)
+
+        monkeypatch.setattr(benchmark, "oversample_fold", spy)
+        monkeypatch.setattr(benchmark, "_fit_and_score", lambda *a, **k: (0.3, 0.5, 0.01, 1))
+        path = tmp_path / "run.json"
+        run_benchmark(_datasets(), _hybrid, record_path=path, **SETTINGS)
+        record, _ = load_record(path)
+        hybrid_folds = [f for f in record["folds"] if f["model"] == "hybrid"]
+        assert drawn == [(f["train_idx"], f["smote_seed"]) for f in hybrid_folds]
+        assert len({seed for _, seed in drawn}) == len(drawn)
+
     def test_devices_actually_used(self, recorded: tuple) -> None:
         _, path = recorded
         record, _ = load_record(path)
