@@ -154,10 +154,11 @@ def train_model(
         Upper bound on the number of epochs.  Default: 100.
     batch_size:
         Mini-batch size.  The last batch may be smaller, but for
-        ``batch_size > 1`` never a single sample: a remainder of one is merged
-        into the batch before it, which then holds ``batch_size + 1``, because
-        batch norm in train mode fails on one sample.  With ``batch_size=1``
-        every batch is one sample, as asked.  Default: 256.
+        ``batch_size > 1`` never a single sample unless the training set is
+        one: a remainder of one is merged into the batch before it, which then
+        holds ``batch_size + 1``, because batch norm in train mode fails on one
+        sample.  With ``batch_size=1`` every batch is one sample, as asked.
+        Default: 256.
     monitor:
         ``"mcc"`` (default), ``"f1"``, ``"balanced_accuracy"`` or ``"val_loss"``.
     patience:
