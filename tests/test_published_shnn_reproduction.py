@@ -36,8 +36,16 @@ The recipe (benchmark ``configs/default.yaml``, ``src/data/cv.py``,
   its training part only: ``RobustScaler`` → ``MinMaxScaler`` to [0, π] →
   ``PCA(8)``; then SMOTE (k = 5) on the training part only.
 * ``published_shnn()``, Adam (lr 0.01, weight decay 1e-5), batch 256, up to
-  100 epochs, early stopping on validation MCC at the MCC-optimal threshold
-  with patience 20, best epoch restored.  Test MCC at that threshold.
+  100 epochs, early stopping on validation MCC with patience 20 (strict
+  improvement), best epoch restored.  Validation MCC is taken at the
+  threshold that maximises it on the benchmark's grid, ``np.arange(0.05,
+  0.95, 0.01)`` (first maximum wins), for the early-stopping signal and again
+  on the restored model for the test threshold.  The grid tops out at 0.94,
+  and a SMOTE-balanced model on 0.17% fraud often wants a higher one (the
+  benchmark's own trainer notes a fold tuned to 0.94), so the grid is part of
+  the recipe: the library's exhaustive ``find_optimal_threshold`` would score
+  a different, typically higher, MCC.  That is why the epochs are driven here
+  one ``train_model`` call at a time rather than by its own ``monitor``.
 
 Deviations, each deliberate
 ---------------------------
@@ -55,7 +63,7 @@ Deviations, each deliberate
 
 from __future__ import annotations
 
-import functools
+import copy
 import math
 import os
 from collections.abc import Callable
@@ -68,7 +76,7 @@ import torch.nn as nn
 
 from hqnn_forge.models import HybridBinaryClassifier
 from hqnn_forge.preprocessing import smote, stratified_kfold
-from hqnn_forge.training import EpochRecord, train_model
+from hqnn_forge.training import train_model
 
 REPRODUCE_ENV = "HQNN_FORGE_REPRODUCE"
 PUBLISHED_MCC = 0.5758
@@ -78,8 +86,17 @@ PUBLISHED_MCC_PER_KPARAM = 4.720
 SEED = 42
 
 
-def _log_epoch(log: Callable[[str], None], fold: int, r: EpochRecord) -> None:
-    log(f"fold {fold} epoch {r.epoch:3d} loss {r.train_loss:.4f} val_mcc {r.val_score}")
+def benchmark_threshold(y_true: npt.ArrayLike, y_prob: npt.ArrayLike) -> float:
+    """The benchmark's ``find_optimal_threshold``: first MCC maximum on its 0.05..0.94 grid."""
+    from sklearn.metrics import matthews_corrcoef
+
+    y_true, y_prob = np.asarray(y_true), np.asarray(y_prob)
+    best_mcc, best_t = -1.0, 0.5
+    for t in np.arange(0.05, 0.95, 0.01):
+        mcc = matthews_corrcoef(y_true, (y_prob >= t).astype(int))
+        if mcc > best_mcc:
+            best_mcc, best_t = mcc, t
+    return float(best_t)
 
 
 def run_published_recipe(
@@ -123,26 +140,62 @@ def run_published_recipe(
         def tensor(a: npt.ArrayLike) -> torch.Tensor:
             return torch.as_tensor(np.asarray(a), dtype=torch.float32)
 
-        history = train_model(
-            model,
-            nn.BCEWithLogitsLoss(),
-            torch.optim.Adam(model.parameters(), lr=0.01, weight_decay=1e-5),
-            tensor(oversampled.X),
-            tensor(oversampled.y),
-            tensor(x_va),
-            tensor(y_dev[va]),
-            max_epochs=max_epochs,
-            batch_size=batch_size,
-            monitor="mcc",
-            patience=patience,
-            generator=torch.Generator().manual_seed(SEED + fold),
-            on_epoch_end=functools.partial(_log_epoch, log, fold),
-        )
-        threshold = history.best_threshold if history.best_threshold is not None else 0.5
+        x_val_t, y_val_np = tensor(x_va), y_dev[va]
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.01, weight_decay=1e-5)
+        generator = torch.Generator().manual_seed(SEED + fold)
+        best_mcc, best_epoch, stale = -1.0, 0, 0
+        best_state = copy.deepcopy(model.state_dict())
+        for epoch in range(1, max_epochs + 1):
+            # One epoch per call, no validation inside: the stopping signal is
+            # the benchmark's grid-thresholded MCC, computed below.
+            (record,) = train_model(
+                model,
+                nn.BCEWithLogitsLoss(),
+                optimizer,
+                tensor(oversampled.X),
+                tensor(oversampled.y),
+                max_epochs=1,
+                batch_size=batch_size,
+                generator=generator,
+            ).epochs
+            val_prob = model.predict_proba(x_val_t).numpy()
+            val_pred = (val_prob >= benchmark_threshold(y_val_np, val_prob)).astype(int)
+            val_mcc = float(matthews_corrcoef(y_val_np, val_pred))
+            log(f"fold {fold} epoch {epoch:3d} loss {record.train_loss:.4f} val_mcc {val_mcc:.4f}")
+            if val_mcc > best_mcc:
+                best_mcc, best_epoch, stale = val_mcc, epoch, 0
+                best_state = copy.deepcopy(model.state_dict())
+            else:
+                stale += 1
+                if stale >= patience:
+                    break
+        model.load_state_dict(best_state)
+        threshold = benchmark_threshold(y_val_np, model.predict_proba(x_val_t).numpy())
         pred = model.predict(tensor(x_te), threshold=threshold).numpy()
         scores.append(float(matthews_corrcoef(y_test, pred)))
-        log(f"fold {fold}: best epoch {history.best_epoch}, test MCC {scores[-1]:.4f}")
+        log(
+            f"fold {fold}: best epoch {best_epoch}, threshold {threshold:.2f}, "
+            f"test MCC {scores[-1]:.4f}"
+        )
     return scores
+
+
+def test_benchmark_threshold_is_capped_and_takes_the_first_maximum() -> None:
+    """The grid, not the exhaustive search: 0.94 at most, and the lowest tied threshold."""
+    pytest.importorskip("sklearn")
+    from hqnn_forge.evaluation import find_optimal_threshold
+
+    # Separable only in (0.965, 0.985]: the exhaustive search finds MCC 1 at
+    # 0.975, while the grid stops at 0.94, so its best is the labelling of
+    # (0.905, 0.965] -- one negative still called positive -- first reached at 0.91.
+    y = np.array([0, 0, 0, 0, 1, 1])
+    p = np.array([0.105, 0.505, 0.905, 0.965, 0.985, 0.995])
+    assert find_optimal_threshold(y, p).threshold == pytest.approx(0.975)
+    assert benchmark_threshold(y, p) == pytest.approx(0.91)
+    # Every threshold in (0.305, 0.705] separates these; the grid keeps the first.
+    y = np.array([0, 0, 1, 1])
+    p = np.array([0.205, 0.305, 0.705, 0.805])
+    assert benchmark_threshold(y, p) == pytest.approx(0.31)
 
 
 def test_recipe_runs_end_to_end() -> None:
