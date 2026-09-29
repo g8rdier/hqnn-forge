@@ -285,6 +285,19 @@ class TestPickle:
 #: every check that runs passes.
 EXPECTED_FAILED_CHECKS: dict[str, str] = {}
 
+#: Checks that pass or fail by float32 rounding, depending on the CPU and on an
+#: unseeded permutation the check draws, so a strict xfail cannot express them.
+#: check_methods_sample_order_invariance compares predict_proba on a permuted
+#: batch at rtol=1e-7, below float32 resolution (eps ~1.2e-7): the model runs
+#: in float32, and on some CI runners a permuted batch moves an output by one
+#: ulp.  test_sample_order_invariance_at_float32 checks the same property at
+#: the model's own precision.
+FLOAT32_TOLERANCE_CHECKS: dict[str, str] = {
+    "check_methods_sample_order_invariance": (
+        "rtol=1e-7 is below float32 resolution; one-ulp differences on some CPUs"
+    ),
+}
+
 #: Checks scikit-learn skips itself when an optional package is absent, which
 #: this project does not install.  They carry ``may_skip`` so that
 #: HQNN_FORGE_FAIL_ON_SKIP=1 in CI does not turn the skip into a failure.
@@ -331,6 +344,8 @@ def _conformance_params() -> list[Any]:
         name = _check_name(check)
         reason = EXPECTED_FAILED_CHECKS.get(name)
         marks = [pytest.mark.xfail(reason=reason, strict=True)] if reason else []
+        if name in FLOAT32_TOLERANCE_CHECKS:
+            marks.append(pytest.mark.xfail(reason=FLOAT32_TOLERANCE_CHECKS[name], strict=False))
         if name in MAY_SKIP_CHECKS:
             marks.append(pytest.mark.may_skip)
         params.append(pytest.param(estimator, check, marks=marks))
@@ -342,3 +357,18 @@ def test_scikit_learn_conformance(
     estimator: HybridClassifierEstimator, check: Callable[[HybridClassifierEstimator], None]
 ) -> None:
     check(estimator)
+
+
+def test_sample_order_invariance_at_float32() -> None:
+    # check_methods_sample_order_invariance at the model's float32 precision:
+    # permuting the batch permutes the outputs, up to a few float32 ulps of a
+    # probability (absolute, since 1 - p near p = 1 has no relative scale).
+    rnd = np.random.RandomState(0)
+    X = 3 * rnd.uniform(size=(20, 3))
+    y = (X[:, 0] > 1.5).astype(int)
+    est = _conformance_estimator().fit(X, y)
+    proba = est.predict_proba(X)
+    eps = float(np.finfo(np.float32).eps)
+    for seed in range(5):
+        idx = np.random.RandomState(seed).permutation(X.shape[0])
+        np.testing.assert_allclose(est.predict_proba(X[idx]), proba[idx], rtol=0, atol=4 * eps)
