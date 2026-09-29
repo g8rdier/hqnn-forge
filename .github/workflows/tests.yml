@@ -70,7 +70,8 @@ jobs:
 
     # The floor is repeated by hand in pyproject.toml and in this file (ruff's
     # target-version, the classifiers, vermin's -t and each job's lowest
-    # python-version); each tool only sees its own copy, so a missed one would
+    # python-version), and in the local vermin commands in README.md and
+    # CONTRIBUTING.md; each tool only sees its own copy, so a missed one would
     # fail nothing. The script compares them all with requires-python.
     - name: Check every copy of the Python floor
       run: uv run --frozen python .github/scripts/check_python_floor.py

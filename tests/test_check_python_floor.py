@@ -28,6 +28,7 @@ def _script() -> ModuleType:
 checker = _script()
 PYPROJECT = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 WORKFLOW = (ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+DOCS = {name: (ROOT / name).read_text(encoding="utf-8") for name in checker.DOCS}
 
 
 def _replace(text: str, old: str, new: str) -> str:
@@ -36,18 +37,22 @@ def _replace(text: str, old: str, new: str) -> str:
 
 
 def test_the_repository_agrees() -> None:
-    assert checker.check(PYPROJECT, WORKFLOW) == []
+    assert checker.check(PYPROJECT, WORKFLOW, DOCS) == []
     assert checker.main() == 0
 
 
 def test_raising_only_requires_python_reports_every_other_copy() -> None:
     errors = checker.check(
-        _replace(PYPROJECT, 'requires-python = ">=3.11"', 'requires-python = ">=3.12"'), WORKFLOW
+        _replace(PYPROJECT, 'requires-python = ">=3.11"', 'requires-python = ">=3.12"'),
+        WORKFLOW,
+        DOCS,
     )
     text = "\n".join(errors)
     assert "target-version is 'py311', expected 'py312'" in text
     assert "lowest Python classifier is 3.11, expected 3.12" in text
-    assert "vermin targets -t=3.11-, expected -t=3.12-" in text
+    assert "tests.yml: vermin targets -t=3.11-, expected -t=3.12-" in text
+    for name in checker.DOCS:
+        assert f"{name}: vermin targets -t=3.11-, expected -t=3.12-" in text
     for job in ("test", "test-locked", "test-lowest"):
         assert f"job {job!r} runs 3.11, below the floor 3.12" in text
     assert "'lint'" not in text  # 3.12 there is the floor now
@@ -60,10 +65,12 @@ def test_raising_only_requires_python_reports_every_other_copy() -> None:
         ("workflow", "-t=3.11-", "-t=3.12-", "vermin targets -t=3.12-"),
         (
             "workflow",
-            'python-version: "3.11"\n',
-            'python-version: "3.12"\n',
+            'python-version: ["3.11", "3.13", "3.14"]',
+            'python-version: ["3.12", "3.13", "3.14"]',
             "job 'test-lowest': lowest python-version is 3.12",
         ),
+        ("README.md", "-t=3.11-", "-t=3.12-", "README.md: vermin targets -t=3.12-"),
+        ("CONTRIBUTING.md", "-t=3.11-", "-t=3.12-", "CONTRIBUTING.md: vermin targets -t=3.12-"),
         (
             "pyproject",
             '    "Programming Language :: Python :: 3.11",\n',
@@ -77,12 +84,21 @@ def test_raising_only_requires_python_reports_every_other_copy() -> None:
             "job 'lint' runs 3.10, below the floor 3.11",
         ),
     ],
-    ids=["ruff", "vermin", "test-lowest", "classifier", "exempt-job-below-floor"],
+    ids=[
+        "ruff",
+        "vermin",
+        "test-lowest",
+        "readme-vermin",
+        "contributing-vermin",
+        "classifier",
+        "exempt-job-below-floor",
+    ],
 )
 def test_one_drifted_copy_is_reported(where: str, old: str, new: str, message: str) -> None:
     pyproject = _replace(PYPROJECT, old, new) if where == "pyproject" else PYPROJECT
     workflow = _replace(WORKFLOW, old, new) if where == "workflow" else WORKFLOW
-    errors = checker.check(pyproject, workflow)
+    docs = {n: _replace(d, old, new) if n == where else d for n, d in DOCS.items()}
+    errors = checker.check(pyproject, workflow, docs)
     assert len(errors) == 1 and message in errors[0], errors
 
 
@@ -109,4 +125,4 @@ jobs:
 
 def test_requires_python_without_a_floor() -> None:
     pyproject = _replace(PYPROJECT, 'requires-python = ">=3.11"', 'requires-python = "~=3.11"')
-    assert "has no '>=X.Y' floor" in checker.check(pyproject, WORKFLOW)[0]
+    assert "has no '>=X.Y' floor" in checker.check(pyproject, WORKFLOW, DOCS)[0]

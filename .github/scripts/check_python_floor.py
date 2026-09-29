@@ -8,7 +8,8 @@ supports. This checks, against the floor in requires-python:
 
 - ruff's target-version in pyproject.toml
 - the lowest "Programming Language :: Python :: 3.x" classifier
-- vermin's -t=X.Y- target in tests.yml
+- vermin's -t=X.Y- target in tests.yml, and in the local copies of that command in
+  README.md and CONTRIBUTING.md
 - the lowest literal python-version of every job in tests.yml, except the jobs in
   EXEMPT_JOBS, which run above the floor on purpose
 
@@ -22,6 +23,9 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+
+#: Documents that repeat the lint job's vermin command for running it locally.
+DOCS = ("README.md", "CONTRIBUTING.md")
 
 #: Jobs whose python-version is deliberately not the floor, with the reason.
 EXEMPT_JOBS = {
@@ -63,8 +67,13 @@ def job_python_versions(workflow: str) -> dict[str, list[tuple[int, int]]]:
     return jobs
 
 
-def check(pyproject_text: str, workflow_text: str) -> list[str]:
-    """Every disagreement with the floor in ``requires-python``, as messages."""
+def check(
+    pyproject_text: str, workflow_text: str, docs: dict[str, str] | None = None
+) -> list[str]:
+    """Every disagreement with the floor in ``requires-python``, as messages.
+
+    ``docs`` maps a file name to its text; each vermin ``-t=X.Y-`` in it is checked too.
+    """
     project = tomllib.loads(pyproject_text)
     requires = project["project"]["requires-python"]
     match = re.search(r">=\s*(\d+\.\d+)", requires)
@@ -94,6 +103,10 @@ def check(pyproject_text: str, workflow_text: str) -> list[str]:
     for v in vermin:
         if _version(v) != floor:
             errors.append(f"tests.yml: vermin targets -t={v}-, expected -t={_show(floor)}-")
+    for name, text in (docs or {}).items():
+        for v in re.findall(r"vermin\b[^\n]*?-t=(\d+\.\d+)-", text):
+            if _version(v) != floor:
+                errors.append(f"{name}: vermin targets -t={v}-, expected -t={_show(floor)}-")
 
     for job, versions in job_python_versions(workflow_text).items():
         if not versions:
@@ -116,6 +129,7 @@ def main() -> int:
     errors = check(
         (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
         (ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8"),
+        {name: (ROOT / name).read_text(encoding="utf-8") for name in DOCS},
     )
     for error in errors:
         print(f"::error::{error}")
