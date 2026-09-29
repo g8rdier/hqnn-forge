@@ -413,4 +413,6 @@ and versioning policy this project follows.
 - Chawla et al. (2002) — *SMOTE: Synthetic Minority Over-sampling Technique*
 - Wilcoxon (1945) — *Individual comparisons by ranking methods*
 - Kerby (2014) — *The simple difference formula: an approach to teaching nonparametric correlation*
+- Efron (1987) — *Better bootstrap confidence intervals*
+- Efron & Tibshirani (1993) — *An Introduction to the Bootstrap*
 - Bergholm et al. (2022) — *PennyLane: Automatic differentiation of hybrid quantum-classical computations*
