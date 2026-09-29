@@ -32,15 +32,24 @@ classifiers = [
 ]
 
 # Every floor below is installed by the test-lowest CI job (--resolution
-# lowest-direct), so each one is the lowest version the suite actually passes on
+# lowest-direct) on 3.11, 3.13 and 3.14, so each one is the lowest version the
+# suite actually passes on for its interpreters. A package whose oldest usable
+# release has no wheels for a newer interpreter gets one floor per interpreter
+# range: the first release with wheels for it. 3.12 shares the 3.11 floors.
 dependencies = [
-    # 2.2 wheels were compiled against NumPy 1.x and fail to initialise NumPy 2
-    "torch>=2.3",
+    # 2.2 wheels were compiled against NumPy 1.x and fail to initialise NumPy 2.
+    # First cp313 wheels: 2.5; first cp314 wheels: 2.9.
+    "torch>=2.3; python_version < '3.13'",
+    "torch>=2.5; python_version == '3.13'",
+    "torch>=2.9; python_version >= '3.14'",
     # 0.38 breaks with autoray>=0.7 (NumpyMimic removed) and PennyLane declares
     # no upper bound of its own
     "pennylane>=0.45",
-    # pennylane>=0.45 already requires numpy>=2.0, so a lower floor is unreachable
-    "numpy>=2.0",
+    # pennylane>=0.45 already requires numpy>=2.0, so a lower floor is unreachable.
+    # First cp313 wheels: 2.1; first cp314 wheels: 2.3.2.
+    "numpy>=2.0; python_version < '3.13'",
+    "numpy>=2.1; python_version == '3.13'",
+    "numpy>=2.3.2; python_version >= '3.14'",
 ]
 
 [project.optional-dependencies]
@@ -53,13 +62,21 @@ dev = [
     "ruff",
     "mypy",
     "vermin",
+    # Oracle for the Wilcoxon and ranking tests in tests/test_evaluation_statistics.py;
+    # hqnn_forge itself stays pure NumPy. 1.13 is the first release that installs
+    # alongside numpy>=2.0. pennylane brings scipy too, but only by coincidence.
+    "scipy>=1.13",
 ]
 sklearn = [
-    # hqnn_forge.sklearn needs validate_data and __sklearn_tags__, both new in 1.6
-    "scikit-learn>=1.6",
+    # hqnn_forge.sklearn needs validate_data and __sklearn_tags__, both new in 1.6.
+    # First cp314 wheels: 1.7.2.
+    "scikit-learn>=1.6; python_version < '3.14'",
+    "scikit-learn>=1.7.2; python_version >= '3.14'",
 ]
 examples = [
-    "scikit-learn>=1.6",  # dataset generation in examples, and hqnn_forge.sklearn
+    # dataset generation in examples, and hqnn_forge.sklearn; floors as in sklearn
+    "scikit-learn>=1.6; python_version < '3.14'",
+    "scikit-learn>=1.7.2; python_version >= '3.14'",
     "matplotlib",
 ]
 docs = [
