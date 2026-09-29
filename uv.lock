@@ -696,6 +696,8 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "vermin" },
 ]
 examples = [
@@ -725,6 +727,7 @@ requires-dist = [
     { name = "scikit-learn", marker = "python_full_version >= '3.14' and extra == 'sklearn'", specifier = ">=1.7.2" },
     { name = "scikit-learn", marker = "python_full_version < '3.14' and extra == 'examples'", specifier = ">=1.6" },
     { name = "scikit-learn", marker = "python_full_version < '3.14' and extra == 'sklearn'", specifier = ">=1.6" },
+    { name = "scipy", marker = "extra == 'dev'", specifier = ">=1.13" },
     { name = "torch", marker = "python_full_version < '3.13'", specifier = ">=2.3" },
     { name = "torch", marker = "python_full_version == '3.13.*'", specifier = ">=2.5" },
     { name = "torch", marker = "python_full_version >= '3.14'", specifier = ">=2.9" },
