@@ -131,8 +131,8 @@ def main() -> None:
         # scratch on the same data with the same settings.  Re-using the
         # hybrid's trained classical layers, or just switching the circuit off,
         # would measure a model trained *with* the circuit -- not what a
-        # classical model achieves on its own.
-        torch.manual_seed(SEED + k)
+        # classical model achieves on its own.  Its initial weights are seeded
+        # from the hybrid's init_seed (random_state), so the fold reproduces.
         control = classical_baseline(hybrid.model_)
         train_model(
             control,
@@ -142,7 +142,7 @@ def main() -> None:
             torch.from_numpy(y_fit.astype(np.float32)),
             max_epochs=MAX_EPOCHS,
             batch_size=BATCH_SIZE,
-            generator=torch.Generator().manual_seed(SEED + k),  # the same batch order
+            generator=torch.Generator().manual_seed(SEED + k),  # a seeded batch order
         )
         control.eval()
 
@@ -187,7 +187,7 @@ def main() -> None:
         f"(smallest possible with {wilcoxon.n} untied folds: {wilcoxon.min_p_value:.4f}), "
         f"rank-biserial r = {effect:+.2f}"
     )
-    if wilcoxon.min_p_value > ALPHA:
+    if wilcoxon.min_p_value >= ALPHA:
         verdict = (
             f"inconclusive by construction -- with {wilcoxon.n} untied folds the test "
             f"cannot reach p < {ALPHA} whatever the scores; use more folds."
