@@ -26,7 +26,7 @@ reference, generated from the docstrings.
 
 | Package | Contents |
 |---|---|
-| [`hqnn_forge.encoding`](api/encoding.md) | Quantum feature maps: angle, IQP, amplitude and data re-uploading layers |
+| [`hqnn_forge.encoding`](api/encoding.md) | Quantum feature maps (angle, IQP, amplitude, data re-uploading) and the circuit pieces they share |
 | [`hqnn_forge.models`](api/models.md) | The hybrid classifiers |
 | [`hqnn_forge.noise`](api/noise.md) | Depolarizing noise, post hoc and during training |
 | [`hqnn_forge.kernels`](api/kernels.md) | Quantum fidelity kernels |
@@ -39,3 +39,5 @@ reference, generated from the docstrings.
 | [`hqnn_forge.utils`](api/utils.md) | Losses, checkpoints, ablation, evaluation-mode helper |
 | [`hqnn_forge.circuits`](api/circuits.md) | Ansatz primitives |
 | [`hqnn_forge.initializers`](api/initializers.md) | Small-angle weight initialisation |
+| [`hqnn_forge.benchmark`](api/benchmark.md) | Hybrid model against its matched classical control, on identical folds |
+| [`hqnn_forge.experiment`](api/experiment.md) | JSON experiment records: save, load and rerun a benchmark |

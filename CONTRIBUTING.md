@@ -166,8 +166,8 @@ and cross-reference with Sphinx roles (`` :func:`gradient_variance` ``,
 `` :class:`~hqnn_forge.models.HybridBinaryClassifier` ``); `docs/griffe_sphinx_roles.py` turns
 them into links, so a reference to something that does not exist fails the build. Constants are
 documented with `#:` comments above the assignment. A new public module needs a page under
-`docs/api/` and an entry in the `nav` of `mkdocs.yml`; the workflow fails if a name in a
-documented `__all__` has no entry.
+`docs/api/` and an entry in the `nav` of `mkdocs.yml`; the workflow fails if a top-level
+module has no page or a name in a documented `__all__` has no entry.
 
 ## Versioning
 

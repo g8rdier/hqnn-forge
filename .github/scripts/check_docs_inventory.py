@@ -30,6 +30,18 @@ def missing(docs: Path, site: Path) -> list[str]:
     package = griffe.load("hqnn_forge", search_paths=["."])
     documented = inventory(site)
     problems = []
+    rendered = {
+        path
+        for page in (docs / "api").glob("*.md")
+        for path in DIRECTIVE.findall(page.read_text())
+    }
+    # A public module of the package with no page at all is the larger hole:
+    # none of its names are checked below.
+    for name, member in sorted(package.members.items()):
+        if member.is_alias or not member.is_module or name.startswith("_"):
+            continue
+        if f"hqnn_forge.{name}" not in rendered:
+            problems.append(f"hqnn_forge.{name} is a public module with no page under docs/api/")
     for page in sorted((docs / "api").glob("*.md")):
         for path in DIRECTIVE.findall(page.read_text()):
             obj = package if path == "hqnn_forge" else package[path[len("hqnn_forge.") :]]
