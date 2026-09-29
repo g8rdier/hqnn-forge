@@ -15,36 +15,46 @@ The workflow itself (issue first, branch naming, commit style, PR checklist) is 
 
 ## A dataset loader
 
-**Reference:** `hqnn_forge/data/credit_card.py` (`load_credit_card_fraud`) and its tests in
-`tests/test_data_credit_card.py`.
+**Reference:** `hqnn_forge/data/uci.py` (`load_taiwanese_bankruptcy` and the two other UCI
+loaders) and its tests in `tests/test_data_uci.py`, for a file fetched over HTTPS; this is the
+pattern to copy for most new datasets. `hqnn_forge/data/credit_card.py`
+(`load_credit_card_fraud`, tests in `tests/test_data_credit_card.py`) shows a download through
+an external CLI (the Kaggle client) instead.
 
 ### Interface and conventions
 
 - **One public function, `load_<name>(path=None, *, download=False, ...)`.** Every option after
-  `path` is keyword-only. It returns a `NamedTuple` with `X` (float64, shape
-  `(n_samples, n_features)`, C-contiguous), `y` (int64, shape `(n_samples,)`, 1 = the positive,
-  minority class) and `feature_names` (a tuple with one name per column of `X`).
+  `path` is keyword-only. It returns a `BinaryDataset` (from `hqnn_forge.data`; do not define a
+  new `NamedTuple`) with `X` (float64, shape `(n_samples, n_features)`, C-contiguous), `y`
+  (int64, shape `(n_samples,)`, 1 = the positive, minority class) and `feature_names` (a tuple
+  with one name per column of `X`).
 - **Explicit path, then environment, then default.** `path` may name the file or the directory
-  holding it. A path that does not end in the file's suffix counts as a directory, because with
-  `download=True` the directory often does not exist yet. With no `path`, the loader looks under
-  `$HQNN_FORGE_DATA`, then under `data/raw/`.
+  holding it. A path whose name is not the dataset's file name counts as a directory, because
+  with `download=True` the directory often does not exist yet. With no `path`, the loader looks
+  under `$HQNN_FORGE_DATA`, then under `data/raw/`; reuse `DATA_DIR_ENV` and `DEFAULT_DIR` from
+  `credit_card.py` rather than spelling them again.
 - **Nothing is fetched unless asked.** A missing file raises `DatasetNotFoundError` (from
   `hqnn_forge.data`). Its message gives the exact command or URL that fetches the file and
   mentions `download=True`. If `download=True` and fetching fails (tool missing, command
   failed, nothing produced), the loader raises `DatasetDownloadError`. It must not raise
   `DatasetNotFoundError` there, so that a caller who catches the first error and retries with
   `download=True` cannot loop.
-- **Check what was downloaded.** Before a large download, refuse a target whose file name the
-  download cannot produce. After downloading, check that the file exists; a checksum is better.
+- **Check what was downloaded.** Record the published file's SHA-256 and compare the
+  downloaded bytes against it before writing anything; a mismatch is a `DatasetDownloadError`
+  that says nothing was written. Bound the request with a timeout (`DOWNLOAD_TIMEOUT`), and
+  write to a `.part` file that is renamed into place, so an interrupted download never leaves a
+  truncated file for the next load to find. `_download` in `uci.py` does all three.
 - **Validate the schema before trusting the numbers.** Check the header against the published
   column names and report the first differences. Reject a header-only file, a non-numeric value,
   and labels outside {0, 1}, each with a `ValueError` that names the file. `strict=True`
-  additionally checks the published row and positive counts, so a truncated or re-sampled copy
-  is caught.
+  additionally requires the published file (its SHA-256, where one is recorded) and checks the
+  published row and positive counts, so a truncated or re-sampled copy is caught.
 - **NumPy only.** The core package does not depend on pandas; parse with `np.loadtxt` or the
   standard library.
-- **Leakage-prone columns are opt-out flags, not silent drops.** An example is `drop_time`. The
-  default returns the published columns unchanged.
+- **Leakage-prone columns are flags, not silent drops.** An example is `drop_time`. The default
+  returns the published columns unchanged. The exception is a column that encodes the label
+  itself (the other examinations in `load_cervical_cancer_risk`): drop it always, and name it in
+  the docstring.
 - **No preprocessing.** Scaling, PCA and resampling belong to `hqnn_forge.preprocessing`,
   applied inside each cross-validation fold. A loader that standardised the data would leak
   test-fold statistics into training.
@@ -52,19 +62,22 @@ The workflow itself (issue first, branch naming, commit style, PR checklist) is 
 ### Tests (`tests/test_data_<name>.py`)
 
 The dataset itself is never downloaded in CI. Tests write a small file with the real header to
-`tmp_path` and monkeypatch the download (`shutil.which`, `subprocess.run`, or the HTTP call). At
-minimum:
+`tmp_path` and monkeypatch the download (`urllib.request.urlopen`, or `shutil.which` and
+`subprocess.run` for a CLI). A loader in `uci.py` joins the `LOADERS` list in
+`tests/test_data_uci.py`, which runs the location, `strict` and download tests
+(`TestEveryLoader`) against it. At minimum:
 
 - arrays match the file: values, dtypes (float64 / int64), shapes, `feature_names`, and the
   positive rate of the fixture;
 - file path, directory path, `$HQNN_FORGE_DATA` and the default location all resolve;
 - a missing file raises `DatasetNotFoundError`, and the message contains the fetch command;
-- a download that fails, finds no tool, or produces nothing raises `DatasetDownloadError`; a
-  download that succeeds is loaded;
+- a download that fails, returns something other than the expected file, or has the wrong
+  checksum raises `DatasetDownloadError` and writes nothing; a download that succeeds is
+  loaded;
 - wrong column count, a renamed column, header only, a non-numeric value and a non-binary label
   each raise `ValueError`;
-- `strict=True` accepts the published counts and rejects others (monkeypatch the expected
-  counts so a small fixture can pass).
+- `strict=True` accepts the published file and counts and rejects others (monkeypatch the
+  expected checksum and counts so a small fixture can pass).
 
 ### Also update
 
