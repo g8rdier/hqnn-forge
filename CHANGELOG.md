@@ -57,11 +57,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   many more (12 of 24 for the ring ansatz at 4 qubits and 2 layers).  `n_effective_params`
   appears in `to_dict()` and the printed summary; templates are decomposed before counting
   and broadcast tapes are rejected
-
 - `load_credit_card_fraud(download=True)` passes the Kaggle CLI's progress through as it runs,
   stops a download that prints nothing for `stall_timeout` (default 120 s) or runs past
   `download_timeout` (default 3600 s) with a `DatasetDownloadError` saying which, and removes
   the partial files a failed or interrupted download created
+
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from
   `checkpoint._LEGACY_DEFAULTS` — the behaviour from before each argument existed — with a
