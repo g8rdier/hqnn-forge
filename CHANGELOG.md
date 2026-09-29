@@ -79,10 +79,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `ClassicalBaseline` (a plain MLP with the classifiers' interface) and
   `hqnn_forge.utils.classical_baseline(model)`, which builds the untrained classical control
-  of a hybrid model with its trainable parameter count matched to the hybrid's, every rotation
-  angle counted as one parameter. `ClassicalBaseline` takes `init_seed` like the other
+  of a hybrid model with its trainable parameter count matched to the hybrid's live count
+  (`count_parameters()` minus `circuit_summary(model).n_inert_params`, every other rotation
+  angle counted as one parameter). `ClassicalBaseline` takes `init_seed` like the other
   classifiers, and the builder carries the hybrid's `init_seed` over, so a seeded hybrid gets
   a seeded control
+- The published SHNN's live parameter count: 102 of its 122 trainable parameters can move
+  the output (autograd, pinned by a test); the 20 dead circuit weights are kept so published
+  checkpoints load unchanged, and both counts are documented (#234). The matched classical
+  control leaves the inert weights out of its target, so the published SHNN's control has 101
+  parameters, not 121 as matched on the total, and the parallel model's 523, not 571.
+  Efficiency figures (MCC/kParam) still divide by the total
 - `hqnn_forge.benchmark.run_benchmark`: a hybrid model against its matched classical control
   on identical folds of several datasets, one row per dataset and model (MCC, parameters,
   MCC per 1,000 parameters, training time, paired Wilcoxon test), with `write_csv` and
