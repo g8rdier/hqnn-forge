@@ -1,7 +1,8 @@
 """
 hqnn_forge.utils
 ================
-Imbalance-robust loss functions and training helpers.
+Imbalance-robust losses, checkpoint save/load, quantum-layer ablation and
+module-mode helpers.
 
 Exported symbols
 ----------------
