@@ -89,13 +89,17 @@ contract is spelled out in `hqnn_forge/_encoding_contract.py`:
 
 - **`qlayer`**: a `qml.qnn.TorchLayer`. The QNode's first argument is named `inputs`; every other
   argument is a trainable weight declared in `weight_shapes`.
-- **`n_qubits`**: an `int`.
+- **`n_qubits`**: an `int`, the circuit's width.
+- **`n_features`**: an `int`, the input's width, meaning the number of features per sample that
+  `prepare_inputs` accepts. It is `n_qubits` for the angle-type layers and up to `2**n_qubits`
+  for the amplitude layer. The kernels size their inputs by it, and `is_encoding_layer` (and
+  with it `quantum_kernel_matrix`) refuses a layer without it.
 - **`prepare_inputs(x)`**: the *whole* classical step between the batch and the QNode, meaning
-  validation (call `check_inputs` from `angle_embedding`, which rejects the wrong width and
-  NaN/inf) and any transform. `forward(x)` must be exactly `self.qlayer(self.prepare_inputs(x))`.
-  The kernels (`hqnn_forge.kernels`) replay the circuit on `prepare_inputs(X)`, so a step done
-  inline in `forward` is silently skipped there, and the kernel describes a different feature
-  map without raising.
+  validation (call `check_inputs(x, self.n_features, name="n_features")` from
+  `angle_embedding`, which rejects the wrong width and NaN/inf) and any transform. `forward(x)`
+  must be exactly `self.qlayer(self.prepare_inputs(x))`. The kernels (`hqnn_forge.kernels`)
+  replay the circuit on `prepare_inputs(X)`, so a step done inline in `forward` is silently
+  skipped there, and the kernel describes a different feature map without raising.
 
 The one allowed exception is training-time noise. A layer built with `noise_level > 0` runs
 `run_with_training_noise` in `train()` mode. Build it with `_build_training_noise` in the
@@ -122,9 +126,12 @@ Beyond the protocol:
 ### Tests
 
 - **Register the layer in `ENCODERS` in `tests/test_encoding_contract.py`.** That runs the
-  contract tests: mypy checks the class against the protocol, `forward(x)` must equal
-  `qlayer(prepare_inputs(x))` bit for bit, and `prepare_inputs` must reject what `forward`
-  rejects. Include a configuration that exercises any transform in `prepare_inputs`.
+  contract tests: mypy checks the class against the protocol, `is_encoding_layer` must accept
+  it, `prepare_inputs` must accept `n_features` inputs and reject one more or one fewer as
+  `forward` does, `forward(x)` must equal `qlayer(prepare_inputs(x))` bit for bit, and
+  `prepare_inputs` must reject what `forward` rejects. Include a configuration that exercises
+  any transform in `prepare_inputs`. Build it on `N_QUBITS` qubits; if its `n_features` is
+  not `n_qubits`, extend the expected width in `test_satisfies_the_runtime_check`.
 - Add it to `ALL_LAYERS` in `tests/test_kernels.py`. That runs the kernel tests (symmetry, PSD,
   unit diagonal, rejection of bad inputs) and checks that the replayed states reproduce the
   layer's own `forward`.
@@ -151,8 +158,9 @@ Beyond the protocol:
 
 ## A variational block (ansatz)
 
-**Reference:** `apply_variational_layers` in `hqnn_forge/encoding/angle_embedding.py`, with the
-`"strongly_entangling"` branch as the example of a second block.
+**Reference:** `apply_variational_layers` in `hqnn_forge/encoding/angle_embedding.py`. The
+`"brickwork"` branch, the most recent addition, is the example to copy; `"strongly_entangling"`
+shows a block that depends on the layer index.
 
 Note that the functions in `hqnn_forge/circuits/` (`strongly_entangling_layer`,
 `hardware_efficient_layer`) are standalone primitives for writing your own QNodes. None of the
@@ -183,7 +191,11 @@ so a new ansatz is a new `entangler` value.
 ### Tests (`tests/test_circuit_options.py`, class `TestEntangler`)
 
 - The block matches a hand-written gate sequence or a PennyLane template, compared on the state
-  or the expectation values for fixed weights.
+  or the expectation values for fixed weights. `"brickwork"` has a test class of its own next to
+  `TestEntangler`; do the same.
+- Which features each readout sees after one and two layers: add rows for the new value to the
+  parametrisation of `TestReadoutFeatures.test_features_each_readout_sees` in
+  `tests/test_circuit_options.py`.
 - Applying layers one by one with `layer_offset` gives the same circuit as all at once.
 - One qubit, and the smallest `n_qubits` it accepts.
 - Gradients reach every weight.
@@ -192,8 +204,9 @@ so a new ansatz is a new `entangler` value.
 
 ### Also update
 
-- The `Entangler` `Literal`, the value tuple in `validate_circuit_options` and the error
-  messages that list the choices, all in `angle_embedding.py`.
+- The `Entangler` `Literal` and a branch in `apply_variational_layers` (with its docstring
+  entry), both in `angle_embedding.py`. `validate_circuit_options` and its error message read
+  the choices from the `Literal`, so they need no change.
 - The `entangler` parameter docstrings: the angle, IQP and re-uploading builders and layers, and
   `hqnn_forge/models/` (`HybridBinaryClassifier`, `ParallelHybridClassifier`).
 - The README feature table, if it is offered as a model option.
