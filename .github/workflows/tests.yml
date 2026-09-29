@@ -9,6 +9,10 @@ on:
   # the PR against its new base, e.g. main after the parent is squash-merged.
   pull_request:
     types: [opened, synchronize, reopened, edited]
+  # By hand, for a main commit whose push run never started (GitHub dropped
+  # the push event for 3fbfd97): `gh workflow run tests.yml --ref main`. It
+  # tests the branch HEAD, so it only fills the gap for the latest commit.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -18,7 +22,9 @@ permissions:
 # skipped run would otherwise cancel the PR's real one. Pushes to main group per
 # commit: a group holds one running and one pending run, and a third arrival
 # cancels the pending one even without cancel-in-progress, so merges in quick
-# succession would leave main commits without a completed run.
+# succession would leave main commits without a completed run. A dispatched run
+# has no PR number or action, so it joins that same per-commit group, is never
+# cancelled, and passes every job's `if`.
 concurrency:
   group: tests-${{ github.event.pull_request.number || github.sha }}${{ github.event.action == 'edited' && !github.event.changes.base && '-edit' || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
