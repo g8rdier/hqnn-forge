@@ -7,6 +7,7 @@ Kaggle schema, so the suite never needs the real (non-redistributable) file.
 
 from __future__ import annotations
 
+import inspect
 import re
 import sys
 import textwrap
@@ -298,9 +299,35 @@ class TestStreamingDownload:
             """,
         )
         start = time.monotonic()
-        with pytest.raises(DatasetDownloadError, match=r"(?s)stalled: no output for 0.5 s.*5%"):
+        with pytest.raises(
+            DatasetDownloadError,
+            match=r"(?s)stalled: no output for 0.5 s.*run it by hand:\n    .*fake_kaggle\.py.*5%",
+        ):
             cc._run_cli(cmd, timeout=30, stall_timeout=0.5)
         assert time.monotonic() - start < 10
+
+    def test_output_is_drained_when_there_is_no_console(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Under pythonw sys.stdout is None.  160 KiB on stdout overfills a
+        # 64 KiB pipe, so a pump that stopped reading would block the script
+        # and the steady output would be misreported as a stall.
+        cmd = _script(
+            tmp_path,
+            """
+            import sys, time
+            for _ in range(40):
+                sys.stdout.write("x" * 4096); sys.stdout.flush()
+                sys.stderr.write("\\r."); sys.stderr.flush()
+                time.sleep(0.05)
+            """,
+        )
+        monkeypatch.setattr(sys, "stdout", None)
+        code, tail = cc._run_cli(cmd, timeout=30, stall_timeout=1.0)
+        # Exit 0 means all 160 KiB were read; the two pumps interleave, so the
+        # tail's last characters may come from either stream.
+        assert code == 0
+        assert tail.count("x") > 1900
 
     def test_steady_output_is_not_a_stall_but_the_total_bound_holds(self, tmp_path: Path) -> None:
         cmd = _script(
@@ -324,33 +351,36 @@ class TestStreamingDownload:
             f"""
             import sys, time, pathlib
             d = pathlib.Path(sys.argv[sys.argv.index("-p") + 1])
-            (d / "{cc.ZIP_NAME}").write_bytes(b"partial")
+            (d / "{cc._ZIP_NAME}").write_bytes(b"partial")
             (d / "{cc.FILE_NAME}").write_text("Time,V1\\n0,")
             time.sleep(60)
             """,
         )
         monkeypatch.setattr(cc.shutil, "which", lambda _: "/usr/bin/kaggle")
         monkeypatch.setattr(cc, "_download_command", lambda d: [*writer, "-p", str(d)])
+        monkeypatch.setattr(cc, "_STALL_TIMEOUT", 0.5)
         with pytest.raises(DatasetDownloadError, match="stalled"):
-            load_credit_card_fraud(target, download=True, stall_timeout=0.5)
+            load_credit_card_fraud(target, download=True)
         assert not target.exists()
-        assert not (target.parent / cc.ZIP_NAME).exists()
+        assert not (target.parent / cc._ZIP_NAME).exists()
 
     def test_files_that_were_there_before_are_kept(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         directory = tmp_path / "dl"
         directory.mkdir()
-        (directory / cc.ZIP_NAME).write_bytes(b"the user's own archive")
+        (directory / cc._ZIP_NAME).write_bytes(b"the user's own archive")
         monkeypatch.setattr(cc.shutil, "which", lambda _: "/usr/bin/kaggle")
         monkeypatch.setattr(cc, "_run_cli", lambda cmd, **kw: (1, "boom"))
         with pytest.raises(DatasetDownloadError, match="exit 1"):
             load_credit_card_fraud(directory, download=True)
-        assert (directory / cc.ZIP_NAME).read_bytes() == b"the user's own archive"
+        assert (directory / cc._ZIP_NAME).read_bytes() == b"the user's own archive"
 
-    def test_the_timeouts_reach_the_cli_runner(
+    def test_the_loader_bounds_the_cli_runner(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # Both bounds are fixed, not caller-settable (#390 decides whether they become so):
+        # the loader passes the module's private values, read at call time.
         seen: dict[str, object] = {}
 
         def fake_run(cmd: list[str], **kwargs: object) -> tuple[int, str]:
@@ -360,7 +390,7 @@ class TestStreamingDownload:
         monkeypatch.setattr(cc.shutil, "which", lambda _: "/usr/bin/kaggle")
         monkeypatch.setattr(cc, "_run_cli", fake_run)
         with pytest.raises(DatasetDownloadError):
-            load_credit_card_fraud(
-                tmp_path / cc.FILE_NAME, download=True, download_timeout=7, stall_timeout=None
-            )
-        assert seen == {"timeout": 7, "stall_timeout": None}
+            load_credit_card_fraud(tmp_path / cc.FILE_NAME, download=True)
+        assert seen == {"timeout": 3600.0, "stall_timeout": 120.0}
+        params = inspect.signature(load_credit_card_fraud).parameters
+        assert "download_timeout" not in params and "stall_timeout" not in params
