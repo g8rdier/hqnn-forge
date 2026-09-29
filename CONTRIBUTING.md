@@ -113,9 +113,9 @@ uv run --frozen --all-extras vermin --no-tips -t=3.11- --violations --eval-annot
     floor, which neither ruff nor mypy catches. CI also fails when vermin reports a file as
     "incompatible", because vermin skips such a file without an error.
 *   **Why `uv run --frozen`.** It uses the ruff, mypy and vermin versions pinned in
-    `uv.lock`, which CI uses too. `--all-extras` installs every extra, as CI does, so mypy
-    sees the real types of matplotlib, scikit-learn and pennylane-lightning instead of
-    `Any`. The `dev` extra declares the tools without a version range, so a pip install
+    `uv.lock`, which CI uses too. `--all-extras` installs every extra, as CI does. Without it, mypy
+    types matplotlib, the one typed package among the extras, as `Any`, because
+    `ignore_missing_imports` hides the missing module. The `dev` extra declares the tools without a version range, so a pip install
     gets the newest releases, and when a new ruff changes a default, its `ruff format`
     disagrees with CI's. The versions are deliberately not capped in `pyproject.toml`
     either. Dependabot only updates `uv.lock`, so a cap such as `ruff<0.17` would stop it

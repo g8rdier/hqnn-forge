@@ -260,7 +260,7 @@ Without uv, `pip install -e ".[lightning,sklearn,examples,dev]"` installs the sa
 the newest versions `pyproject.toml` allows, as the pip-based `test` CI job does. The pre-commit
 hooks below still need uv.
 
-The `dev` extra brings `ruff`, `mypy` and `pytest`. `uvx pre-commit install` registers the hooks
+The `dev` extra brings `ruff`, `mypy`, `vermin` and `pytest`. `uvx pre-commit install` registers the hooks
 in `.pre-commit-config.yaml`, which run `ruff check --fix` and `ruff format` on every commit with
 the settings from `pyproject.toml`. The hooks call ruff through `uv run`, so they need
 [uv](https://docs.astral.sh/uv/getting-started/installation/) on the `PATH` and use the ruff
@@ -277,6 +277,8 @@ them before pushing:
 
 ```bash
 uv run --frozen --all-extras mypy hqnn_forge tests examples
+uv run --frozen --all-extras vermin --no-tips -t=3.11- --violations --eval-annotations \
+    --exclude long hqnn_forge tests examples .github/scripts
 ```
 
 [`CONTRIBUTING.md`](CONTRIBUTING.md#linting) lists every command the lint job runs.
