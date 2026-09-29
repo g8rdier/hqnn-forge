@@ -15,6 +15,11 @@ uninformative qubit, so the head sees "no quantum information" rather than an
 out-of-distribution value.  The circuit is not executed at all inside the
 block, so an ablated evaluation is also much faster.
 
+:func:`permute_quantum_layer` is the other null: the circuit runs, and its
+readouts are shuffled across the batch, so they keep their distribution and
+lose only their correspondence to the input.  Comparing the full model against
+both says whether the head needs the readout's content or only its scale.
+
 Example
 -------
 ::
@@ -85,7 +90,8 @@ seed, rebuild it: ``ClassicalBaseline(**{**control.get_config(), "init_seed": s}
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import warnings
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
@@ -210,41 +216,147 @@ def disable_quantum_layer(model: nn.Module, fill: float = 0.0) -> Iterator[nn.Mo
         If ``fill`` is outside [-1, 1], or, inside the block, if the layer is
         called with an input whose last dimension is not ``n_qubits``.
     RuntimeError
-        If the layer is already disabled (nested use on the same model).
+        If the layer's ``forward`` is already replaced (nested use on the same
+        model, including inside :func:`permute_quantum_layer`).
+    """
+    if not -1.0 <= fill <= 1.0:
+        raise ValueError(f"fill must lie in [-1, 1], the range of <Z>; got {fill}.")
+
+    def constant(layer: nn.Module, n_qubits: int, n_outputs: int) -> Forward:
+        def constant_forward(x: torch.Tensor) -> torch.Tensor:
+            # The encoding layers reject an input whose width is not n_qubits; the
+            # replacement has to reject it too, or an ablated run silently returns
+            # numbers for input the full model refuses.
+            if x.shape[-1] != n_qubits:
+                raise ValueError(
+                    f"Input feature dimension {x.shape[-1]} does not match n_qubits={n_qubits}."
+                )
+            return torch.full((*x.shape[:-1], n_outputs), fill, dtype=x.dtype, device=x.device)
+
+        return constant_forward
+
+    with _replace_forward(model, "disable_quantum_layer", constant) as layer:
+        yield layer
+
+
+@contextmanager
+def permute_quantum_layer(
+    model: nn.Module, generator: torch.Generator | None = None
+) -> Iterator[nn.Module]:
+    """
+    Shuffle ``model.quantum_layer``'s output across the batch.
+
+    The permutation null of feature-importance work.  Inside the block the
+    circuit still runs, and its ``(batch, n_outputs)`` output is returned with
+    the rows permuted: every sample receives some other sample's quantum
+    readout.  The readouts keep their distribution -- the same rows, the same
+    spread -- and lose only their correspondence to the input, so the head
+    sees in-distribution values that carry no information about *this*
+    sample.  :func:`disable_quantum_layer` removes both at once: the
+    correspondence and all variance.  A model that scores the same under both
+    nulls depends on the readout's scale, not its content; one that recovers
+    under the permutation needs something non-constant in those slots.
+
+    Unlike the constant null, this one is meaningful for
+    ``HybridBinaryClassifier``: a permuted serial model is not a constant
+    predictor.  Each forward pass draws a fresh permutation of its batch, so
+    score a validation set in one batch, or accept that the null is drawn per
+    batch.
+
+    The permuted output is detached: no gradient reaches the quantum weights
+    or anything upstream of the layer.  The original ``forward`` is restored
+    on exit, including when the block raises.
+
+    Parameters
+    ----------
+    model:
+        A hybrid classifier with a ``quantum_layer`` attribute whose layer has
+        ``n_qubits``.
+    generator:
+        Source of the permutations.  Pass a seeded one: the ablated score is a
+        random variable, and without a seed it cannot be reproduced.  ``None``
+        draws from the global torch RNG.
+
+    Yields
+    ------
+    nn.Module
+        The permuted quantum layer.
+
+    Warns
+    -----
+    RuntimeWarning
+        When a forward pass leaves the output unchanged: a batch of one sample
+        (or an unbatched input), or a draw of the identity permutation.  The
+        "ablated" output is then the real one, and a score computed from it
+        says nothing about the null.
+
+    Raises
+    ------
+    TypeError
+        If ``model`` has no suitable ``quantum_layer``.
+    RuntimeError
+        If the layer's ``forward`` is already replaced (nested use on the same
+        model, including inside :func:`disable_quantum_layer`).
+    """
+
+    def permuted(layer: nn.Module, n_qubits: int, n_outputs: int) -> Forward:
+        # Looked up on the class: the instance attribute is about to shadow it.
+        real_forward = type(layer).forward.__get__(layer)
+
+        def permuted_forward(x: torch.Tensor) -> torch.Tensor:
+            out = real_forward(x).detach()
+            batch = out.shape[0] if out.ndim > 1 else 1
+            perm = torch.randperm(batch, generator=generator)
+            if batch < 2 or torch.equal(perm, torch.arange(batch)):
+                warnings.warn(
+                    f"permute_quantum_layer left a batch of {batch} unchanged "
+                    f"({'one sample has nothing to swap with' if batch < 2 else 'the identity permutation was drawn'}); "
+                    f"the ablated output is the real one for this forward pass.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            return out if out.ndim < 2 else out[perm.to(out.device)]
+
+        return permuted_forward
+
+    with _replace_forward(model, "permute_quantum_layer", permuted) as layer:
+        yield layer
+
+
+Forward = Callable[[torch.Tensor], torch.Tensor]
+
+
+@contextmanager
+def _replace_forward(
+    model: nn.Module, caller: str, make_forward: Callable[[nn.Module, int, int], Forward]
+) -> Iterator[nn.Module]:
+    """
+    Shadow ``model.quantum_layer.forward`` with ``make_forward(layer, n_qubits,
+    n_outputs)`` for the block, and restore it on exit.
+
+    The two ablations share this, so they check the model, refuse nesting and
+    restore ``forward`` identically.
     """
     layer = getattr(model, "quantum_layer", None)
     n_qubits = getattr(layer, "n_qubits", None)
     if not isinstance(layer, nn.Module) or not isinstance(n_qubits, int):
         raise TypeError(
-            f"disable_quantum_layer expects a model with a quantum_layer attribute; "
-            f"got {type(model).__name__}."
+            f"{caller} expects a model with a quantum_layer attribute; got {type(model).__name__}."
         )
     # The readout decides how wide the layer's output is, and the head is built
     # for that width; filling n_qubits wide would break readout="first".
     n_outputs = getattr(layer, "n_outputs", None)
     if not isinstance(n_outputs, int):
         n_outputs = n_qubits
-    if not -1.0 <= fill <= 1.0:
-        raise ValueError(f"fill must lie in [-1, 1], the range of <Z>; got {fill}.")
     if "forward" in vars(layer):
         raise RuntimeError(
             f"{type(layer).__name__}.forward is already overridden on this instance; "
-            f"disable_quantum_layer cannot be nested."
+            f"{caller} cannot be nested with itself or with the other ablation."
         )
-
-    def constant_forward(x: torch.Tensor) -> torch.Tensor:
-        # The encoding layers reject an input whose width is not n_qubits; the
-        # replacement has to reject it too, or an ablated run silently returns
-        # numbers for input the full model refuses.
-        if x.shape[-1] != n_qubits:
-            raise ValueError(
-                f"Input feature dimension {x.shape[-1]} does not match n_qubits={n_qubits}."
-            )
-        return torch.full((*x.shape[:-1], n_outputs), fill, dtype=x.dtype, device=x.device)
 
     # nn.Module.__call__ dispatches to self.forward, so an instance attribute
     # shadows the class method for this layer only.
-    layer.forward = constant_forward  # type: ignore[method-assign]
+    layer.forward = make_forward(layer, n_qubits, n_outputs)  # type: ignore[method-assign]
     try:
         yield layer
     finally:

@@ -8,7 +8,8 @@ Tests that need an optional extra skip without it (``pytest.importorskip``,
 in CI: a missing extra removes tests and the job still goes green (#187).  CI
 sets ``HQNN_FORGE_FAIL_ON_SKIP=1``, which turns every skip into a failure that
 names the skip's reason, including a module skipped at import.  A test whose
-skip is expected in CI, because it needs hardware the runners lack, carries
+skip is expected in CI, because it needs hardware the runners lack or is
+opt-in (``HQNN_FORGE_REPRODUCE=1`` and a dataset CI does not have), carries
 ``@pytest.mark.may_skip``.  Expected failures (``xfail``) are unaffected.
 """
 
@@ -30,9 +31,12 @@ def pytest_configure(config: pytest.Config) -> None:
         "(deselect with -m 'not reproducibility')",
     )
     config.addinivalue_line(
+        "markers", "slow: takes minutes to days; opt-in (deselect with -m 'not slow')"
+    )
+    config.addinivalue_line(
         "markers",
         f"may_skip: the test may skip even under {FAIL_ON_SKIP_ENV}=1, e.g. "
-        "because it needs hardware the CI runners do not have",
+        "because it needs hardware the CI runners do not have or is opt-in",
     )
 
 

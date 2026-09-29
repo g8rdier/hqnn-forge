@@ -216,6 +216,24 @@ hqnn_forge/
 
 ---
 
+## Reproducing the published SHNN
+
+`HybridBinaryClassifier.published_shnn()` matches the published model structurally, and
+`tests/test_published_shnn_parity.py` pins that. Whether the library also reproduces the
+published *numbers* (MCC 0.5758 ± 0.0371, MCC/kParam 4.720) is checked by an opt-in run of the
+benchmark's recipe: 5-fold CV with SMOTE on the training folds, 100 epochs. It needs the Kaggle
+dataset and takes days of simulation:
+
+```bash
+HQNN_FORGE_REPRODUCE=1 HQNN_FORGE_DATA=data/raw \
+    pytest tests/test_published_shnn_reproduction.py -m reproducibility -s
+```
+
+The module docstring lists the recipe and every deliberate deviation from the benchmark code.
+**Status:** not yet measured. The numbers go here once a full run has finished.
+
+---
+
 ## Development Setup
 
 ```bash

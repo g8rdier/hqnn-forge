@@ -23,12 +23,10 @@ Checked structurally (fast, no training):
   that differ (head width, embedding axis, entangler order and range, depth,
   encoder range) are pinned so a change to them shows up here.
 
-Not checked, and why: the published MCC (0.5758 ± 0.0371) and MCC/kParam
+Not checked here: the published MCC (0.5758 ± 0.0371) and MCC/kParam
 (4.720) come from 5-fold CV on the 284,807-row Kaggle dataset with SMOTE and
-100 epochs; reproducing them needs the dataset (not redistributable) and hours
-of simulation, so they are out of scope for the test suite.  With the
-structure now identical, a full run of ``published_shnn()`` on that data is
-the remaining check of the reported numbers.
+100 epochs.  That run is ``tests/test_published_shnn_reproduction.py``, opt-in
+because it needs the dataset (not redistributable) and days of simulation.
 """
 
 from __future__ import annotations
