@@ -354,8 +354,21 @@ class TestSeveralSeeds:
         assert [f.mcc for f in a.folds] == [f.mcc for f in b.folds]
         assert [f.init_seed for f in a.folds] == [f.init_seed for f in b.folds]
 
-    def test_distinct_seeds_give_distinct_initial_weights(self) -> None:
+    def test_distinct_seeds_give_distinct_initial_weights(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         seen: list[tuple[int, torch.Tensor]] = []
+        controls: list[torch.Tensor] = []
+        real_baseline = benchmark.classical_baseline
+
+        def baseline(model: nn.Module) -> Any:
+            control = real_baseline(model)
+            controls.append(
+                torch.cat([p.detach().flatten().clone() for p in control.parameters()])
+            )
+            return control
+
+        monkeypatch.setattr(benchmark, "classical_baseline", baseline)
 
         def build(n_input_features: int) -> nn.Module:
             model = _hybrid(n_input_features)
@@ -383,7 +396,30 @@ class TestSeveralSeeds:
             for i in range(3):
                 for j in range(i + 1, 3):
                     assert not torch.equal(hybrid[i][1], hybrid[j][1])
+                    control_i, control_j = controls[3 * fold + i], controls[3 * fold + j]
+                    assert not torch.equal(control_i, control_j)
+        assert len(controls) == 6
         assert [f.seed_index for f in result.folds[:6]] == [0, 1, 2, 0, 1, 2]
+
+    def test_a_seeded_builder_is_refused(self) -> None:
+        # A model's own init_seed overrides the runner's: every repeat would
+        # start from the same weights and report a spread of zero.
+        def build(n_input_features: int) -> nn.Module:
+            return HybridBinaryClassifier(
+                n_input_features,
+                2,
+                1,
+                device_name="default.qubit",
+                init_strategy="normal",
+                init_seed=7,
+            )
+
+        with pytest.raises(ValueError, match="init_seed=None"):
+            run_benchmark({"a": _data()}, build, n_splits=2, max_epochs=1, n_seeds=2)
+        # One seed per fold is unaffected.
+        run_benchmark(
+            {"a": _data()}, build, n_splits=2, max_epochs=1, smote_kwargs={"k_neighbors": 3}
+        )
 
     def test_one_seed_is_the_default_run(self) -> None:
         default, explicit = _run({"a": _data()}), _run({"a": _data()}, n_seeds=1)

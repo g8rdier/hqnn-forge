@@ -303,7 +303,12 @@ def run_benchmark(
         initialisation seeds (split, SMOTE and batch order stay the fold's).
         The fold's score is the mean over its seeds, so the paired test still
         pairs folds, and ``mcc_seed_std`` reports how much a model's score
-        moves with the initialisation alone.  Default 1: one seed, as before.
+        moves with the initialisation alone: per fold the sample standard
+        deviation (``ddof=1``) of its seeds' MCCs, averaged over folds.
+        Default 1: one seed, as before.  With more than one, ``hybrid`` must
+        build its model with ``init_seed=None`` (a model's own seed would
+        override the runner's and repeat the same weights); a ``ValueError``
+        is raised otherwise.
     record_path:
         Also write an experiment record (config, seeds, fold indices,
         dependency versions, devices, metrics) there as JSON; see
@@ -403,6 +408,15 @@ def run_benchmark(
                             raise TypeError(
                                 f"hybrid must return a hybrid classifier; "
                                 f"got {type(model).__name__}."
+                            )
+                        if n_seeds > 1 and model.get_config().get("init_seed") is not None:
+                            # The model's own seed overrides the runner's, so
+                            # every repeat would start from the same weights.
+                            raise ValueError(
+                                f"n_seeds={n_seeds} needs a hybrid built with "
+                                f"init_seed=None; got init_seed="
+                                f"{model.get_config()['init_seed']}, which gives "
+                                f"every seed the same initial weights."
                             )
                         mcc, threshold, secs, epochs = _fit_and_score(
                             model,
