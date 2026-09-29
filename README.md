@@ -118,8 +118,8 @@ onto the qubits, so the input width is free. With `validation_fraction` set, a s
 share of the training data drives early stopping and picks the decision threshold that
 `predict` uses. On a dataset this small, a batch size well below the default 64 gives the
 optimiser enough steps in 20 epochs; with the default, early stopping often ends the run
-before the model has learnt anything. MCC, not accuracy, is the metric here: with 5% positives, predicting the
-majority class alone is 95% accurate.
+before the model has learnt anything. MCC, not accuracy, is the metric here: with 5%
+positives, predicting the majority class alone is 95% accurate.
 
 ### Non-tabular data: precomputed embeddings
 
@@ -132,7 +132,7 @@ from hqnn_forge.preprocessing import PCANormalizer
 from hqnn_forge.sklearn import HybridClassifierEstimator
 
 # emb_train, emb_test: (n_samples, d) arrays from a pretrained model; y_train: 0/1 labels
-pca = PCANormalizer(n_components=8)  # standardise, keep 8 components, tanh(·)·π
+pca = PCANormalizer(n_components=8)  # centre, keep 8 components, standardise them, tanh(·)·π
 Z_train = pca.fit_transform(emb_train).numpy()
 Z_test = pca.transform(emb_test).numpy()
 
