@@ -19,7 +19,7 @@ input; the test compares against the summary stored in
 Regenerate the reference only for an *intended* change to initialisation, and
 say so in the PR::
 
-    python tests/seeded_reference.py
+    uv run python tests/seeded_reference.py
 
 The diff then shows exactly which configurations moved.
 """

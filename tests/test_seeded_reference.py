@@ -50,7 +50,7 @@ def test_the_reference_covers_every_configuration() -> None:
     assert stored["seed"] == SEED
     assert set(stored["configs"]) == set(CONFIGS), (
         "tests/data/seeded_reference.json is out of date with CONFIGS; "
-        "run `python tests/seeded_reference.py`"
+        "run `uv run python tests/seeded_reference.py`"
     )
 
 
@@ -68,7 +68,7 @@ def test_seeded_initialisation_matches_the_reference(name: str) -> None:
     assert not problems, (
         f"{name} no longer initialises as recorded (seed {SEED}, reference written with "
         f"torch {_stored()['torch']}, running {torch.__version__}).  If the change is "
-        f"intended, run `python tests/seeded_reference.py` and say so in the PR.\n  "
+        f"intended, run `uv run python tests/seeded_reference.py` and say so in the PR.\n  "
         + "\n  ".join(problems)
     )
 
