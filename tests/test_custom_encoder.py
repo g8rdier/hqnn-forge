@@ -36,7 +36,8 @@ def _mlp(seed: int = 0) -> nn.Sequential:
 
 def _model(cls: type[Model], encoder: nn.Module | None = None, **kwargs: object) -> Model:
     torch.manual_seed(1)
-    return cls(N_IN, N_QUBITS, 1, classical_encoder=encoder, **CPU, **kwargs)  # type: ignore[arg-type]
+    # Two layers: at n_qubits * n_layers <= 3 the restricted init warns (#167).
+    return cls(N_IN, N_QUBITS, 2, classical_encoder=encoder, **CPU, **kwargs)  # type: ignore[arg-type]
 
 
 def _custom(model: Model) -> nn.Module:

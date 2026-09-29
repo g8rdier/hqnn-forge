@@ -176,8 +176,11 @@ class BinaryClassifierBase(nn.Module):
         Constructor arguments of this model, as a fresh dict.
 
         ``type(model)(**model.get_config())`` builds a model with the same
-        architecture (weights are re-initialised; load a ``state_dict`` for
-        those).  Used by ``hqnn_forge.utils.checkpoint``.
+        architecture (load a ``state_dict`` for the trained weights).  Its
+        initial weights are fresh draws only if ``init_seed`` is ``None``: a
+        model built with ``init_seed`` rebuilds the *same* initial weights, so
+        for restarts or ensemble members pass ``init_seed=None`` or a new seed.
+        Used by ``hqnn_forge.utils.checkpoint``.
 
         A module argument (a custom ``classical_encoder``) is deep-copied, so
         a model built from the config does not share it with this one; the
