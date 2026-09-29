@@ -14,6 +14,7 @@ import torch
 
 import hqnn_forge
 from hqnn_forge.models import (
+    ClassicalBaseline,
     HybridBinaryClassifier,
     MulticlassHybridClassifier,
     ParallelHybridClassifier,
@@ -649,10 +650,17 @@ CONSTRUCTOR_ARGS = {
         "encoding_type",
         "init_seed",
     },
+    ClassicalBaseline: {
+        "n_input_features",
+        "hidden_dims",
+        "activation",
+        "dropout_p",
+    },
 }
 
 #: The arguments each class had when checkpoints of it were first written: the
-#: binary classifiers at #120 (31c9879), the multiclass one at #156 (11936cf).
+#: binary classifiers at #120 (31c9879), the multiclass one at #156 (11936cf),
+#: ClassicalBaseline at #250.
 FIRST_CHECKPOINTED_ARGS = {
     HybridBinaryClassifier: {
         "n_input_features",
@@ -690,6 +698,12 @@ FIRST_CHECKPOINTED_ARGS = {
         "init_strategy",
         "init_std",
         "encoding_type",
+    },
+    ClassicalBaseline: {
+        "n_input_features",
+        "hidden_dims",
+        "activation",
+        "dropout_p",
     },
 }
 
