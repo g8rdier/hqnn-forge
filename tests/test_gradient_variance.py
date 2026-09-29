@@ -425,6 +425,9 @@ class TestSeveralTensors:
 
         with pytest.raises(NotImplementedError, match="input_scaling, weights"):
             fisher_information_matrix(self._scaled(), torch.zeros(2, 2))
+        # Without a 'weights' tensor too: the refusal, not the init's ambiguity error.
+        with pytest.raises(NotImplementedError, match="w1, w2"):
+            fisher_information_matrix(_two_weight_layer(), torch.zeros(2, 2))
 
 
 class TestDefaultDevice:

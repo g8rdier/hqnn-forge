@@ -12,10 +12,12 @@ repeats it over qubit and layer counts so the trend is visible, and
 
 Estimator
 ---------
-For each of ``n_samples`` draws the layer's weights are re-initialised with
-``init``, an input is drawn uniformly from ``[-input_scale, input_scale]^n``,
-the cost is evaluated for that single sample and its gradient with respect to
-every quantum weight is recorded.  The sample variance is taken per weight;
+For each of ``n_samples`` draws the layer's rotation angles (its ``weights``
+tensor) are re-initialised with ``init`` -- any other trainable tensor, such
+as ``input_scaling``, keeps its values -- an input is drawn uniformly from
+``[-input_scale, input_scale]^n``, the cost is evaluated for that single
+sample and its gradient with respect to every quantum weight, in every
+trainable tensor, is recorded.  The sample variance is taken per weight;
 ``total_variance`` is its sum over weights (the variance of the gradient
 vector, which does not shrink just because a larger circuit has more
 parameters) and ``mean_variance`` its mean.  The default cost is ⟨Z_0⟩, a
@@ -132,7 +134,7 @@ class GradientVarianceResult:
 
 
 def _resolve_tensors(
-    target: nn.Module, caller: str = "gradient_variance"
+    target: nn.Module, caller: str = "gradient_variance", *, single: bool = False
 ) -> tuple[nn.Module, dict[str, torch.Tensor], str, int, int]:
     """
     Return ``(layer, tensors, angles, n_qubits, n_layers)`` for the layer
@@ -145,7 +147,9 @@ def _resolve_tensors(
     ``"weights"``, or the only tensor there is.  A layer with several tensors
     and none named ``weights`` is refused, since which of them is the angles
     would be a guess.  ``n_layers`` falls back to the angle tensor's first
-    dimension when the layer has no ``n_layers`` attribute.
+    dimension when the layer has no ``n_layers`` attribute.  With *single*, a
+    layer with more than one tensor is refused with ``NotImplementedError``
+    before the angle tensor is looked for.
     """
     layer = getattr(target, "quantum_layer", target)
     qlayer = getattr(layer, "qlayer", None)
@@ -161,6 +165,11 @@ def _resolve_tensors(
             f"got {type(target).__name__}."
         )
     tensors = dict(qlayer.qnode_weights.items())
+    if single and len(tensors) != 1:
+        raise NotImplementedError(
+            f"{caller} measures a single trainable weight tensor; "
+            f"{type(layer).__name__} has {len(tensors)} ({', '.join(sorted(tensors))})."
+        )
     if len(tensors) == 1:
         (angles,) = tensors
     elif "weights" in tensors:
@@ -189,12 +198,7 @@ def _resolve_weights(
     trainable tensor: the Fisher diagnostics, which do not yet measure
     several.  A layer with more is refused rather than measured in part.
     """
-    layer, tensors, angles, n_qubits, n_layers = _resolve_tensors(target, caller)
-    if len(tensors) != 1:
-        raise NotImplementedError(
-            f"{caller} measures a single trainable weight tensor; "
-            f"{type(layer).__name__} has {len(tensors)} ({', '.join(sorted(tensors))})."
-        )
+    layer, tensors, angles, n_qubits, n_layers = _resolve_tensors(target, caller, single=True)
     return layer, tensors[angles], n_qubits, n_layers
 
 
