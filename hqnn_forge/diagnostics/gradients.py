@@ -30,7 +30,10 @@ samples, ``default.qubit``):
 * ``total_variance`` falls by roughly 5x from 2 to 6 qubits under uniform
   init, even with the local cost at 2 layers.  The CNOT ring is a cascade, so
   the backward light cone of Z_0 covers every qubit within one layer and the
-  "local" cost behaves like a global one.
+  "local" cost behaves like a global one.  ``entangler="brickwork"`` is the
+  exception: its light cone does not grow with the register, and its
+  ``total_variance`` stays flat from 4 to 8 qubits at 2 layers (see
+  :mod:`hqnn_forge.initializers.restricted_variance`).
 * With inputs spread over (-π, π) -- what both classifiers produce, and what
   ``PCANormalizer(scale_to_pi=True)`` produces -- the restricted-variance init
   gives the same gradient variance as uniform init: the angle embedding
@@ -49,7 +52,8 @@ follow the same rule.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -58,7 +62,9 @@ import torch
 import torch.nn as nn
 
 from hqnn_forge.initializers import block_local_init_, restricted_normal_init_
+from hqnn_forge.initializers.restricted_variance import _not_restricting_ignored
 from hqnn_forge.utils.modes import eval_mode
+from hqnn_forge.utils.rng import seeded_rng
 
 InitName = Literal["uniform", "restricted", "block_local"]
 InitFn = Callable[[torch.Tensor], Any]
@@ -204,14 +210,16 @@ def _make_init(
     if init == "restricted":
 
         def restricted(w: torch.Tensor) -> None:
-            with _seeded(generator):
+            # Small sizes are measured on purpose here, not a misuse.
+            with _seeded(generator), _not_restricting_ignored():
                 restricted_normal_init_(w, n_qubits=n_qubits, n_layers=n_layers)
 
         return init, restricted
     if init == "block_local":
 
         def block_local(w: torch.Tensor) -> None:
-            with _seeded(generator):
+            # Small sizes are measured on purpose here, not a misuse.
+            with _seeded(generator), _not_restricting_ignored():
                 block_local_init_(w, n_qubits=n_qubits)
 
         return init, block_local
@@ -220,30 +228,16 @@ def _make_init(
     )
 
 
-class _seeded:
+@contextmanager
+def _seeded(generator: torch.Generator) -> Iterator[None]:
     """
-    Run the library initialisers (which use the global RNG) from ``generator``.
-
-    ``torch.manual_seed`` reseeds every initialised accelerator RNG, not just
-    the CPU one, so the CUDA state is saved and restored alongside it.  Other
-    accelerator backends (MPS, XPU) expose no state accessor to save; their
-    RNG is reseeded and not restored, which is why the initialisers are only
-    driven through this helper and never the estimator's own draws.
+    Run the library initialisers (which use the global RNG) from ``generator``:
+    a seed drawn from it drives :func:`hqnn_forge.utils.rng.seeded_rng`, which
+    restores the caller's CPU and CUDA RNG state afterwards.
     """
-
-    def __init__(self, generator: torch.Generator) -> None:
-        self.generator = generator
-
-    def __enter__(self) -> None:
-        self.saved = torch.get_rng_state()
-        self.saved_cuda = torch.cuda.get_rng_state_all() if torch.cuda.is_initialized() else None
-        seed = int(torch.randint(0, 2**62, (1,), generator=self.generator))
-        torch.manual_seed(seed)
-
-    def __exit__(self, *exc: object) -> None:
-        torch.set_rng_state(self.saved)
-        if self.saved_cuda is not None:
-            torch.cuda.set_rng_state_all(self.saved_cuda)
+    seed = int(torch.randint(0, 2**62, (1,), generator=generator))
+    with seeded_rng(seed):
+        yield
 
 
 def _local_z0(outputs: torch.Tensor) -> torch.Tensor:

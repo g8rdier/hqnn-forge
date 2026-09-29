@@ -13,6 +13,7 @@ which quotes its own ranges.
 from __future__ import annotations
 
 import math
+import warnings
 
 import pennylane as qml
 import pytest
@@ -140,6 +141,59 @@ class TestMeasuredInitClaims:
         assert 0.6 < decay["restricted"] / decay["uniform"] < 1.6, decay
 
 
+@pytest.fixture(scope="module")
+def entangler_sweep(measured: dict) -> dict[tuple[str, str, int], float]:
+    """
+    Total gradient variance per (entangler, init, n_qubits), 2 layers, inputs
+    over (-π, π), seed 0: only the keys TestBrickworkDecay reads.  The ring
+    comes from ``measured`` (200 draws; total = mean × 6n weights), the
+    brickwork runs take 150 draws.
+    """
+    out: dict[tuple[str, str, int], float] = {
+        ("ring", "uniform", n): measured["uniform", n, math.pi] * 6 * n for n in (4, 8)
+    }
+
+    def build(q: int, l: int) -> QuantumEncodingLayer:
+        return QuantumEncodingLayer(n_qubits=q, n_layers=l, entangler="brickwork", **CPU)
+
+    for init, qubit_counts in (("uniform", (4, 8)), ("restricted", (8,))):
+        for r in gradient_variance_sweep(
+            build, qubit_counts, n_samples=150, init=init, generator=_gen()
+        ):
+            out["brickwork", init, r.n_qubits] = r.total_variance
+    return out
+
+
+class TestBrickworkDecay:
+    """
+    The brickwork measurements in hqnn_forge.initializers.restricted_variance
+    (#161).  Over five seeds at 300 draws, total variance from 4 to 8 qubits
+    fell 4.1–5.4x for the ring and 0.90–1.02x for brickwork, and brickwork's
+    restricted/uniform ratio at 8 qubits was 0.77–0.83.  At the 150 draws
+    used here for brickwork, over six seeds: 0.88–1.08x and 0.70–0.95.  The
+    ring's decay comes from ``measured``, whose per-weight 8.1–10.7x
+    (TestMeasuredInitClaims) is 4.1–5.4x in total.
+    """
+
+    @staticmethod
+    def _decay(sweep: dict, entangler: str, init: str = "uniform") -> float:
+        return sweep[entangler, init, 4] / sweep[entangler, init, 8]
+
+    def test_brickwork_decays_slower_than_the_ring(self, entangler_sweep: dict) -> None:
+        ring, brickwork = (self._decay(entangler_sweep, e) for e in ("ring", "brickwork"))
+        assert ring > 3.0, ring
+        assert brickwork < 1.5, brickwork
+        assert ring > 2.5 * brickwork, (ring, brickwork)
+
+    def test_restricted_init_costs_variance_on_brickwork(self, entangler_sweep: dict) -> None:
+        """Below 1: at 8 qubits the restricted init loses variance, it never adds it."""
+        ratio = (
+            entangler_sweep["brickwork", "restricted", 8]
+            / entangler_sweep["brickwork", "uniform", 8]
+        )
+        assert 0.5 < ratio < 1.0, ratio
+
+
 class TestPhysics:
     def test_uniform_init_variance_decays_with_qubits(self) -> None:
         small = gradient_variance(_layer(2), n_samples=100, generator=_gen())
@@ -155,6 +209,13 @@ class TestPhysics:
 
 
 class TestMechanics:
+    @pytest.mark.parametrize("init", ["restricted", "block_local"])
+    def test_toy_sizes_do_not_warn(self, init: str) -> None:
+        """Comparing inits where restricted restricts nothing is the point, not a misuse (#167)."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            gradient_variance(_layer(2, 1), n_samples=3, init=init, generator=_gen())
+
     def test_result_fields(self) -> None:
         r = gradient_variance(_layer(3, 2), n_samples=5, init="block_local", input_scale=1.0)
         assert isinstance(r, GradientVarianceResult)
