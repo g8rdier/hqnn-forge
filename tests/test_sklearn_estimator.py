@@ -345,7 +345,13 @@ def _conformance_params() -> list[Any]:
         reason = EXPECTED_FAILED_CHECKS.get(name)
         marks = [pytest.mark.xfail(reason=reason, strict=True)] if reason else []
         if name in FLOAT32_TOLERANCE_CHECKS:
-            marks.append(pytest.mark.xfail(reason=FLOAT32_TOLERANCE_CHECKS[name], strict=False))
+            # raises=AssertionError: only the tolerance comparison may fail;
+            # an exception from fit or predict still fails the test.
+            marks.append(
+                pytest.mark.xfail(
+                    reason=FLOAT32_TOLERANCE_CHECKS[name], strict=False, raises=AssertionError
+                )
+            )
         if name in MAY_SKIP_CHECKS:
             marks.append(pytest.mark.may_skip)
         params.append(pytest.param(estimator, check, marks=marks))
@@ -363,12 +369,17 @@ def test_sample_order_invariance_at_float32() -> None:
     # check_methods_sample_order_invariance at the model's float32 precision:
     # permuting the batch permutes the outputs, up to a few float32 ulps of a
     # probability (absolute, since 1 - p near p = 1 has no relative scale).
+    # The check covers predict too, which the xfail would otherwise hide: labels
+    # must match exactly, since threshold_ is the midpoint between two
+    # validation probabilities, so an ulp-sized move does not cross it here.
     rnd = np.random.RandomState(0)
     X = 3 * rnd.uniform(size=(20, 3))
     y = (X[:, 0] > 1.5).astype(int)
     est = _conformance_estimator().fit(X, y)
     proba = est.predict_proba(X)
+    labels = est.predict(X)
     eps = float(np.finfo(np.float32).eps)
     for seed in range(5):
         idx = np.random.RandomState(seed).permutation(X.shape[0])
         np.testing.assert_allclose(est.predict_proba(X[idx]), proba[idx], rtol=0, atol=4 * eps)
+        np.testing.assert_array_equal(est.predict(X[idx]), labels[idx])
