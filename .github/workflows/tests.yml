@@ -109,7 +109,11 @@ jobs:
         python -m pip install --upgrade pip
         pip install -e ".[dev,lightning,sklearn,examples]"
         
+    # A missing extra would otherwise turn its tests into skips and the job
+    # would still pass; with this set, any skip not marked may_skip fails.
     - name: Run pytest
+      env:
+        HQNN_FORGE_FAIL_ON_SKIP: "1"
       run: |
         pytest tests/ -v
 
@@ -147,7 +151,10 @@ jobs:
     - name: Install dependencies from the lockfile
       run: uv sync --locked --all-extras
 
+    # Skips fail here too, as in the test job above.
     - name: Run pytest
+      env:
+        HQNN_FORGE_FAIL_ON_SKIP: "1"
       run: uv run --frozen pytest tests/ -v
 
     - name: Run doctests
@@ -195,8 +202,14 @@ jobs:
     - name: Check every floor was installed
       run: uv run --no-sync python .github/scripts/check_floors.py
 
+    # Skips fail here too, which also catches an extra that installs at its
+    # floor but does not work (a lightning.qubit that cannot create a device).
+    # matplotlib is not installed in this job by design, so its one module is
+    # left out explicitly rather than skipped.
     - name: Run pytest
-      run: uv run --no-sync pytest tests/ -v
+      env:
+        HQNN_FORGE_FAIL_ON_SKIP: "1"
+      run: uv run --no-sync pytest tests/ -v --ignore=tests/test_evaluation_plots.py
 
     - name: Run doctests
       run: uv run --no-sync pytest --doctest-modules hqnn_forge -v
