@@ -217,6 +217,7 @@ class TestFallbackChain:
                 n_layers=1,
                 device_name="lightning.gpu",
                 diff_method="backprop",
+                init_strategy="normal",  # 2 x 1 is too small for the restricted init (#167)
             )
         assert model.quantum_layer.qlayer.qnode.device.name == "default.qubit"
         assert model(torch.rand(3, 2)).shape == (3, 1)
@@ -278,7 +279,9 @@ class TestFallbackIsRememberedAndAttributed:
         [
             lambda: QuantumEncodingLayer(n_qubits=2, n_layers=1, device_name="lightning.gpu"),
             lambda: IQPEncodingLayer(n_qubits=2, n_layers=1, device_name="lightning.gpu"),
-            lambda: HybridBinaryClassifier(2, 2, 1, device_name="lightning.gpu"),
+            lambda: HybridBinaryClassifier(
+                2, 2, 1, device_name="lightning.gpu", init_strategy="normal"
+            ),
             lambda: HybridBinaryClassifier.published_shnn(device_name="lightning.gpu"),
         ],
         ids=["layer", "iqp", "classifier", "published_shnn"],
@@ -290,7 +293,6 @@ class TestFallbackIsRememberedAndAttributed:
         monkeypatch.setattr(ae.qml, "device", device)
         with pytest.warns(RuntimeWarning) as record:
             build()
-        # Only the fallbacks: a small classifier also warns about its init (#167).
         fallbacks = [w for w in record if issubclass(w.category, RuntimeWarning)]
         messages = [str(w.message) for w in fallbacks]
         assert len(messages) == 2 and "'lightning.gpu'" in messages[0]
