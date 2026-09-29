@@ -125,6 +125,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   angles, and the new `GradientVarianceResult.per_tensor` maps each tensor to its variance.
   `per_parameter` keeps the weight tensor's shape for a single-tensor layer and is the flat
   concatenation otherwise
+- `fisher_information_matrix` and `effective_dimension` measure layers with several trainable
+  tensors: the matrix spans all of them in the TorchLayer's argument order,
+  `FisherSpectrum.parameter_slices` and `block(name)` locate each tensor, and `parameters=`
+  measures a subset, whose matrix is the matching block. `effective_dimension` counts every
+  tensor in `d` but, like `gradient_variance`, draws only the `weights` angles
 
 ### Fixed
 - `circuit_summary` and `count_inert_parameters` raised `TypeError` with PennyLane's
