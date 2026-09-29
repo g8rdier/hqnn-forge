@@ -19,14 +19,46 @@ A ``torch.save`` file containing a plain dict::
         "hqnn_forge_version": "0.1.0",
         "class_name": "HybridBinaryClassifier",
         "config": {...constructor kwargs...},
+        "known_args": [...every constructor argument the writer had...],
         "state_dict": {...},
     }
 
-``format_version`` describes that layout only, not the constructors: a config
-that predates an argument the constructors have since gained is filled from
-``_LEGACY_DEFAULTS`` -- the behaviour from before that argument existed -- and
-loads with a ``RuntimeWarning`` naming what was filled.  A config missing
-anything else is still refused.
+``known_args`` was added after the first checkpoints were written; a file
+without it is read exactly as before (see the rules below).
+
+Compatibility rules
+-------------------
+Two things decide whether a file still rebuilds its model, and each has its
+own mechanism:
+
+* **The dict layout** is what ``FORMAT_VERSION`` covers.  It is bumped when a
+  key is removed, renamed, or changes meaning, i.e. when a reader of the old
+  version would misread the new file or the reverse.  Adding a key that an
+  older reader ignores and a newer one does not require (``known_args``) is
+  not a bump.
+* **The constructors** are covered by the config.  Every argument is stored
+  with its value, so a *changed default* never touches a checkpoint that
+  recorded the argument, and needs no entry anywhere.  An *added* argument is
+  missing from every older file, and the PR adding it must record a decision:
+
+  - an entry in ``_LEGACY_DEFAULTS`` giving the value that reproduces what
+    the circuit did before the argument existed -- the old behaviour, never
+    the new default -- so older files load with a ``RuntimeWarning``; or
+  - an entry in ``_NO_LEGACY_DEFAULT``, when no value reproduces the old
+    model, so older files missing it are refused.
+
+  ``tests/test_checkpoint.py`` pins every constructor's arguments and fails
+  when one appears without either entry.  A *removed* or *renamed* argument
+  makes older files carry an unexpected key, which is refused; supporting
+  them needs a migration in ``load_checkpoint``.
+
+``known_args`` makes the added-argument case explicit.  A name missing from
+the config but absent from ``known_args`` too was added after the file was
+written, and is filled from ``_LEGACY_DEFAULTS``.  A name missing from the
+config although ``known_args`` lists it means the config was edited or
+truncated, and is refused rather than filled.  For a file without
+``known_args`` the two cannot be told apart, and every missing name in
+``_LEGACY_DEFAULTS`` is filled.
 
 Only primitives and tensors are stored, so the file loads with
 ``torch.load(weights_only=True)``: loading a checkpoint never executes code
@@ -43,6 +75,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 import hqnn_forge
+from hqnn_forge.initializers.restricted_variance import _not_restricting_ignored
 
 if TYPE_CHECKING:
     # Type-only: importing this at runtime would be circular, since
@@ -64,15 +97,19 @@ FORMAT_VERSION: int = 1
 #: three are inert in the eval-mode model that comes back.
 #: ``load_checkpoint`` takes these without an opt-in; every other argument
 #: describes the circuit the weights were trained in, so overriding it needs
-#: ``allow_architecture_override=True``.
+#: ``allow_architecture_override=True``.  That includes ``init_strategy`` and
+#: ``init_seed``, although the loaded state dict overwrites what they draw:
+#: they record where the initial weights came from, and an override would
+#: falsify that.
 WEIGHT_SAFE_ARGS: frozenset[str] = frozenset(
     {"device_name", "diff_method", "dropout_p", "noise_level", "noise_position"}
 )
 
 #: Constructor arguments the classifiers have gained since checkpoints were
 #: first written, mapped to the behaviour that predates each one.  A config
-#: missing one of these is a checkpoint older than the argument, and
-#: ``load_checkpoint`` fills it from here -- with a warning, never silently.
+#: missing one of these, in a file whose ``known_args`` is absent or does not
+#: list it, is a checkpoint older than the argument, and ``load_checkpoint``
+#: fills it from here -- with a warning, never silently.
 #: The values are written out rather than read from the signature on purpose:
 #: they must stay the *old* behaviour even if the constructor default changes,
 #: and every addition to this table is then a deliberate line in a diff.  A
@@ -85,7 +122,13 @@ _LEGACY_DEFAULTS: dict[str, Any] = {
     "init_std": 0.1,  # inert unless init_strategy="normal"
     "noise_level": 0.0,  # training-time depolarizing noise: none
     "noise_position": "all",
+    "init_seed": None,  # weights drawn from the global RNG; inert once loaded
 }
+
+#: Constructor arguments added deliberately without a legacy default: no value
+#: reproduces the model an older checkpoint holds, so a checkpoint that predates
+#: one is refused.  See "Compatibility rules" in the module docstring.
+_NO_LEGACY_DEFAULT: frozenset[str] = frozenset()
 
 #: Set by ``load_checkpoint`` on a model it rebuilt under a forced
 #: architecture override, and refused by ``save_checkpoint``.  Without it, one
@@ -149,6 +192,7 @@ def save_checkpoint(model: Classifier, path: PathLike) -> None:
         "hqnn_forge_version": hqnn_forge.__version__,
         "class_name": class_name,
         "config": model.get_config(),
+        "known_args": sorted(_init_parameter_names(type(model))),
         "state_dict": model.state_dict(),
     }
     torch.save(payload, path)
@@ -209,8 +253,11 @@ def load_checkpoint(
         If the file is not a checkpoint or is incomplete, on an unknown format
         version, a library version mismatch (unless allowed), an unknown class,
         an override outside :data:`WEIGHT_SAFE_ARGS` without
-        ``allow_architecture_override``, or a config with unexpected fields or
-        with missing ones outside :data:`_LEGACY_DEFAULTS`.
+        ``allow_architecture_override``, a malformed ``known_args``, or a config
+        with unexpected fields or with missing ones that cannot be filled: a
+        name outside :data:`_LEGACY_DEFAULTS`, a name in
+        :data:`_NO_LEGACY_DEFAULT`, or a name the file's ``known_args`` lists
+        (the config was edited or truncated).
 
     Warns
     -----
@@ -287,6 +334,32 @@ def load_checkpoint(
     missing = sorted(expected - set(config))
     unexpected = sorted(set(config) - expected)
 
+    # Only an absent key means a file from before known_args; a key holding
+    # None or anything else that is not a list of names is malformed, not old.
+    if "known_args" in payload:
+        known_args = payload["known_args"]
+        if not isinstance(known_args, list) or not all(isinstance(a, str) for a in known_args):
+            raise ValueError(
+                f"checkpoint 'known_args' must be a list of names; got {known_args!r}."
+            )
+        # The writer had these arguments and still stored no value for them:
+        # the config was edited or truncated, not written before they existed.
+        dropped = [name for name in missing if name in known_args]
+        if dropped:
+            raise ValueError(
+                f"checkpoint config lacks {dropped}, although the version that wrote it "
+                f"had {'that argument' if len(dropped) == 1 else 'those arguments'}; the "
+                f"file was edited or is corrupt, so it is not filled from defaults."
+            )
+    # Written before these arguments existed.  One added deliberately without
+    # a legacy default cannot be rebuilt; refuse it by name.
+    breaking = [name for name in missing if name in _NO_LEGACY_DEFAULT]
+    if breaking:
+        raise ValueError(
+            f"checkpoint predates {breaking} on {class_name}, which have no legacy "
+            f"default: no value rebuilds the model it holds, so it cannot be loaded."
+        )
+
     # A checkpoint written before the constructor gained an argument does not
     # carry it.  Filling it from _LEGACY_DEFAULTS rebuilds the model that was
     # saved, since those values are what the circuit did before the argument
@@ -316,7 +389,10 @@ def load_checkpoint(
             f"checkpoint config does not match {class_name}'s constructor: {'; '.join(details)}."
         )
 
-    model = cls(**config)
+    # The constructor's weight draw is overwritten below, so a warning about
+    # it (a toy size whose restricted init restricts nothing) is noise here.
+    with _not_restricting_ignored():
+        model = cls(**config)
     # Before load_state_dict, so the stored tensors -- already read onto
     # map_location -- are copied into parameters that live there too.  Building
     # the model alone always puts it on the CPU.
@@ -340,9 +416,9 @@ def _init_parameter_names(cls: type) -> set[str]:
     A checkpoint is expected to carry every one of them, not only those
     without a default: get_config records them all, and a default that changed
     between versions would otherwise silently change the rebuilt model.  A
-    checkpoint older than an argument is the one exception, and
-    :func:`load_checkpoint` fills those from :data:`_LEGACY_DEFAULTS` with a
-    warning rather than in silence.
+    checkpoint older than an argument is the one exception: unless the file's
+    ``known_args`` lists the name, :func:`load_checkpoint` fills it from
+    :data:`_LEGACY_DEFAULTS` with a warning rather than in silence.
     """
     return {
         name

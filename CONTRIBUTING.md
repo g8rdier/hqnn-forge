@@ -95,9 +95,10 @@ split into smaller, more atomic commits.
 `.github/workflows/tests.yml` runs `uv sync --locked --all-extras`, which installs the exact
 versions the lockfile records and fails if the lockfile no longer matches `pyproject.toml`.
 
-A normal install doesn't need uv — the pip install in the README is unchanged. uv is only
-needed to regenerate the lockfile; see the [uv installation
-docs](https://docs.astral.sh/uv/getting-started/installation/) if you don't have it.
+Installing the package doesn't need uv; the README documents a pip install for that. The
+README's development setup uses uv, and uv is needed to regenerate the lockfile; see the [uv
+installation docs](https://docs.astral.sh/uv/getting-started/installation/) if you don't have
+it.
 
 *   **After editing `pyproject.toml`**, regenerate the lockfile and commit it in the same PR:
 
