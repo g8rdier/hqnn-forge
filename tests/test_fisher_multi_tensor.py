@@ -85,7 +85,7 @@ def test_frozen_tensors_are_measured_and_stay_frozen() -> None:
     assert spectrum.block("input_scaling").abs().max() > 1e-3
 
 
-@pytest.mark.parametrize("parameters", [["scale"], []])
+@pytest.mark.parametrize("parameters", [["scale"], [], ["weights", "weights"]])
 def test_unknown_or_empty_parameters(parameters: list[str]) -> None:
     with pytest.raises(
         ValueError, match="parameters must name some of 'weights', 'input_scaling'"

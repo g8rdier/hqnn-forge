@@ -93,7 +93,13 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from hqnn_forge.diagnostics.gradients import InitFn, InitName, _make_init, _resolve_tensors
+from hqnn_forge.diagnostics.gradients import (
+    InitFn,
+    InitName,
+    _make_init,
+    _resolve_layer,
+    _resolve_tensors,
+)
 from hqnn_forge.utils.modes import eval_mode
 
 
@@ -290,7 +296,8 @@ def fisher_information_matrix(
     Raises
     ------
     ValueError
-        If ``parameters`` names a tensor the layer does not have, or none.
+        If ``parameters`` names a tensor the layer does not have, one twice,
+        or none.
 
     Notes
     -----
@@ -302,12 +309,15 @@ def fisher_information_matrix(
     measure it under noise, call this inside
     :func:`hqnn_forge.noise.apply_depolarizing_noise`.
     """
-    layer, all_tensors, _, _, _ = _resolve_tensors(model, caller="fisher_information_matrix")
+    # No init is drawn here, so no tensor has to be singled out as the angles:
+    # a layer with several tensors and none named "weights" is measured too.
+    layer, all_tensors, _ = _resolve_layer(model, caller="fisher_information_matrix")
     names = list(all_tensors) if parameters is None else list(parameters)
     unknown = [n for n in names if n not in all_tensors]
-    if unknown or not names:
+    if unknown or not names or len(set(names)) != len(names):
         raise ValueError(
-            f"parameters must name some of {', '.join(map(repr, all_tensors))}; got {names!r}."
+            f"parameters must name some of {', '.join(map(repr, all_tensors))}, "
+            f"each once; got {names!r}."
         )
     tensors = [all_tensors[n] for n in names]
     slices, start = {}, 0

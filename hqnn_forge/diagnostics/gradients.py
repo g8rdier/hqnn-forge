@@ -133,21 +133,18 @@ class GradientVarianceResult:
         }
 
 
-def _resolve_tensors(
+def _resolve_layer(
     target: nn.Module, caller: str = "gradient_variance"
-) -> tuple[nn.Module, dict[str, torch.Tensor], str, int, int]:
+) -> tuple[nn.Module, dict[str, torch.Tensor], int]:
     """
-    Return ``(layer, tensors, angles, n_qubits, n_layers)`` for the layer
-    inside *target*.  *caller* names the public function in the error messages.
+    Return ``(layer, tensors, n_qubits)`` for the layer inside *target*.
+    *caller* names the public function in the error messages.
 
     ``tensors`` is the TorchLayer's ``qnode_weights`` mapping, every trainable
     argument by name, read the same way
     :func:`~hqnn_forge.diagnostics.circuit.circuit_summary` resolves a layer.
-    ``angles`` names the rotation-angle tensor the init strategies draw:
-    ``"weights"``, or the only tensor there is.  A layer with several tensors
-    and none named ``weights`` is refused, since which of them is the angles
-    would be a guess.  ``n_layers`` falls back to the angle tensor's first
-    dimension when the layer has no ``n_layers`` attribute.
+    Which tensor holds the rotation angles is not decided here, so a caller
+    that draws none (the Fisher matrix) accepts any set of tensors.
     """
     layer = getattr(target, "quantum_layer", target)
     qlayer = getattr(layer, "qlayer", None)
@@ -163,6 +160,23 @@ def _resolve_tensors(
             f"got {type(target).__name__}."
         )
     tensors = dict(qlayer.qnode_weights.items())
+    return layer, tensors, n_qubits
+
+
+def _resolve_tensors(
+    target: nn.Module, caller: str = "gradient_variance"
+) -> tuple[nn.Module, dict[str, torch.Tensor], str, int, int]:
+    """
+    Return ``(layer, tensors, angles, n_qubits, n_layers)`` for the layer
+    inside *target*, as :func:`_resolve_layer` does, plus the angle tensor.
+
+    ``angles`` names the rotation-angle tensor the init strategies draw:
+    ``"weights"``, or the only tensor there is.  A layer with several tensors
+    and none named ``weights`` is refused, since which of them is the angles
+    would be a guess.  ``n_layers`` falls back to the angle tensor's first
+    dimension when the layer has no ``n_layers`` attribute.
+    """
+    layer, tensors, n_qubits = _resolve_layer(target, caller)
     if len(tensors) == 1:
         (angles,) = tensors
     elif "weights" in tensors:
