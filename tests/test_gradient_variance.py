@@ -85,6 +85,9 @@ def _result(init: str, n_qubits: int, total: float) -> GradientVarianceResult:
     )
 
 
+# Every test that reads ``measured`` is marked slow, not only one of them: the
+# module fixture's cost (most of this module's run time) goes to whichever of
+# its tests runs first, so deselecting one test would only move it to the next.
 @pytest.fixture(scope="module")
 def measured() -> dict[tuple[str, int, float], float]:
     """
@@ -104,6 +107,7 @@ def measured() -> dict[tuple[str, int, float], float]:
     }
 
 
+@pytest.mark.slow
 class TestMeasuredInitClaims:
     """
     The statements in hqnn_forge.initializers.restricted_variance's
@@ -119,7 +123,6 @@ class TestMeasuredInitClaims:
     def _ratio(measured: dict, n: int, scale: float) -> float:
         return measured["restricted", n, scale] / measured["uniform", n, scale]
 
-    @pytest.mark.slow
     def test_no_benefit_with_inputs_spread_over_pi(self, measured: dict) -> None:
         """What the classifiers feed the circuit: restricted ≈ uniform."""
         ratio = self._ratio(measured, 8, math.pi)
@@ -168,6 +171,7 @@ def entangler_sweep(measured: dict) -> dict[tuple[str, str, int], float]:
     return out
 
 
+@pytest.mark.slow
 class TestBrickworkDecay:
     """
     The brickwork measurements in hqnn_forge.initializers.restricted_variance

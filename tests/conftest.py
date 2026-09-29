@@ -15,12 +15,15 @@ opt-in (``HQNN_FORGE_REPRODUCE=1`` and a dataset CI does not have), carries
 ``slow``: the fast local suite
 ------------------------------
 A handful of tests account for most of the suite's run time (end-to-end
-training, the gradient-variance physics checks, parameter-shift batching).
-They carry ``@pytest.mark.slow``, so ``pytest -m "not slow"`` is the quick
-edit-test loop; CI runs everything.  The rule: mark a test that takes
-``SLOW_SECONDS`` or more on a laptop (``pytest --durations=30`` to find them).
-Deselected tests never run, so they are not skips and the hooks below leave
-them alone.
+training, the gradient-variance physics checks, parameter-shift batching,
+repeated fits and bootstraps).  They carry ``@pytest.mark.slow``, so
+``pytest -m "not slow"`` is the quick edit-test loop; CI runs everything.
+The rule: mark a test that takes ``SLOW_SECONDS`` or more on a laptop
+(``pytest --durations=50`` to find them).  An expensive module- or
+class-scoped fixture shows up as the ``setup`` time of whichever of its tests
+runs first; mark every test that uses it, or deselecting one only moves the
+cost to the next.  Deselected tests never run, so they are not skips and the
+hooks below leave them alone.
 """
 
 from __future__ import annotations
