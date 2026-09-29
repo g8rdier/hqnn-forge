@@ -12,15 +12,16 @@ from __future__ import annotations
 import math
 
 import numpy as np
-import numpy.typing as npt
 import pytest
 
 from hqnn_forge.evaluation import (
     BootstrapResult,
+    balanced_accuracy,
     bootstrap_ci,
     f1_score,
     matthews_corrcoef,
     paired_bootstrap_ci,
+    pr_auc,
 )
 from hqnn_forge.evaluation import bootstrap as bs
 
@@ -71,15 +72,11 @@ class TestMetricPaths:
         y = np.r_[np.ones(30, np.int64), np.zeros(170, np.int64)]
         prob = np.clip(0.3 * y + rng.random(200) * 0.7, 0, 1)
 
-        def average_precision(t: npt.NDArray[np.int64], s: npt.NDArray[np.float64]) -> float:
-            order = np.argsort(-s, kind="mergesort")
-            hits = t[order]
-            precision = np.cumsum(hits) / np.arange(1, hits.size + 1)
-            return float(np.sum(precision * hits) / hits.sum())
-
-        res = bootstrap_ci(y, prob, average_precision, n_resamples=200, rng=0)
+        res = bootstrap_ci(y, prob, pr_auc, n_resamples=200, rng=0)
         assert res.low <= res.estimate <= res.high
-        assert res.estimate == average_precision(y, prob)
+        assert res.estimate == pr_auc(y, prob)
+        idx = bs._stratified_indices(y, 200, np.random.default_rng(0))
+        np.testing.assert_array_equal(res.distribution, [pr_auc(y[r], prob[r]) for r in idx])
 
     def test_named_metric_refuses_probabilities(self) -> None:
         y, _ = _predictions()
@@ -134,8 +131,7 @@ class TestBcaPieces:
         rng = np.random.default_rng(2)
         y = np.r_[np.ones(25, np.int64), np.zeros(75, np.int64)]
         s = np.r_[rng.exponential(1.0, 25), rng.gamma(0.5, 1.0, 75)]
-        idx = bs._jackknife_indices(y.size)
-        theta = np.array([s[r][y[r] == 1].mean() - s[r][y[r] == 0].mean() for r in idx])
+        theta = bs._jackknife(lambda t, v: v[t == 1].mean() - v[t == 0].mean(), y, s)
         dx, dy = s[y == 1] - s[y == 1].mean(), s[y == 0] - s[y == 0].mean()
         n1, n2 = dx.size, dy.size
         expected = (np.sum(dx**3) / n1**3 - np.sum(dy**3) / n2**3) / (
@@ -163,11 +159,37 @@ class TestBcaPieces:
         res = bootstrap_ci(y, pred, n_resamples=500, method="percentile", confidence=0.9, rng=0)
         assert (res.low, res.high) == tuple(np.quantile(res.distribution, [0.05, 0.95]))
 
-    def test_jackknife_rows_leave_one_out(self) -> None:
-        idx = bs._jackknife_indices(5)
-        assert idx.shape == (5, 4)
-        for i, row in enumerate(idx):
-            assert i not in row and sorted(row) == [j for j in range(5) if j != i]
+    def test_jackknife_leaves_each_sample_out(self) -> None:
+        y = np.array([1, 0, 1, 1, 0])
+        s = np.array([10.0, 20.0, 30.0, 40.0, 50.0])
+        loo = bs._jackknife(lambda t, v: float(v.sum() + 1000 * t.sum()), y, s)
+        np.testing.assert_array_equal(loo, s.sum() + 1000 * y.sum() - s - 1000 * y)
+
+    @pytest.mark.parametrize(
+        ("name", "fn"),
+        [("mcc", matthews_corrcoef), ("f1", f1_score), ("balanced_accuracy", balanced_accuracy)],
+    )
+    def test_count_jackknife_matches_brute_force(self, name: str, fn: bs.MetricArg) -> None:
+        # The named-metric jackknife comes from the confusion counts, not from
+        # n leave-one-out evaluations; it must give the same values.  The
+        # second case has an empty cell (no false negatives).
+        y, pred = _predictions(n_pos=12, n_neg=40)
+        cases = [(y, pred), (y, np.where(y == 1, 1, pred))]
+        for t, p in cases:
+            np.testing.assert_allclose(
+                bs._jackknife(name, t, p), bs._jackknife(fn, t, p), rtol=0, atol=1e-12
+            )
+
+    def test_bca_on_a_full_size_fold(self) -> None:
+        # A credit-card test fold holds ~57,000 samples; the BCa jackknife
+        # must not build an (n, n - 1) index matrix (~26 GB) to get there.
+        rng = np.random.default_rng(0)
+        n = 57_000
+        y = np.zeros(n, np.int64)
+        y[:100] = 1
+        pred = np.where(y == 1, rng.random(n) < 0.7, rng.random(n) < 0.001).astype(np.int64)
+        res = bootstrap_ci(y, pred, n_resamples=200, rng=0)
+        assert res.low < res.estimate < res.high
 
     def test_bca_agrees_with_scipy(self) -> None:
         stats = pytest.importorskip("scipy.stats")

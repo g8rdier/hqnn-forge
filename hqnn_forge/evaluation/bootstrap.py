@@ -168,22 +168,43 @@ def _stratified_indices(
     return np.concatenate(parts, axis=1)
 
 
-def _count_metric_over(
-    name: str, y: npt.NDArray[np.int64], pred: npt.NDArray[np.float64], idx: npt.NDArray[np.intp]
-) -> npt.NDArray[np.float64]:
-    """A named metric for every row of ``idx`` from its confusion counts."""
+# Resample rows gathered per block in the count path, so a large test fold
+# never materialises several (n_resamples, n) temporaries at once.
+_BLOCK_ELEMENTS = 1 << 22
+
+
+def _cells(
+    name: str, y: npt.NDArray[np.int64], pred: npt.NDArray[np.float64]
+) -> npt.NDArray[np.int64]:
+    """Each sample's confusion cell: 0 = tp, 1 = tn, 2 = fp, 3 = fn (the count-metric order)."""
     if not np.isin(pred, (0.0, 1.0)).all():
         raise ValueError(
             f"metric {name!r} needs hard 0/1 predictions; threshold the probabilities first, "
             f"or pass a threshold-free metric as a callable."
         )
-    t, p = y[idx], pred[idx]
-    tp = np.sum((t == 1) & (p == 1), axis=1)
-    fn = np.sum((t == 1) & (p == 0), axis=1)
-    tn = np.sum((t == 0) & (p == 0), axis=1)
-    fp = np.sum((t == 0) & (p == 1), axis=1)
-    counts = [torch.from_numpy(c.astype(np.float64)) for c in (tp, tn, fp, fn)]
-    return _COUNT_METRICS[name](*counts).numpy().astype(np.float64)
+    p = pred.astype(np.int64)
+    # (y, p) = (1, 1) -> tp, (0, 0) -> tn, (0, 1) -> fp, (1, 0) -> fn.
+    return np.array([1, 2, 3, 0], dtype=np.int64)[2 * y + p]
+
+
+def _from_counts(name: str, counts: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """A named metric for every row of ``counts`` (columns tp, tn, fp, fn)."""
+    cols = [torch.from_numpy(np.ascontiguousarray(counts[:, k])) for k in range(4)]
+    return _COUNT_METRICS[name](*cols).numpy().astype(np.float64)
+
+
+def _count_metric_over(
+    name: str, y: npt.NDArray[np.int64], pred: npt.NDArray[np.float64], idx: npt.NDArray[np.intp]
+) -> npt.NDArray[np.float64]:
+    """A named metric for every row of ``idx`` from its confusion counts."""
+    cell = _cells(name, y, pred)
+    counts = np.empty((idx.shape[0], 4), dtype=np.float64)
+    step = max(1, _BLOCK_ELEMENTS // max(1, idx.shape[1]))
+    for start in range(0, idx.shape[0], step):
+        block = cell[idx[start : start + step]]
+        for k in range(4):
+            counts[start : start + step, k] = np.sum(block == k, axis=1)
+    return _from_counts(name, counts)
 
 
 def _metric_over(
@@ -197,10 +218,31 @@ def _metric_over(
     return np.array([float(metric(y[row], score[row])) for row in idx], dtype=np.float64)
 
 
-def _jackknife_indices(n: int) -> npt.NDArray[np.intp]:
-    """Row ``i`` holds every index except ``i``."""
-    full = np.tile(np.arange(n), (n, 1))
-    return full[~np.eye(n, dtype=bool)].reshape(n, n - 1)
+def _jackknife(
+    metric: MetricArg, y: npt.NDArray[np.int64], score: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """
+    Leave-one-out values: entry ``i`` is the metric without sample ``i``.
+
+    For a named metric, leaving sample ``i`` out takes one from its confusion
+    cell, so there are only four distinct values and no ``(n, n - 1)`` index
+    matrix is built (that would need ~26 GB for a 57,000-sample fold).  A
+    callable is called ``n`` times on a boolean mask, ``O(n)`` memory each.
+    """
+    if isinstance(metric, str):
+        cell = _cells(metric, y, score)
+        full = np.bincount(cell, minlength=4).astype(np.float64)
+        # Row k: the counts with one sample taken from cell k (clipped for an
+        # empty cell, whose row no sample ever looks up).
+        loo = np.clip(full[None, :] - np.eye(4), 0.0, None)
+        return _from_counts(metric, loo)[cell]
+    keep = np.ones(y.size, dtype=bool)
+    out = np.empty(y.size, dtype=np.float64)
+    for i in range(y.size):
+        keep[i] = False
+        out[i] = float(metric(y[keep], score[keep]))
+        keep[i] = True
+    return out
 
 
 def _acceleration(theta: npt.NDArray[np.float64], y: npt.NDArray[np.int64]) -> float:
@@ -309,7 +351,7 @@ def bootstrap_ci(
     low, high = _interval(
         estimate,
         distribution,
-        lambda: _metric_over(metric, y, score, _jackknife_indices(y.size)),
+        lambda: _jackknife(metric, y, score),
         y,
         confidence,
         method,
@@ -350,7 +392,7 @@ def paired_bootstrap_ci(
     low, high = _interval(
         estimate,
         distribution,
-        lambda: difference(_jackknife_indices(y.size)),
+        lambda: _jackknife(metric, y, a) - _jackknife(metric, y, b),
         y,
         confidence,
         method,
