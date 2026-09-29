@@ -282,11 +282,16 @@ class TestPickle:
 # ---------------------------------------------------------------------------
 
 #: Checks this estimator is expected to fail, each with the reason.  Empty:
-#: every check that runs passes.  Two are skipped by scikit-learn itself when
-#: an optional package is absent (check_classifier_data_not_an_array needs
-#: pandas, check_array_api_input needs SCIPY_ARRAY_API and array-api-strict),
-#: neither of which this project installs.
+#: every check that runs passes.
 EXPECTED_FAILED_CHECKS: dict[str, str] = {}
+
+#: Checks scikit-learn skips itself when an optional package is absent, which
+#: this project does not install.  They carry ``may_skip`` so that
+#: HQNN_FORGE_FAIL_ON_SKIP=1 in CI does not turn the skip into a failure.
+MAY_SKIP_CHECKS: dict[str, str] = {
+    "check_classifier_data_not_an_array": "needs pandas",
+    "check_array_api_input": "needs SCIPY_ARRAY_API=1 and array-api-strict",
+}
 
 
 def _conformance_estimator() -> HybridClassifierEstimator:
@@ -323,8 +328,11 @@ def _conformance_params() -> list[Any]:
     # check that starts passing has to leave EXPECTED_FAILED_CHECKS.
     params = []
     for estimator, check in estimator_checks_generator(_conformance_estimator()):
-        reason = EXPECTED_FAILED_CHECKS.get(_check_name(check))
+        name = _check_name(check)
+        reason = EXPECTED_FAILED_CHECKS.get(name)
         marks = [pytest.mark.xfail(reason=reason, strict=True)] if reason else []
+        if name in MAY_SKIP_CHECKS:
+            marks.append(pytest.mark.may_skip)
         params.append(pytest.param(estimator, check, marks=marks))
     return params
 
