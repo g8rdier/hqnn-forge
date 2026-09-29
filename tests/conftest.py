@@ -8,7 +8,8 @@ Tests that need an optional extra skip without it (``pytest.importorskip``,
 in CI: a missing extra removes tests and the job still goes green (#187).  CI
 sets ``HQNN_FORGE_FAIL_ON_SKIP=1``, which turns every skip into a failure that
 names the skip's reason, including a module skipped at import.  A test whose
-skip is expected in CI, because it needs hardware the runners lack, carries
+skip is expected in CI, because it needs hardware the runners lack or is
+opt-in (``HQNN_FORGE_REPRODUCE=1`` and a dataset CI does not have), carries
 ``@pytest.mark.may_skip``.  Expected failures (``xfail``) are unaffected.
 
 ``slow``: the fast local suite
@@ -43,12 +44,13 @@ def pytest_configure(config: pytest.Config) -> None:
     )
     config.addinivalue_line(
         "markers",
-        f"slow: takes {SLOW_SECONDS} s or more; deselect with -m 'not slow' for a quick local run",
+        f"slow: takes {SLOW_SECONDS} s or more (days for the opt-in reproduction run); "
+        "deselect with -m 'not slow' for a quick local run",
     )
     config.addinivalue_line(
         "markers",
         f"may_skip: the test may skip even under {FAIL_ON_SKIP_ENV}=1, e.g. "
-        "because it needs hardware the CI runners do not have",
+        "because it needs hardware the CI runners do not have or is opt-in",
     )
 
 
@@ -110,3 +112,28 @@ def grad_of() -> Callable[[torch.Tensor], torch.Tensor]:
     ``prepend`` import mode.
     """
     return _grad
+
+
+def _cnot_pairs(target: object) -> list[tuple[int, int]]:
+    """
+    CNOT ``(control, target)`` pairs, in circuit order, of a tape or of an
+    encoding layer's circuit decomposed to ``LOGICAL_GATE_SET`` (zero inputs,
+    the layer's current weights).  Order and direction are what a wire-pattern
+    test pins; gate counts are invariant under a reversed ring or a permuted
+    wire order (#183).
+    """
+    import pennylane as qml
+
+    from hqnn_forge.diagnostics.circuit import _logical_tape
+
+    if isinstance(target, qml.tape.QuantumScript):
+        tape = target
+    else:
+        tape = _logical_tape(target.qlayer, target.n_qubits)  # type: ignore[attr-defined]
+    return [(int(op.wires[0]), int(op.wires[1])) for op in tape.operations if op.name == "CNOT"]
+
+
+@pytest.fixture
+def cnot_pairs() -> Callable[[object], list[tuple[int, int]]]:
+    """``_cnot_pairs`` as a fixture, for the same reason as ``grad_of``."""
+    return _cnot_pairs
