@@ -56,10 +56,11 @@ def train_mode(module: nn.Module) -> Iterator[None]:
     it has: a model in train mode with a batch-norm layer put in eval mode
     trains with that layer still frozen, and so does a model put in eval mode
     with only its head switched back to train mode.  Only if ``module`` and all
-    its submodules are in eval mode -- a model fresh from ``load_checkpoint``
-    or ``predict`` code, say -- is there no training configuration to respect,
-    and every submodule is put in train mode.  On exit, including when the block raises, every submodule
-    gets back the ``training`` flag it had on entry, as with :func:`eval_mode`.
+    its submodules are in eval mode -- a model fresh from ``load_checkpoint``,
+    say -- is there no training configuration to respect, and every submodule
+    is put in train mode.  On exit, including when the block raises, every
+    submodule gets back the ``training`` flag it had on entry, as with
+    :func:`eval_mode`.
 
     Parameters
     ----------
