@@ -2,6 +2,9 @@
 
 ::: hqnn_forge.utils
 
-## Checkpoint constants
+## Checkpoint format
 
-::: hqnn_forge.utils.checkpoint.WEIGHT_SAFE_ARGS
+::: hqnn_forge.utils.checkpoint
+    options:
+      members:
+        - WEIGHT_SAFE_ARGS

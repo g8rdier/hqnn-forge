@@ -48,6 +48,10 @@ plugins:
             show_root_heading: true
             show_root_full_path: true
             show_source: false
+            # Exported type aliases (DeviceName) and dataclass fields documented
+            # in an Attributes section have no docstring of their own; without
+            # this they get no entry, and references to them cannot resolve.
+            show_if_no_docstring: true
             show_signature_annotations: true
             separate_signature: true
             filters: ["!^_"]
@@ -71,3 +75,5 @@ nav:
       - Utilities: api/utils.md
       - Circuit primitives: api/circuits.md
       - Initialisers: api/initializers.md
+      - Benchmark: api/benchmark.md
+      - Experiment records: api/experiment.md
