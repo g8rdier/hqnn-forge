@@ -31,6 +31,7 @@ from hqnn_forge.experiment import (
     save_record,
 )
 from hqnn_forge.models import HybridBinaryClassifier
+from hqnn_forge.preprocessing import stratified_kfold
 
 SETTINGS: dict[str, Any] = dict(
     n_splits=3, max_epochs=2, batch_size=32, smote_kwargs={"k_neighbors": 3}, random_state=4
@@ -109,7 +110,28 @@ class TestContents:
             assert (saved["init_seed"], saved["batch_seed"]) == (fold.init_seed, fold.batch_seed)
             assert saved["mcc"] == fold.mcc and saved["threshold"] == fold.threshold
         seeds = record["seeds"]["folds"]
-        assert [s["init_seed"] for s in seeds] == [f.init_seed for f in result.folds]
+        for name in ("split_seed", "inner_seed", "smote_seed", "init_seed", "batch_seed"):
+            assert [s[name] for s in seeds] == [getattr(f, name) for f in result.folds]
+            assert [s[name] for s in seeds] == [s[name] for s in record["folds"]]
+
+    def test_recorded_split_seeds_regenerate_the_recorded_folds(self, recorded: tuple) -> None:
+        # The split seeds alone, with the recorded settings, give back every
+        # fold's test, train and validation rows.
+        _, path = recorded
+        record, _ = load_record(path)
+        settings = record["config"]["settings"]
+        for fold in record["folds"]:
+            _, y = _datasets()[fold["dataset"]]
+            outer = stratified_kfold(y, settings["n_splits"], random_state=fold["split_seed"])
+            train_part, test_idx = outer[fold["fold"]]
+            assert sorted(test_idx.tolist()) == fold["test_idx"]
+            inner_tr, inner_va = stratified_kfold(
+                y[train_part], settings["validation_folds"], random_state=fold["inner_seed"]
+            )[0]
+            assert sorted(train_part[inner_tr].tolist()) == fold["train_idx"]
+            assert sorted(train_part[inner_va].tolist()) == fold["val_idx"]
+        split_seeds = {(f["dataset"], f["split_seed"]) for f in record["folds"]}
+        assert len(split_seeds) == 2  # one outer split per dataset
 
     def test_devices_actually_used(self, recorded: tuple) -> None:
         _, path = recorded

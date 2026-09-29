@@ -122,6 +122,12 @@ class FoldResult:
     test_idx: npt.NDArray[np.intp]
     """Rows the reported score comes from."""
     n_synthetic: int
+    split_seed: int
+    """Seed of the dataset's outer stratified split (the same for every fold)."""
+    inner_seed: int
+    """Seed of the split of the fold's training rows into train and validation."""
+    smote_seed: int
+    """Seed of the fold's SMOTE draw (unused with ``oversample=False``)."""
     init_seed: int
     batch_seed: int
     threshold: float
@@ -340,8 +346,9 @@ def run_benchmark(
         }
 
         root = np.random.SeedSequence([random_state, d])
-        split_seed, *fold_roots = root.spawn(n_splits + 1)
-        outer = stratified_kfold(y, n_splits, random_state=int(split_seed.generate_state(1)[0]))
+        split_root, *fold_roots = root.spawn(n_splits + 1)
+        split_seed = int(split_root.generate_state(1)[0])
+        outer = stratified_kfold(y, n_splits, random_state=split_seed)
         scores: dict[str, list[float]] = {m: [] for m in MODELS}
         seconds: dict[str, float] = {m: 0.0 for m in MODELS}
         n_parameters: dict[str, int] = {}
@@ -403,6 +410,9 @@ def run_benchmark(
                         np.sort(val_idx),
                         np.sort(test_idx),
                         n_synthetic,
+                        split_seed,
+                        inner_seed,
+                        smote_seed,
                         init_seed,
                         batch_seed,
                         threshold,

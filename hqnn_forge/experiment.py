@@ -10,8 +10,10 @@ not to reproduce a result.  A record written by :func:`save_record` (or by
 
 * **config** -- every ``run_benchmark`` setting, and per dataset the class and
   ``get_config()`` of the hybrid model and of its control;
-* **seeds** -- the root ``random_state`` and, per fold, the initialisation and
-  batch-order seeds actually used (split and SMOTE draws derive from the root);
+* **seeds** -- the root ``random_state`` and, per fold, every seed derived
+  from it: the outer split, the train/validation split, SMOTE, initialisation
+  and batch order.  A builder that fixes its own ``init_seed`` overrides the
+  per-fold initialisation seed; that ``init_seed`` is then in the model config;
 * **folds** -- the train, validation and test row indices of every fold, and
   the threshold, MCC, epochs and seconds per model;
 * **environment** -- Python, platform, ``hqnn_forge`` and the versions of
@@ -114,6 +116,9 @@ def to_record(result: BenchmarkResult) -> dict[str, Any]:
             "val_idx": f.val_idx,
             "test_idx": f.test_idx,
             "n_synthetic": f.n_synthetic,
+            "split_seed": f.split_seed,
+            "inner_seed": f.inner_seed,
+            "smote_seed": f.smote_seed,
             "init_seed": f.init_seed,
             "batch_seed": f.batch_seed,
             "device": f.device,
@@ -137,6 +142,9 @@ def to_record(result: BenchmarkResult) -> dict[str, Any]:
                         "dataset": f.dataset,
                         "model": f.model,
                         "fold": f.fold,
+                        "split_seed": f.split_seed,
+                        "inner_seed": f.inner_seed,
+                        "smote_seed": f.smote_seed,
                         "init_seed": f.init_seed,
                         "batch_seed": f.batch_seed,
                     }
