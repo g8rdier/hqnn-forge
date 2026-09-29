@@ -10,6 +10,7 @@ ThresholdSearchResult    (threshold, score) pair returned by find_optimal_thresh
 matthews_corrcoef        MCC from labels, pure torch/NumPy.
 f1_score                 F1 for the positive class.
 balanced_accuracy        Mean of recall over the two classes.
+pr_auc                   Average precision (PR-AUC), threshold-free; not in METRICS.
 parameter_efficiency     Score per thousand trainable parameters.
 wilcoxon_signed_rank     Paired signed-rank test with its attainable p-value floor.
 WilcoxonResult           Result of wilcoxon_signed_rank.
@@ -48,6 +49,7 @@ from hqnn_forge.evaluation.thresholds import (
     find_optimal_threshold,
     matthews_corrcoef,
     parameter_efficiency,
+    pr_auc,
 )
 
 __all__: list[str] = [
@@ -67,6 +69,7 @@ __all__: list[str] = [
     "matthews_corrcoef",
     "nemenyi_critical_difference",
     "parameter_efficiency",
+    "pr_auc",
     "rank_biserial_correlation",
     "wilcoxon_signed_rank",
 ]

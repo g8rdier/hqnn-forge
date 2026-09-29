@@ -50,6 +50,7 @@ def _failing_device(failing: dict[str, type[BaseException]]):
 
 
 class TestAcceleratedBackends:
+    @pytest.mark.may_skip  # no GPU backend on the CI runners
     @pytest.mark.parametrize("name", GPU_BACKENDS)
     def test_layer_runs_on_backend_when_available(self, name: str) -> None:
         if not _available(name):
