@@ -317,7 +317,7 @@ class TestReadoutFeatures:
             ("brickwork", "Y", 1, [[0, 1], [0, 1, 2, 3], [0, 1, 2, 3], [2, 3, 4], [2, 3, 4]]),
             ("brickwork", "X", 2, [[0, 1], [0, 1, 2, 3], [0, 1, 2, 3], _ALL, _ALL]),
             ("brickwork", "Y", 2, [[0, 1, 2, 3], _ALL, _ALL, _ALL, _ALL]),
-            ("ring", "Z", 2, [[]] * 5),
+            # "Z" sees nothing at any depth and is refused; see TestRotationZIsRefused
         ],
     )
     def test_features_each_readout_sees(

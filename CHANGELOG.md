@@ -176,3 +176,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Python 3.10 support; `requires-python` is now `>=3.11`. 3.10 reaches end of life in
   October 2026 and current PennyLane releases no longer install on it, so CI tests 3.11
   (the floor) and 3.14 (the newest) instead
+- `rotation="Z"` on `QuantumEncodingLayer` and `build_encoding_qnode`, and
+  `embedding_rotation="Z"` on `HybridBinaryClassifier` and `ParallelHybridClassifier`, now
+  raise `ValueError`. The single `RZ` embedding acts on `|0…0⟩`, where it is a global phase, so
+  the quantum layer returned the same outputs for every input and a `"Z"` kernel was all ones.
+  A checkpoint saved with `"Z"` no longer loads; its quantum layer never depended on the input,
+  so retrain with `"X"` or `"Y"`. `DataReuploadingLayer(rotation="Z", n_layers >= 2)` is
+  unchanged

@@ -393,7 +393,8 @@ def _make_angle_embedding_circuit(
        wire 0 before its ``Rot`` is reached, so ⟨Z_0⟩ ignores x_0 under either
        rotation.  For both cascades, from two layers on every readout sees
        every feature under RX or RY.  (Under ``rotation="Z"`` no readout sees
-       any feature at any depth: RZ on |0⟩ is only a phase, #212.)
+       any feature at any depth: RZ on |0⟩ is only a phase, which is why
+       :func:`build_encoding_qnode` refuses it, #212.)
 
        Under ``readout="all"`` the blind spot costs nothing, since readouts
        1 … n-1 together cover x_0.  Under ``readout="first"`` use
