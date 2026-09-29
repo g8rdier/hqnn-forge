@@ -36,8 +36,16 @@ def eval_mode(module: nn.Module) -> Iterator[None]:
 
     Examples
     --------
+    >>> import torch
+    >>> from torch import nn
+    >>> from hqnn_forge.utils import eval_mode
+    >>> model = nn.Sequential(nn.Linear(4, 1), nn.Dropout(0.5))
     >>> with eval_mode(model):
-    ...     logits = model(x)
+    ...     logits = model(torch.ones(2, 4))  # dropout off
+    ...     model.training, model[1].training
+    (False, False)
+    >>> model.training, model[1].training  # train mode is back
+    (True, True)
     """
     modes = _modes(module)
     module.eval()
@@ -69,8 +77,26 @@ def train_mode(module: nn.Module) -> Iterator[None]:
 
     Examples
     --------
+    A model loaded in eval mode is put in train mode for the block:
+
+    >>> import torch
+    >>> from torch import nn
+    >>> from hqnn_forge.utils import train_mode
+    >>> model = nn.Sequential(nn.Linear(4, 4), nn.BatchNorm1d(4), nn.Linear(4, 1)).eval()
     >>> with train_mode(model):
-    ...     loss = loss_fn(model(x), y)
+    ...     model.training, model[1].training
+    (True, True)
+    >>> model.training, model[1].training  # eval mode is back
+    (False, False)
+
+    A batch-norm layer the caller froze stays frozen:
+
+    >>> _ = model.train()
+    >>> _ = model[1].eval()
+    >>> with train_mode(model):
+    ...     loss = model(torch.ones(2, 4)).sum()
+    ...     model.training, model[1].training
+    (True, False)
     """
     modes = _modes(module)
     if not any(training for _, training in modes):

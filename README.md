@@ -27,16 +27,23 @@
 
 ## Installation
 
-```bash
-pip install -e ".[lightning,dev]"
-```
-
-Adjoint differentiation needs `pennylane-lightning`, which the `lightning` extra above
-installs. To add it to an existing install:
+To use the package, install it from a clone of the repository with pip:
 
 ```bash
 pip install -e ".[lightning]"
 ```
+
+The extras add optional parts; combine them as needed, e.g. `".[lightning,sklearn]"`:
+
+| Extra | Installs | Needed for |
+|---|---|---|
+| `lightning` | `pennylane-lightning` | the `lightning.qubit` backend and adjoint differentiation, the library defaults |
+| `sklearn` | `scikit-learn` | the scikit-learn estimator in `hqnn_forge.sklearn` |
+| `examples` | `scikit-learn`, `matplotlib` | the scripts in `examples/` and the plots in `hqnn_forge.evaluation` |
+| `dev` | test and lint tools | development; see [Development Setup](#development-setup) |
+
+pip installs the newest versions that `pyproject.toml` allows. To work on the project in the
+environment CI tests against, use the uv setup under [Development Setup](#development-setup).
 
 ### Device backends
 
@@ -216,14 +223,44 @@ hqnn_forge/
 
 ---
 
-## Development Setup
+## Reproducing the published SHNN
+
+`HybridBinaryClassifier.published_shnn()` matches the published model structurally, and
+`tests/test_published_shnn_parity.py` pins that. Whether the library also reproduces the
+published *numbers* (MCC 0.5758 ± 0.0371, MCC/kParam 4.720) is checked by an opt-in run of the
+benchmark's recipe: 5-fold CV with SMOTE on the training folds, 100 epochs. It needs the Kaggle
+dataset and takes days of simulation:
 
 ```bash
-pip install -e ".[lightning,dev]"
+HQNN_FORGE_REPRODUCE=1 HQNN_FORGE_DATA=data/raw \
+    pytest tests/test_published_shnn_reproduction.py -m reproducibility -s
+```
+
+The module docstring lists the recipe and every deliberate deviation from the benchmark code.
+**Status:** not yet measured. The numbers go here once a full run has finished.
+
+---
+
+## Development Setup
+
+The project is managed with [uv](https://docs.astral.sh/uv/getting-started/installation/):
+
+```bash
+uv sync --all-extras
 uvx pre-commit install
 ```
 
-The `dev` extra brings `ruff`, `mypy` and `pytest`. `uvx pre-commit install` registers the hooks
+`uv sync --all-extras` creates `.venv` with the project installed in editable mode and every
+extra (`lightning`, `sklearn`, `examples`, `dev`) at the versions pinned in `uv.lock`. It is
+the environment the `test-locked` CI job builds with `uv sync --locked --all-extras`; `--locked`
+additionally fails instead of updating a `uv.lock` that no longer matches `pyproject.toml`.
+Run tools inside it with `uv run`, e.g. `uv run pytest`, or activate `.venv`.
+
+Without uv, `pip install -e ".[lightning,sklearn,examples,dev]"` installs the same extras at
+the newest versions `pyproject.toml` allows, as the pip-based `test` CI job does. The pre-commit
+hooks below still need uv.
+
+The `dev` extra brings `ruff`, `mypy`, `vermin` and `pytest`. `uvx pre-commit install` registers the hooks
 in `.pre-commit-config.yaml`, which run `ruff check --fix` and `ruff format` on every commit with
 the settings from `pyproject.toml`. The hooks call ruff through `uv run`, so they need
 [uv](https://docs.astral.sh/uv/getting-started/installation/) on the `PATH` and use the ruff
@@ -234,12 +271,17 @@ uvx pre-commit run --all-files
 ```
 
 The hooks cover the two ruff steps of the CI lint job, including the Python code blocks in
-Markdown files. The lint job also type-checks the package, which the hooks do not; run it
-before pushing changes to `hqnn_forge/`:
+Markdown files. The lint job also type-checks the package, the tests and the examples with
+mypy, and checks stdlib usage against Python 3.11 with vermin; the hooks do neither. Run
+them before pushing:
 
 ```bash
-uv run --frozen --extra dev mypy hqnn_forge
+uv run --frozen --all-extras mypy hqnn_forge tests examples
+uv run --frozen --all-extras vermin --no-tips -t=3.11- --violations --eval-annotations \
+    --exclude long hqnn_forge tests examples .github/scripts
 ```
+
+[`CONTRIBUTING.md`](CONTRIBUTING.md#linting) lists every command the lint job runs.
 
 ---
 

@@ -147,6 +147,7 @@ class TestRoundTrip:
         assert all(p.device.type == device.type for p in loaded.parameters())
         assert all(b.device.type == device.type for b in loaded.buffers())
 
+    @pytest.mark.may_skip  # no CUDA device on the CI runners
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
     def test_map_location_cuda_does_not_return_a_cpu_model(self, saved: tuple) -> None:
         _, path = saved

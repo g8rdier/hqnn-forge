@@ -136,6 +136,7 @@ class TestSeededRng:
             reseed()
             torch.testing.assert_close(torch.rand(5), expected, rtol=0, atol=0)
 
+    @pytest.mark.may_skip  # no CUDA device on the CI runners
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
     def test_cuda_state_is_restored(self) -> None:
         torch.cuda.init()

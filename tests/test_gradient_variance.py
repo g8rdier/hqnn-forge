@@ -65,6 +65,9 @@ def _two_weight_layer() -> torch.nn.Module:
             self.n_qubits = 2
             self.qlayer = qml.qnn.TorchLayer(circuit, {"w1": (1,), "w2": (1,)})
 
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            return self.qlayer(x)
+
     return TwoWeightLayer()
 
 
@@ -420,14 +423,35 @@ class TestSeveralTensors:
             "mean_variance",
         }
 
-    def test_fisher_still_refuses_several_tensors(self) -> None:
+    def test_fisher_measures_every_tensor_too(self) -> None:
+        # Once refused (#308); see tests/test_fisher_multi_tensor.py.
         from hqnn_forge.diagnostics import fisher_information_matrix
 
-        with pytest.raises(NotImplementedError, match="input_scaling, weights"):
-            fisher_information_matrix(self._scaled(), torch.zeros(2, 2))
-        # Without a 'weights' tensor too: the refusal, not the init's ambiguity error.
-        with pytest.raises(NotImplementedError, match="w1, w2"):
-            fisher_information_matrix(_two_weight_layer(), torch.zeros(2, 2))
+        layer = self._scaled()
+        spectrum = fisher_information_matrix(layer, torch.zeros(2, 2))
+        assert spectrum.n_params == sum(p.numel() for p in layer.qlayer.qnode_weights.values())
+
+    def test_fisher_measures_several_tensors_without_a_weights_tensor(self) -> None:
+        """No init is drawn, so the angle tensor's ambiguity does not matter."""
+        from hqnn_forge.diagnostics import effective_dimension, fisher_information_matrix
+
+        layer = _two_weight_layer()
+        with torch.no_grad():
+            layer.qlayer.w1.fill_(0.3)
+            layer.qlayer.w2.fill_(-0.7)
+        x = torch.tensor([[0.2, -0.5], [1.1, 0.4]])
+        spectrum = fisher_information_matrix(layer, x)
+        assert spectrum.parameter_slices == {"w1": slice(0, 1), "w2": slice(1, 2)}
+        # <Z_0> = cos(x0 + w1), <Z_1> = cos(x1) cos(w2): J is diagonal, so is F.
+        expected = torch.zeros(2, 2, dtype=torch.float64)
+        expected[0, 0] = torch.sin(x[:, 0].double() + 0.3).pow(2).mean()
+        expected[1, 1] = (
+            (torch.cos(x[:, 1].double()) * torch.sin(torch.tensor(-0.7).double())).pow(2).mean()
+        )
+        torch.testing.assert_close(spectrum.matrix, expected, atol=1e-6, rtol=1e-5)
+        # The effective dimension draws an init, so there the ambiguity still refuses.
+        with pytest.raises(ValueError, match="ambiguous"):
+            effective_dimension(layer, torch.zeros(80, 2))
 
 
 class TestDefaultDevice:
