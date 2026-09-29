@@ -3,9 +3,21 @@
 [![Tests](https://github.com/g8rdier/hqnn-forge/actions/workflows/tests.yml/badge.svg)](https://github.com/g8rdier/hqnn-forge/actions/workflows/tests.yml)
 [![License](https://img.shields.io/github/license/g8rdier/hqnn-forge)](LICENSE)
 
-> **Parameter-efficient Hybrid Quantum Neural Networks for imbalanced tabular classification.**
+> **Test whether a small quantum layer earns its parameters on imbalanced binary tabular data.**
 
-`hqnn-forge` is a research-grade Python library that fuses **PennyLane** quantum circuits with **PyTorch** classical layers into end-to-end differentiable hybrid architectures optimised for NISQ-era hardware and binary fraud-detection workloads.
+`hqnn-forge` is a research library for hybrid quantum-classical classifiers: **PennyLane**
+circuits inside **PyTorch** models, trained end to end. It is built around one question: on
+an imbalanced binary classification problem, does a small quantum layer add enough per
+parameter to justify it? The library brings the parts needed to answer it on your own data:
+hybrid models, a scikit-learn estimator, imbalance-robust losses, stratified CV with SMOTE,
+threshold search, MCC per thousand parameters, a paired Wilcoxon test, ablation of the quantum
+layer, and circuit diagnostics.
+
+**Scope.** Binary classification on imbalanced tabular data, or data made tabular by a
+pretrained embedding (see [Non-tabular data](#non-tabular-data-precomputed-embeddings)). The
+estimator, losses, thresholds and metrics are built for binary targets;
+`MulticlassHybridClassifier` covers multiclass targets at the model level only. End-to-end
+image, text or time-series pipelines are out of scope.
 
 ---
 
@@ -13,27 +25,37 @@
 
 | Feature | Detail |
 |---|---|
-| **Small-angle init** | Gaussian initialisation: global σ = π/√(n·L), or a per-layer schedule σ_ℓ = π/√(n·(ℓ+1)) that narrows with the layer index (this library's own heuristics, in the spirit of Zhang et al. 2022). Measured with `hqnn_forge.diagnostics.gradient_variance` on a 2-layer circuit with a ⟨Z_0⟩ cost: no gain over uniform init for inputs spread over (−π, π), which is what both classifiers feed the circuit, and a gain growing from 1.1x to 1.75x between 4 and 8 qubits only near zero input. Over (−π, π) the variance falls ~3x per two qubits under either init — see the module docstring |
+| **Small-angle init** | Gaussian initialisation: global σ = π/√(n·L), or a per-layer schedule σ_ℓ = π/√(n·(L+ℓ)) that starts at the global σ and narrows by up to √2 towards the last layer (this library's own heuristics, in the spirit of Zhang et al. 2022). Measured with `hqnn_forge.diagnostics.gradient_variance` on a 2-layer circuit with a ⟨Z_0⟩ cost: no gain over uniform init for inputs spread over (−π, π), which is what both classifiers feed the circuit, and a gain growing from 1.1x to 1.75x between 4 and 8 qubits only near zero input. Over (−π, π) the variance falls ~3x per two qubits under either init — see the module docstring |
 | **Adjoint differentiation** | Exact gradients via `lightning.qubit` — no finite-difference approximation |
-| **Custom angle encoding** | 8-qubit angle-embedding feature map with strongly-entangled VQC ansatz |
+| **Custom angle encoding** | Angle-embedding feature map (8 qubits by default) with a CNOT-ring VQC ansatz; strongly-entangling and brickwork entanglers are options |
 | **Imbalance-robust losses** | Focal Loss & inverse-frequency weighted BCE |
 | **Pure-NumPy pre-processing** | PCA + standardisation without scikit-learn runtime dependency |
 | **Three hybrid topologies** | Serial `HybridBinaryClassifier`, parallel `ParallelHybridClassifier` (classical MLP branch ‖ quantum branch) and multiclass `MulticlassHybridClassifier` (softmax or one-vs-rest heads on a shared quantum layer), with angle or IQP encoding |
+| **Data-driven decision threshold** | `find_optimal_threshold` picks the threshold that maximises MCC, F1 or balanced accuracy on validation probabilities, instead of the default 0.5 that is rarely the right operating point on imbalanced data |
+| **Quantum ablation** | `disable_quantum_layer` replaces a trained model's quantum-layer output with a constant for the duration of a `with` block, so re-scoring a `ParallelHybridClassifier` shows how much the circuit adds to its classical branch (in the serial `HybridBinaryClassifier` the circuit is the only path, so the ablated model is a constant predictor) |
+| **Checkpoints** | `save_checkpoint` / `load_checkpoint` store a classifier's class, constructor arguments and weights, and rebuild the model from that file; a file written by a different `hqnn_forge` version is refused unless `allow_version_mismatch=True` |
 
 ---
 
 ## Installation
 
-```bash
-pip install -e ".[lightning,dev]"
-```
-
-Adjoint differentiation needs `pennylane-lightning`, which the `lightning` extra above
-installs. To add it to an existing install:
+To use the package, install it from a clone of the repository with pip:
 
 ```bash
 pip install -e ".[lightning]"
 ```
+
+The extras add optional parts; combine them as needed, e.g. `".[lightning,sklearn]"`:
+
+| Extra | Installs | Needed for |
+|---|---|---|
+| `lightning` | `pennylane-lightning` | the `lightning.qubit` backend and adjoint differentiation, the library defaults |
+| `sklearn` | `scikit-learn` | the scikit-learn estimator in `hqnn_forge.sklearn` |
+| `examples` | `scikit-learn`, `matplotlib` | the scripts in `examples/` and the plots in `hqnn_forge.evaluation` |
+| `dev` | test and lint tools | development; see [Development Setup](#development-setup) |
+
+pip installs the newest versions that `pyproject.toml` allows. To work on the project in the
+environment CI tests against, use the uv setup under [Development Setup](#development-setup).
 
 ### Device backends
 
@@ -54,7 +76,92 @@ same `diff_method="adjoint"` as `lightning.qubit`.
 
 ---
 
-## Quick Start
+## Quick Start: your own data
+
+`HybridClassifierEstimator` trains a hybrid model on any binary `X, y` through the usual
+scikit-learn `fit` / `predict` / `predict_proba`, so it also works in `Pipeline`,
+`cross_val_score` and `GridSearchCV`. It needs the `sklearn` extra:
+
+```python
+from sklearn.datasets import make_classification
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+
+from hqnn_forge.evaluation import matthews_corrcoef, parameter_efficiency
+from hqnn_forge.sklearn import HybridClassifierEstimator
+
+# Any imbalanced binary X, y; here 2,000 rows, 20 features, 5% positives
+X, y = make_classification(n_samples=2000, n_features=20, weights=[0.95], random_state=0)
+X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, random_state=0)
+
+clf = make_pipeline(
+    StandardScaler(),
+    HybridClassifierEstimator(
+        n_qubits=4,
+        n_layers=2,
+        max_epochs=20,
+        batch_size=8,
+        validation_fraction=0.2,
+        random_state=0,
+    ),
+)
+clf.fit(X_train, y_train)  # about a minute on a laptop CPU
+
+mcc = matthews_corrcoef(y_test, clf.predict(X_test))
+print(f"test MCC {mcc:.3f}")
+print(f"MCC per 1,000 parameters {parameter_efficiency(clf[-1].model_, mcc):.2f}")
+```
+
+The model's classical encoder (`Linear` + `tanh`, scaled by π) maps any number of features
+onto the qubits, so the input width is free. With `validation_fraction` set, a stratified
+share of the training data drives early stopping and picks the decision threshold that
+`predict` uses. On a dataset this small, a batch size well below the default 64 gives the
+optimiser enough steps in 20 epochs; with the default, early stopping often ends the run
+before the model has learnt anything. MCC, not accuracy, is the metric here: with 5%
+positives, predicting the majority class alone is 95% accurate.
+
+### Non-tabular data: precomputed embeddings
+
+Images, text or time series can be used through embeddings from any pretrained model. Reduce
+the embeddings to `n_qubits` dimensions and pass `use_classical_encoder=False`, so the quantum
+layer reads them directly:
+
+```python
+from hqnn_forge.preprocessing import PCANormalizer
+from hqnn_forge.sklearn import HybridClassifierEstimator
+
+# emb_train, emb_test: (n_samples, d) arrays from a pretrained model; y_train: 0/1 labels
+pca = PCANormalizer(n_components=8)  # centre, keep 8 components, standardise them, tanh(·)·π
+Z_train = pca.fit_transform(emb_train).numpy()
+Z_test = pca.transform(emb_test).numpy()
+
+clf = HybridClassifierEstimator(n_qubits=8, use_classical_encoder=False)
+clf.fit(Z_train, y_train)
+proba = clf.predict_proba(Z_test)[:, 1]
+```
+
+Without the encoder, each input value is used unscaled as a rotation angle, so it has to lie
+in (−π, π) already. Values outside that range wrap around modulo 2π, and distant inputs can
+land on the same angle. `PCANormalizer` keeps them inside with `tanh(·)·π`. The input width
+must equal `n_qubits`, and the model refuses anything else.
+
+### Worked example: credit-card fraud
+
+`hqnn_forge.data.load_credit_card_fraud` loads the Kaggle Credit Card Fraud Detection dataset
+(284,807 transactions, 492 frauds, 0.17% positive), the benchmark the library was first
+developed on. The CSV is not redistributable. Download it once with the Kaggle CLI
+(`kaggle datasets download -d mlg-ulb/creditcardfraud -p data/raw --unzip`), or pass
+`download=True`:
+
+```python
+from hqnn_forge.data import load_credit_card_fraud
+
+data = load_credit_card_fraud()  # data/raw/creditcard.csv, or $HQNN_FORGE_DATA
+X, y = data.X, data.y  # (284807, 30) float64, (284807,) int64
+```
+
+### The models directly, in PyTorch
 
 ```python
 import torch
@@ -149,14 +256,16 @@ Options shared by both models:
 
 - `encoding_type="angle"` (default) or `"iqp"` (Havlíček-style feature map with pairwise
   `x_i x_j` phases).
-- `init_strategy="restricted"` (one σ for the whole circuit), `"block_local"` (σ narrowing
-  with layer depth) or `"normal"` (plain `N(0, init_std²)`, `init_std=0.1` by default); see
-  `hqnn_forge.initializers`.
+- `init_strategy="restricted"` (one σ for the whole circuit), `"block_local"` (the same σ in
+  the first layer, narrowing by up to √2 towards the last) or `"normal"` (plain
+  `N(0, init_std²)`, `init_std=0.1` by default); see `hqnn_forge.initializers`.
 - `embedding_rotation="X"` (default), `"Y"` or `"Z"`: the Pauli axis of the angle embedding
   (angle encoding only).
-- `entangler="ring"` (default: CNOT ring then per-qubit `Rot`) or `"strongly_entangling"`
+- `entangler="ring"` (default: CNOT ring then per-qubit `Rot`), `"strongly_entangling"`
   (`qml.StronglyEntanglingLayers`: `Rot` first, then a CNOT ring whose range grows with the
-  layer index).
+  layer index) or `"brickwork"` (nearest-neighbour CNOT pairs without wrap-around, so each
+  ⟨Z_i⟩ readout depends on a few neighbouring qubits at shallow depth rather than on all of
+  them).
 - `readout="all"` (default: ⟨Z_i⟩ on every qubit) or `"first"` (⟨Z_0⟩ only, so the head reads
   a single number).
 - `encoder_activation="tanh"` (default: `tanh(·)·π`, in (-π, π)) or `"sigmoid"`
@@ -174,32 +283,84 @@ Options shared by both models:
 - `dropout_p` on the features entering the head, and `predict_proba` / `predict`, which always
   run in eval mode.
 
+### Classical control
+
+`hqnn_forge.utils.classical_baseline(model)` builds the classical model a hybrid result should
+be compared with: an untrained `ClassicalBaseline` MLP, to be trained from scratch on the same
+data. Its trainable parameter count is matched to `model.count_parameters()`, which counts every
+rotation angle as one parameter, the same convention as the MCC/kParam figures, so the two
+models are compared at the same parameter budget. The serial model's control is one hidden
+layer in place of encoder, circuit and head; the parallel model's is its classical branch plus a
+head, widened to the matching width. The published SHNN's 122 parameters get a 121-parameter
+control. A seeded hybrid (`init_seed`) gets a control seeded with the same seed.
+Switching a trained model's circuit off with `disable_quantum_layer` measures something
+else, how much that model depends on the circuit.
+
 ---
 
 ## Folder Structure
 
 ```
 hqnn_forge/
-├── encoding/        Quantum feature maps (angle embedding, IQP embedding)
+├── encoding/        Quantum feature maps (angle, IQP, amplitude, data re-uploading)
 ├── circuits/        Reusable VQC ansatz primitives
 ├── initializers/    Small-angle (restricted-variance) weight initialisation
-├── preprocessing/   Classical PCA + normalisation (no sklearn runtime dep)
+├── preprocessing/   PCA + normalisation, stratified folds, SMOTE (no sklearn runtime dep)
 ├── models/          Full hybrid architectures
-├── diagnostics/     Circuit depth, gate and parameter counts
-├── utils/           Imbalance-robust losses and helpers
-└── kernels.py       Quantum kernel matrices from the encoding layers (QSVM)
+├── training/        Train/validate loop with early stopping
+├── evaluation/      Decision threshold search, confusion metrics, PR-AUC, score per
+│                    parameter, paired Wilcoxon tests, plots (needs matplotlib)
+├── diagnostics/     Circuit cost (depth, gates, inert parameters), gradient variance,
+│                    Fisher information and effective dimension
+├── data/            Dataset loader (Kaggle credit-card fraud)
+├── utils/           Imbalance-robust losses, checkpoint save/load, quantum-layer ablation,
+│                    eval-mode context manager
+├── kernels.py       Quantum kernel matrices from the encoding layers (QSVM)
+├── noise.py         Depolarizing noise, post hoc for robustness sweeps or during training
+└── sklearn.py       scikit-learn estimator wrapper (cross_val_score, GridSearchCV, Pipeline);
+                     needs the `sklearn` extra
 ```
+
+---
+
+## Reproducing the published SHNN
+
+`HybridBinaryClassifier.published_shnn()` matches the published model structurally, and
+`tests/test_published_shnn_parity.py` pins that. Whether the library also reproduces the
+published *numbers* (MCC 0.5758 ± 0.0371, MCC/kParam 4.720) is checked by an opt-in run of the
+benchmark's recipe: 5-fold CV with SMOTE on the training folds, 100 epochs. It needs the Kaggle
+dataset and takes days of simulation:
+
+```bash
+HQNN_FORGE_REPRODUCE=1 HQNN_FORGE_DATA=data/raw \
+    pytest tests/test_published_shnn_reproduction.py -m reproducibility -s
+```
+
+The module docstring lists the recipe and every deliberate deviation from the benchmark code.
+**Status:** not yet measured. The numbers go here once a full run has finished.
 
 ---
 
 ## Development Setup
 
+The project is managed with [uv](https://docs.astral.sh/uv/getting-started/installation/):
+
 ```bash
-pip install -e ".[lightning,dev]"
+uv sync --all-extras
 uvx pre-commit install
 ```
 
-The `dev` extra brings `ruff`, `mypy` and `pytest`. `uvx pre-commit install` registers the hooks
+`uv sync --all-extras` creates `.venv` with the project installed in editable mode and every
+extra (`lightning`, `sklearn`, `examples`, `dev`) at the versions pinned in `uv.lock`. It is
+the environment the `test-locked` CI job builds with `uv sync --locked --all-extras`; `--locked`
+additionally fails instead of updating a `uv.lock` that no longer matches `pyproject.toml`.
+Run tools inside it with `uv run`, e.g. `uv run pytest`, or activate `.venv`.
+
+Without uv, `pip install -e ".[lightning,sklearn,examples,dev]"` installs the same extras at
+the newest versions `pyproject.toml` allows, as the pip-based `test` CI job does. The pre-commit
+hooks below still need uv.
+
+The `dev` extra brings `ruff`, `mypy`, `vermin` and `pytest`. `uvx pre-commit install` registers the hooks
 in `.pre-commit-config.yaml`, which run `ruff check --fix` and `ruff format` on every commit with
 the settings from `pyproject.toml`. The hooks call ruff through `uv run`, so they need
 [uv](https://docs.astral.sh/uv/getting-started/installation/) on the `PATH` and use the ruff
@@ -210,12 +371,17 @@ uvx pre-commit run --all-files
 ```
 
 The hooks cover the two ruff steps of the CI lint job, including the Python code blocks in
-Markdown files. The lint job also type-checks the package, which the hooks do not; run it
-before pushing changes to `hqnn_forge/`:
+Markdown files. The lint job also type-checks the package, the tests and the examples with
+mypy, and checks stdlib usage against Python 3.11 with vermin; the hooks do neither. Run
+them before pushing:
 
 ```bash
-uv run --frozen --extra dev mypy hqnn_forge
+uv run --frozen --all-extras mypy hqnn_forge tests examples
+uv run --frozen --all-extras vermin --no-tips -t=3.11- --violations --eval-annotations \
+    --exclude long hqnn_forge tests examples .github/scripts
 ```
+
+[`CONTRIBUTING.md`](CONTRIBUTING.md#linting) lists every command the lint job runs.
 
 ---
 
@@ -232,15 +398,22 @@ and versioning policy this project follows.
 - McClean et al. (2018) — *Barren plateaus in quantum neural network training landscapes*
 - Zhang et al. (2022) — *Escaping from the barren plateau via Gaussian initializations in deep variational quantum circuits*
 - Grant et al. (2019) — *An initialization strategy for addressing barren plateaus in parametrized quantum circuits*
+- Abbas et al. (2021) — *The power of quantum neural networks*
+- Berezniuk et al. (2020) — *A scale-dependent notion of effective dimension*
 - Schuld et al. (2020) — *Circuit-centric quantum classifiers*
 - Sim et al. (2019) — *Expressibility and entangling capability of parameterized quantum circuits for hybrid quantum-classical algorithms*
 - Jones & Gacon (2020) — *Efficient calculation of gradients in classical simulations of variational quantum algorithms*
 - Kandala et al. (2017) — *Hardware-efficient variational quantum eigensolver for small molecules and quantum magnets*
 - Havlíček et al. (2019) — *Supervised learning with quantum-enhanced feature spaces*
+- Schuld & Killoran (2019) — *Quantum machine learning in feature Hilbert spaces*
+- Hubregtsen et al. (2022) — *Training quantum embedding kernels on near-term quantum computers*
 - Pérez-Salinas et al. (2020) — *Data re-uploading for a universal quantum classifier*
 - Schuld, Sweke & Meyer (2021) — *Effect of data encoding on the expressive power of variational quantum-machine-learning models*
 - Möttönen et al. (2005) — *Transformation of quantum states using uniformly controlled rotations*
 - Schuld & Petruccione (2018) — *Supervised Learning with Quantum Computers*
 - Lin et al. (2017) — *Focal Loss for Dense Object Detection*
 - King & Zeng (2001) — *Logistic Regression in Rare Events Data*
+- Chawla et al. (2002) — *SMOTE: Synthetic Minority Over-sampling Technique*
+- Wilcoxon (1945) — *Individual comparisons by ranking methods*
+- Kerby (2014) — *The simple difference formula: an approach to teaching nonparametric correlation*
 - Bergholm et al. (2022) — *PennyLane: Automatic differentiation of hybrid quantum-classical computations*
