@@ -464,7 +464,7 @@ class TestInputValidation:
 
     def test_invalid_entangler_raises(self) -> None:
         with pytest.raises(ValueError, match="entangler must be"):
-            _layer(entangler="brickwork")
+            _layer(entangler="ladder")
 
     def test_invalid_readout_raises(self) -> None:
         with pytest.raises(ValueError, match="readout must be"):

@@ -241,22 +241,31 @@ class TestParametersAndGradients:
         assert std == pytest.approx(math.pi / math.sqrt(16 * 16), rel=0.2)
 
     def test_block_local_init_matches_its_per_layer_sigma(self) -> None:
-        torch.manual_seed(0)
+        """
+        sigma_l = pi / sqrt(n_qubits * (L + l)) (#166): from the same seed,
+        exactly the ``restricted`` weights times sqrt(L / (L + l)) on layer l.
+        """
         n_qubits, n_layers = 16, 4
-        model = MulticlassHybridClassifier(
-            n_input_features=n_qubits,
-            n_qubits=n_qubits,
-            n_layers=n_layers,
-            n_classes=3,
-            init_strategy="block_local",
-            **CPU,  # type: ignore[arg-type]
+
+        def weights(strategy: str) -> torch.Tensor:
+            torch.manual_seed(0)
+            model = MulticlassHybridClassifier(
+                n_input_features=n_qubits,
+                n_qubits=n_qubits,
+                n_layers=n_layers,
+                n_classes=3,
+                init_strategy=strategy,
+                **CPU,  # type: ignore[arg-type]
+            )
+            return model.quantum_layer.qlayer.weights.detach()
+
+        factor = torch.tensor([math.sqrt(n_layers / (n_layers + l)) for l in range(n_layers)])
+        torch.testing.assert_close(
+            weights("block_local"),
+            weights("restricted") * factor.view(-1, 1, 1),
+            rtol=1e-6,
+            atol=0,
         )
-        weights = model.quantum_layer.qlayer.weights.detach()
-        for layer in range(n_layers):
-            expected = math.pi / math.sqrt(n_qubits * (layer + 1))
-            assert weights[layer].std().item() == pytest.approx(expected, rel=0.3)
-        # The schedule shrinks with depth; restricted init would be flat.
-        assert weights[0].std() > 1.5 * weights[-1].std()
 
     def test_normal_init_uses_init_std(self) -> None:
         torch.manual_seed(0)
