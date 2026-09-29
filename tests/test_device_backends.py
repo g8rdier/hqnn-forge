@@ -274,6 +274,25 @@ class TestFallbackIsRememberedAndAttributed:
             ae._resolve_device("lightning.gpu", 2)
         assert calls.count("lightning.gpu") == 2
 
+    def test_a_warning_raised_as_an_error_is_not_remembered(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls, device = _counting_device({"lightning.gpu"})
+        monkeypatch.setattr(ae.qml, "device", device)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            for _ in range(2):
+                with pytest.raises(RuntimeWarning, match="'lightning.gpu'"):
+                    ae._resolve_device("lightning.gpu", 2)
+        assert calls == ["lightning.gpu", "lightning.gpu"]
+        # Once the warning is let through, the backend is remembered as usual.
+        with pytest.warns(RuntimeWarning, match="'lightning.gpu'"):
+            ae._resolve_device("lightning.gpu", 2)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            ae._resolve_device("lightning.gpu", 2)
+        assert calls.count("lightning.gpu") == 3
+
     @pytest.mark.parametrize(
         "build",
         [

@@ -355,7 +355,6 @@ def _resolve_device(device_name: DeviceName, n_qubits: int) -> qml.devices.Devic
         except _DEVICE_FAILURES as exc:
             if attempt == last or _is_out_of_memory(exc):
                 raise
-            _FAILED_BACKENDS[name] = exc
             fallback = candidates[attempt + 1]
             hint = (
                 "  Install pennylane-lightning for adjoint differentiation support and "
@@ -369,6 +368,10 @@ def _resolve_device(device_name: DeviceName, n_qubits: int) -> qml.devices.Devic
                 RuntimeWarning,
                 stacklevel=_stacklevel_outside_package(),
             )
+            # Recorded only once warned: if a warnings-as-errors filter turns
+            # the warning into an exception, the next build must try (and
+            # raise) again rather than fall back silently.
+            _FAILED_BACKENDS[name] = exc
             continue
         if attempt:
             logger.info("Quantum device fell back from %s to %s", device_name, name)
