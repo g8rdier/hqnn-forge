@@ -123,6 +123,7 @@ _LEGACY_DEFAULTS: dict[str, Any] = {
     "noise_level": 0.0,  # training-time depolarizing noise: none
     "noise_position": "all",
     "init_seed": None,  # weights drawn from the global RNG; inert once loaded
+    "classical_encoder": None,  # the built-in Linear encoder
 }
 
 #: Constructor arguments added deliberately without a legacy default: no value
@@ -165,6 +166,10 @@ def save_checkpoint(model: Classifier, path: PathLike) -> None:
     TypeError
         If ``model`` is not one of the library's classifiers.
     ValueError
+        If ``model`` has a custom ``classical_encoder``: a module is code, not
+        data, and the file must load with ``weights_only=True``.  Save
+        ``model.state_dict()`` and rebuild the model with the same encoder.
+    ValueError
         If ``model`` came from a ``load_checkpoint`` with forced architecture
         overrides.  Its ``get_config()`` reports the overridden architecture
         while its weights were trained in the original one, so the checkpoint
@@ -176,6 +181,16 @@ def save_checkpoint(model: Classifier, path: PathLike) -> None:
         raise TypeError(
             f"save_checkpoint supports the classifiers in hqnn_forge.models "
             f"({', '.join(sorted(_registry()))}); got {type(model).__module__}.{class_name}."
+        )
+    config = model.get_config()
+    modules = sorted(name for name, value in config.items() if isinstance(value, torch.nn.Module))
+    if modules:
+        raise ValueError(
+            f"this {class_name} has a custom {', '.join(modules)}, which a checkpoint "
+            f"cannot store: checkpoints hold primitives and tensors only, so they load "
+            f"with torch.load(weights_only=True) and never execute code.  Save "
+            f"model.state_dict() instead, and load it into a model rebuilt with the "
+            f"same encoder class."
         )
     forced = getattr(model, _FORCED_OVERRIDES_ATTR, ())
     if forced:
@@ -191,7 +206,7 @@ def save_checkpoint(model: Classifier, path: PathLike) -> None:
         "format_version": FORMAT_VERSION,
         "hqnn_forge_version": hqnn_forge.__version__,
         "class_name": class_name,
-        "config": model.get_config(),
+        "config": config,
         "known_args": sorted(_init_parameter_names(type(model))),
         "state_dict": model.state_dict(),
     }

@@ -615,6 +615,7 @@ CONSTRUCTOR_ARGS = {
         "noise_level",
         "noise_position",
         "init_seed",
+        "classical_encoder",
     },
     ParallelHybridClassifier: {
         "n_input_features",
@@ -635,6 +636,7 @@ CONSTRUCTOR_ARGS = {
         "noise_level",
         "noise_position",
         "init_seed",
+        "classical_encoder",
     },
     MulticlassHybridClassifier: {
         "n_input_features",

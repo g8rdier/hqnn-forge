@@ -415,4 +415,9 @@ and versioning policy this project follows.
 - Kerby (2014) — *The simple difference formula: an approach to teaching nonparametric correlation*
 - Efron (1987) — *Better bootstrap confidence intervals*
 - Efron & Tibshirani (1993) — *An Introduction to the Bootstrap*
+- Demšar (2006) — *Statistical Comparisons of Classifiers over Multiple Data Sets*
+- Friedman (1937) — *The Use of Ranks to Avoid the Assumption of Normality Implicit in the Analysis of Variance*
+- Iman & Davenport (1980) — *Approximations of the Critical Region of the Friedman Statistic*
+- Holm (1979) — *A Simple Sequentially Rejective Multiple Test Procedure*
+- Nemenyi (1963) — *Distribution-Free Multiple Comparisons*
 - Bergholm et al. (2022) — *PennyLane: Automatic differentiation of hybrid quantum-classical computations*
