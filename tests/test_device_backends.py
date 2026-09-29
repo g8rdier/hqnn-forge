@@ -290,6 +290,9 @@ class TestFallbackIsRememberedAndAttributed:
         monkeypatch.setattr(ae.qml, "device", device)
         with pytest.warns(RuntimeWarning) as record:
             build()
-        messages = [str(w.message) for w in record]
+        # Only the fallbacks: a small classifier also warns about its init (#167).
+        fallbacks = [w for w in record if issubclass(w.category, RuntimeWarning)]
+        messages = [str(w.message) for w in fallbacks]
         assert len(messages) == 2 and "'lightning.gpu'" in messages[0]
-        assert [w.filename for w in record] == [__file__, __file__]
+        assert "'lightning.qubit'" in messages[1]
+        assert [w.filename for w in fallbacks] == [__file__, __file__]
