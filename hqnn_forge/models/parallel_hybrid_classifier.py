@@ -102,7 +102,7 @@ from hqnn_forge.initializers.restricted_variance import (
     block_local_init_,
     restricted_normal_init_,
 )
-from hqnn_forge.models.base import BinaryClassifierBase
+from hqnn_forge.models.base import BinaryClassifierBase, custom_encoder
 from hqnn_forge.models.hybrid_classifier import (
     _DEFAULT_ENCODER_ACTIVATION,
     _DEFAULT_INIT_STD,
@@ -192,11 +192,27 @@ class ParallelHybridClassifier(BinaryClassifierBase):
         weights from the global torch RNG; an int draws them from a private RNG
         seeded with it, so the same seed gives the same weights and the global
         RNG is left exactly as it was.
+    classical_encoder:
+        Your own module in place of the built-in ``Linear(n_input_features →
+        n_qubits)``, trained together with the quantum layer: a small MLP,
+        or a CNN or sequence model that reshapes the flat
+        ``(batch, n_input_features)`` input itself.  It must return
+        ``(batch, n_qubits)``, which is checked here with one forward pass.
+        The model owns the angle range: it applies ``encoder_activation`` and
+        the factor π on top of the module, exactly as for the built-in
+        encoder, so the module should output unbounded features and not end
+        in ``Tanh`` or ``Sigmoid`` (that warns).  The module is used as given
+        and never re-initialised, so pretrained weights are kept.  Requires
+        ``use_classical_encoder=True``.  ``save_checkpoint`` refuses a model
+        with a custom encoder; save its ``state_dict`` instead.  Default:
+        ``None``, the built-in encoder.
 
     Attributes
     ----------
     classical_branch  : nn.Sequential
     classical_encoder : nn.Sequential or nn.Identity
+        ``Sequential(Linear, activation)``, ``Sequential(custom module,
+        activation)`` with a custom ``classical_encoder``, or ``Identity``.
     quantum_layer     : QuantumEncodingLayer or IQPEncodingLayer
     dropout           : nn.Dropout
     head              : nn.Linear
@@ -232,6 +248,7 @@ class ParallelHybridClassifier(BinaryClassifierBase):
         noise_level: float = 0.0,
         noise_position: Position = "all",
         init_seed: int | None = None,
+        classical_encoder: nn.Module | None = None,
     ) -> None:
         super().__init__()
         init_seed = as_seed(init_seed)
@@ -260,6 +277,7 @@ class ParallelHybridClassifier(BinaryClassifierBase):
                 noise_level=noise_level,
                 noise_position=noise_position,
                 init_seed=init_seed,
+                classical_encoder=classical_encoder,
             )
 
             if encoder_activation not in ("tanh", "sigmoid"):
@@ -298,8 +316,18 @@ class ParallelHybridClassifier(BinaryClassifierBase):
             )
 
             # ── Quantum branch: classical encoder ─────────────────────────────
-            if use_classical_encoder:
-                self.classical_encoder: nn.Module = nn.Sequential(
+            if classical_encoder is not None:
+                if not use_classical_encoder:
+                    raise ValueError(
+                        "classical_encoder replaces the built-in encoder and needs "
+                        "use_classical_encoder=True; use_classical_encoder=False feeds the "
+                        "input to the circuit directly, with no encoder at all."
+                    )
+                self.classical_encoder: nn.Module = custom_encoder(
+                    classical_encoder, n_input_features, n_qubits, encoder_activation
+                )
+            elif use_classical_encoder:
+                self.classical_encoder = nn.Sequential(
                     nn.Linear(n_input_features, n_qubits),
                     nn.Tanh() if encoder_activation == "tanh" else nn.Sigmoid(),
                 )
@@ -358,6 +386,11 @@ class ParallelHybridClassifier(BinaryClassifierBase):
             self.head = nn.Linear(classical_hidden_dim + n_readouts, 1)
 
             # ── Small-angle restricted-variance initialisation ─────────────────
+            # A custom encoder is left as given (it may be pretrained), so its
+            # submodules are excluded from the classical init below.
+            self._custom_encoder_ids: frozenset[int] = frozenset(
+                map(id, classical_encoder.modules()) if classical_encoder is not None else ()
+            )
             reseed()
             self._initialise_weights()
 
@@ -387,9 +420,10 @@ class ParallelHybridClassifier(BinaryClassifierBase):
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
 
-        # Tanh encoder and linear head: Xavier uniform.
+        # Tanh encoder and linear head: Xavier uniform.  A custom encoder is
+        # left as given.
         for module in (*self.classical_encoder.modules(), self.head):
-            if isinstance(module, nn.Linear):
+            if isinstance(module, nn.Linear) and id(module) not in self._custom_encoder_ids:
                 nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)

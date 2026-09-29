@@ -83,12 +83,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   angle counted as one parameter. `ClassicalBaseline` takes `init_seed` like the other
   classifiers, and the builder carries the hybrid's `init_seed` over, so a seeded hybrid gets
   a seeded control
+- `hqnn_forge.benchmark.run_benchmark`: a hybrid model against its matched classical control
+  on identical folds of several datasets, one row per dataset and model (MCC, parameters,
+  MCC per 1,000 parameters, training time, paired Wilcoxon test), with `write_csv` and
+  `examples/benchmark.py`
+- `hqnn_forge.experiment`: an experiment record (JSON) of a benchmark run with its config,
+  seeds, fold indices, dependency versions, devices used, dataset fingerprints and metrics,
+  written by `run_benchmark(record_path=...)`; `load_record` reports version differences from
+  the current environment and `rerun_benchmark` repeats the run
 - `hqnn_forge.utils.permute_quantum_layer`: the permutation null for quantum ablation, which
   runs the circuit and shuffles its readouts across the batch with a seedable generator, so
   they keep their distribution and lose only their link to the input
 - Comparing several models over several datasets (Demšar 2006) in `hqnn_forge.evaluation`:
   `friedman_test` with the Iman–Davenport F, `nemenyi_critical_difference`,
   `compare_to_control` and `holm_correction`, NumPy-only
+- `examples/does_the_quantum_layer_help.py`: a step-by-step hybrid-versus-control comparison on
+  one's own data, with a plain-words verdict from the paired Wilcoxon test
 
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from
