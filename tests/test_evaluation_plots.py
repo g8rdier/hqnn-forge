@@ -8,12 +8,15 @@ Skipped where matplotlib is not installed (it is an optional extra).
 
 from __future__ import annotations
 
+import io
+
 import numpy as np
 import pytest
 
 matplotlib = pytest.importorskip("matplotlib")
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
 from hqnn_forge.evaluation import plots
@@ -179,3 +182,50 @@ class TestEfficiencyFrontier:
         plots.plot_efficiency_frontier(THESIS)
         plots.plot_fold_metric_boxplot({"a": [0.1, 0.2]})
         plots.plot_confusion_matrix([0, 1], [1, 1])
+
+
+class TestSubfigureAxes:
+    """
+    #173: an axes on a ``fig.subfigures()`` sub-figure has ``ax.figure`` set
+    to the SubFigure, which has no ``savefig``.  Every plot returns the root
+    Figure instead, the object the caller can save.
+    """
+
+    @staticmethod
+    def _draw(kind: str, ax: Axes) -> Figure:
+        if kind == "confusion":
+            return plots.plot_confusion_matrix([0, 1, 1], [0, 1, 0], ax=ax)
+        if kind == "boxplot":
+            return plots.plot_fold_metric_boxplot({"a": [0.5, 0.6], "b": [0.4, 0.5]}, ax=ax)
+        return plots.plot_efficiency_frontier({"a": (0.5, 10), "b": (0.6, 20)}, ax=ax)
+
+    @pytest.mark.parametrize("kind", ["confusion", "boxplot", "frontier"])
+    def test_returns_the_root_figure_which_can_be_saved(self, kind: str) -> None:
+        root = plt.figure()
+        sub = root.subfigures(1, 2)[1]
+        ax = sub.subplots()
+        out = self._draw(kind, ax)
+        assert out is root and type(out) is Figure
+        out.savefig(io.BytesIO(), format="png")
+
+    def test_nested_subfigures_reach_the_root(self) -> None:
+        root = plt.figure()
+        inner = root.subfigures(1, 2)[0].subfigures(2, 1)[1]
+        assert self._draw("confusion", inner.subplots()) is root
+
+    def test_confusion_contents_land_on_the_subfigure(self) -> None:
+        # The root is returned, but the colorbar is stolen from the sub-figure
+        # axes and lives on that sub-figure, not on the root beside it.
+        root = plt.figure()
+        sub = root.subfigures(1, 2)[1]
+        ax = sub.subplots()
+        self._draw("confusion", ax)
+        assert len(sub.axes) == 2 and ax in sub.axes
+        assert root.axes == sub.axes  # the root lists its sub-figures' axes, none of its own
+        assert [t.get_text() for t in ax.texts] == ["1", "0", "1", "1"]
+
+    def test_detached_axes_raises(self) -> None:
+        ax = plt.figure().add_subplot()
+        ax.remove()
+        with pytest.raises(ValueError, match="not attached"):
+            plots.plot_confusion_matrix([0, 1], [0, 1], ax=ax)
