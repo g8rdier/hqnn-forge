@@ -181,10 +181,16 @@ def input_width(layer: nn.Module) -> int:
 
 
 def _prepare(layer: nn.Module, x: torch.Tensor) -> torch.Tensor:
-    """``layer.prepare_inputs(x)``, the classical step ``forward`` runs before the QNode."""
+    """
+    ``layer.prepare_inputs(x)``, the classical step ``forward`` runs before the QNode.
+
+    A layer without one gets ``x`` unchanged: the diagnostics accept any
+    module with a ``qlayer`` and an integer ``n_qubits``, and such a layer
+    feeds its QNode its raw inputs.
+    """
     prepare = getattr(layer, "prepare_inputs", None)
     if not callable(prepare):
-        raise TypeError(f"{type(layer).__name__} has no prepare_inputs method.")
+        return x
     out = prepare(x)
     assert isinstance(out, torch.Tensor)
     return out
