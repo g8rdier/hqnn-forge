@@ -89,7 +89,12 @@ jobs:
         # Unsatisfied requirements of the new builds are reported, not fatal:
         # the tests below show whether they matter.
         uv pip check || true
+    # As in tests.yml, a skip not marked may_skip fails.  The lightning tests
+    # skip whenever lightning.qubit cannot be created, so without this a
+    # lightning build that breaks against PennyLane would pass as skips.
     - name: Run pytest
+      env:
+        HQNN_FORGE_FAIL_ON_SKIP: "1"
       run: |
         set -o pipefail
         uv run --no-sync pytest tests/ -q -p no:cacheprovider 2>&1 | tee pytest.log
