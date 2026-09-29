@@ -15,9 +15,14 @@ save_checkpoint         Write a classifier's class, constructor arguments and we
 load_checkpoint         Rebuild a classifier from such a file.
 disable_quantum_layer   Context manager: replace the quantum layer's output with a constant.
 classical_baseline      Untrained MLP matched in parameter count: the classical control.
+permute_quantum_layer   Context manager: shuffle the quantum layer's output across the batch.
 """
 
-from hqnn_forge.utils.ablation import classical_baseline, disable_quantum_layer
+from hqnn_forge.utils.ablation import (
+    classical_baseline,
+    disable_quantum_layer,
+    permute_quantum_layer,
+)
 from hqnn_forge.utils.checkpoint import load_checkpoint, save_checkpoint
 from hqnn_forge.utils.imbalance import (
     FocalLoss,
@@ -33,6 +38,7 @@ __all__: list[str] = [
     "disable_quantum_layer",
     "eval_mode",
     "load_checkpoint",
+    "permute_quantum_layer",
     "save_checkpoint",
     "train_mode",
     "weighted_bce_loss",

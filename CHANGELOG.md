@@ -83,6 +83,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   angle counted as one parameter. `ClassicalBaseline` takes `init_seed` like the other
   classifiers, and the builder carries the hybrid's `init_seed` over, so a seeded hybrid gets
   a seeded control
+- `hqnn_forge.benchmark.run_benchmark`: a hybrid model against its matched classical control
+  on identical folds of several datasets, one row per dataset and model (MCC, parameters,
+  MCC per 1,000 parameters, training time, paired Wilcoxon test), with `write_csv` and
+  `examples/benchmark.py`
+- `hqnn_forge.experiment`: an experiment record (JSON) of a benchmark run with its config,
+  seeds, fold indices, dependency versions, devices used, dataset fingerprints and metrics,
+  written by `run_benchmark(record_path=...)`; `load_record` reports version differences from
+  the current environment and `rerun_benchmark` repeats the run
+- `hqnn_forge.utils.permute_quantum_layer`: the permutation null for quantum ablation, which
+  runs the circuit and shuffles its readouts across the batch with a seedable generator, so
+  they keep their distribution and lose only their link to the input
+- `examples/does_the_quantum_layer_help.py`: a step-by-step hybrid-versus-control comparison on
+  one's own data, with a plain-words verdict from the paired Wilcoxon test
 
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from
@@ -137,6 +150,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   angles, and the new `GradientVarianceResult.per_tensor` maps each tensor to its variance.
   `per_parameter` keeps the weight tensor's shape for a single-tensor layer and is the flat
   concatenation otherwise
+- `fisher_information_matrix` and `effective_dimension` measure layers with several trainable
+  tensors: the matrix spans all of them in the TorchLayer's argument order,
+  `FisherSpectrum.parameter_slices` and `block(name)` locate each tensor, and `parameters=`
+  measures a subset, whose matrix is the matching block. `effective_dimension` counts every
+  tensor in `d` but, like `gradient_variance`, draws only the `weights` angles
 
 ### Fixed
 - `circuit_summary` and `count_inert_parameters` raised `TypeError` with PennyLane's

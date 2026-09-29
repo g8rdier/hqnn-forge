@@ -213,9 +213,25 @@ def kernel_from_states(
 
     Examples
     --------
+    Simulate each set once and build the train and test kernels from the
+    same training states:
+
+    >>> import torch
+    >>> from sklearn.svm import SVC
+    >>> from hqnn_forge.encoding import QuantumEncodingLayer
+    >>> from hqnn_forge.kernels import encoded_states, kernel_from_states
+    >>> layer = QuantumEncodingLayer(n_qubits=4, n_layers=1, device_name="default.qubit")
+    >>> g = torch.Generator().manual_seed(0)
+    >>> X_train, X_test = torch.rand(10, 4, generator=g), torch.rand(3, 4, generator=g)
+    >>> y_train = [0, 1] * 5
     >>> S_train = encoded_states(X_train, layer)
-    >>> svm = SVC(kernel="precomputed").fit(kernel_from_states(S_train).numpy(), y_train)
+    >>> K_train = kernel_from_states(S_train)
+    >>> bool(torch.allclose(K_train.diagonal(), torch.ones(10, dtype=torch.float64)))
+    True
+    >>> svm = SVC(kernel="precomputed").fit(K_train.numpy(), y_train)
     >>> K_test = kernel_from_states(encoded_states(X_test, layer), S_train)
+    >>> K_test.shape
+    torch.Size([3, 10])
     >>> y_pred = svm.predict(K_test.numpy())
     """
     symmetric = states_y is None
@@ -285,11 +301,17 @@ def quantum_kernel_matrix(
 
     Examples
     --------
+    >>> import torch
     >>> from sklearn.svm import SVC
     >>> from hqnn_forge.encoding import QuantumEncodingLayer
     >>> from hqnn_forge.kernels import quantum_kernel_matrix
     >>> layer = QuantumEncodingLayer(n_qubits=4, n_layers=1, device_name="default.qubit")
+    >>> g = torch.Generator().manual_seed(0)
+    >>> X_train, X_test = torch.rand(10, 4, generator=g), torch.rand(3, 4, generator=g)
+    >>> y_train = [0, 1] * 5
     >>> K_train = quantum_kernel_matrix(X_train, layer)
+    >>> K_train.shape, K_train.dtype
+    (torch.Size([10, 10]), torch.float64)
     >>> svm = SVC(kernel="precomputed").fit(K_train.numpy(), y_train)
     >>> K_test = quantum_kernel_matrix(X_test, layer, Y=X_train)
     >>> y_pred = svm.predict(K_test.numpy())
