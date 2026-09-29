@@ -69,9 +69,10 @@ This keeps the history reviewable and associates every change with a PR number.
     run from the Actions tab does not help: it checks out the merge commit it was
     created with. This isn't automated because events caused by the workflow's own
     `GITHUB_TOKEN` start no new workflow runs, so it would need a personal access token
-    or GitHub App secret. When the parent is squash-merged, retarget the children to
-    `main` (`gh pr edit <n> --base main`) before its branch is deleted: depending on how
-    the branch is deleted, GitHub either retargets the PRs based on it or closes them.
+    or GitHub App secret. Before squash-merging the parent, retarget the children to
+    `main` (`gh pr edit <n> --base main`): the repository deletes a head branch as soon as
+    its PR merges, and depending on how the branch is deleted, GitHub either retargets
+    the PRs based on it or closes them.
 
 ### 5. Squash Merge
 
