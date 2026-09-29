@@ -109,6 +109,7 @@ from hqnn_forge.models.hybrid_classifier import (
     _PUBLISHED_SHNN,
 )
 from hqnn_forge.noise import Position
+from hqnn_forge.utils.rng import as_seed, seeded_rng
 
 
 class ParallelHybridClassifier(BinaryClassifierBase):
@@ -127,7 +128,11 @@ class ParallelHybridClassifier(BinaryClassifierBase):
     n_qubits:
         Number of qubits in the quantum branch.  Default: 8.
     n_layers:
-        VQC ansatz layers.  Default: 2.
+        VQC ansatz layers.  Default: 2.  At 1, with angle encoding and
+        ``readout="first"``, ⟨Z_0⟩ misses the first encoded angle under the
+        default ring and RX embedding, and most of them under
+        ``entangler="brickwork"``; use 2 or more with a ring.  See step 2 of
+        :func:`hqnn_forge.encoding.angle_embedding._make_angle_embedding_circuit`.
     classical_hidden_dim:
         Width of the classical MLP branch.  Default: 16.
     use_classical_encoder:
@@ -153,9 +158,11 @@ class ParallelHybridClassifier(BinaryClassifierBase):
         Pauli axis of the angle embedding, ``"X"`` (default), ``"Y"`` or ``"Z"``.
         Angle encoding only.
     entangler:
-        ``"ring"`` (default: CNOT ring then ``Rot``) or ``"strongly_entangling"``
+        ``"ring"`` (default: CNOT ring then ``Rot``), ``"strongly_entangling"``
         (``qml.StronglyEntanglingLayers``: ``Rot`` then a CNOT ring of growing
-        range).  See :func:`hqnn_forge.encoding.angle_embedding.apply_variational_layers`.
+        range) or ``"brickwork"`` (nearest-neighbour CNOT pairs, so each ⟨Z_i⟩
+        keeps a local light cone at shallow depth).  See
+        :func:`hqnn_forge.encoding.angle_embedding.apply_variational_layers`.
     readout:
         ``"all"`` (default): the head reads every ⟨Z_i⟩.  ``"first"``: ⟨Z_0⟩
         only, so the head is ``Linear(1 → 1)``.
@@ -180,6 +187,11 @@ class ParallelHybridClassifier(BinaryClassifierBase):
         See :mod:`hqnn_forge.noise`.
     noise_position:
         ``"all"`` (default) or ``"end"``; where the channel is inserted.
+    init_seed:
+        Seed for weight initialisation.  ``None`` (default) draws the initial
+        weights from the global torch RNG; an int draws them from a private RNG
+        seeded with it, so the same seed gives the same weights and the global
+        RNG is left exactly as it was.
 
     Attributes
     ----------
@@ -219,125 +231,135 @@ class ParallelHybridClassifier(BinaryClassifierBase):
         init_std: float = 0.1,
         noise_level: float = 0.0,
         noise_position: Position = "all",
+        init_seed: int | None = None,
     ) -> None:
         super().__init__()
-        self._config = dict(
-            n_input_features=n_input_features,
-            n_qubits=n_qubits,
-            n_layers=n_layers,
-            classical_hidden_dim=classical_hidden_dim,
-            use_classical_encoder=use_classical_encoder,
-            dropout_p=dropout_p,
-            device_name=device_name,
-            diff_method=diff_method,
-            init_strategy=init_strategy,
-            encoding_type=encoding_type,
-            embedding_rotation=embedding_rotation,
-            entangler=entangler,
-            readout=readout,
-            encoder_activation=encoder_activation,
-            init_std=init_std,
-            noise_level=noise_level,
-            noise_position=noise_position,
-        )
-
-        if encoder_activation not in ("tanh", "sigmoid"):
-            raise ValueError(
-                f"encoder_activation must be 'tanh' or 'sigmoid'; got {encoder_activation!r}."
-            )
-        if init_strategy not in ("restricted", "block_local", "normal"):
-            raise ValueError(
-                f"init_strategy must be 'restricted', 'block_local' or 'normal'; "
-                f"got {init_strategy!r}."
-            )
-        if init_std <= 0.0:
-            raise ValueError(f"init_std must be > 0; got {init_std}.")
-        if init_strategy != "normal" and init_std != _DEFAULT_INIT_STD:
-            raise ValueError(
-                f"init_std applies to init_strategy='normal' only; "
-                f"'{init_strategy}' derives its own sigma from the circuit size, so "
-                f"init_std={init_std} would be recorded in the config and ignored."
-            )
-
-        self.n_input_features = n_input_features
-        self.n_qubits = n_qubits
-        self.n_layers = n_layers
-        self.classical_hidden_dim = classical_hidden_dim
-        self.init_strategy = init_strategy
-        self.use_classical_encoder = use_classical_encoder
-        self.encoder_activation = encoder_activation
-        self.init_std = init_std
-
-        # ── Classical branch (MLP) ────────────────────────────────────────
-        self.classical_branch = nn.Sequential(
-            nn.Linear(n_input_features, classical_hidden_dim),
-            nn.ReLU(),
-            nn.Linear(classical_hidden_dim, classical_hidden_dim),
-            nn.ReLU(),
-        )
-
-        # ── Quantum branch: classical encoder ─────────────────────────────
-        if use_classical_encoder:
-            self.classical_encoder: nn.Module = nn.Sequential(
-                nn.Linear(n_input_features, n_qubits),
-                nn.Tanh() if encoder_activation == "tanh" else nn.Sigmoid(),
-            )
-        else:
-            if n_input_features != n_qubits:
-                raise ValueError(
-                    f"When use_classical_encoder=False, n_input_features "
-                    f"({n_input_features}) must equal n_qubits ({n_qubits})."
-                )
-            if encoder_activation != _DEFAULT_ENCODER_ACTIVATION:
-                raise ValueError(
-                    f"encoder_activation applies with use_classical_encoder=True only; "
-                    f"without the encoder the features enter the circuit as given, so "
-                    f"{encoder_activation!r} would be recorded in the config and ignored."
-                )
-            self.classical_encoder = nn.Identity()
-
-        # ── Quantum branch: quantum encoding layer ────────────────────────
-        if encoding_type == "angle":
-            self.quantum_layer: QuantumEncodingLayer | IQPEncodingLayer = QuantumEncodingLayer(
+        init_seed = as_seed(init_seed)
+        # Building the layers draws from the global RNG (nn.Linear and
+        # TorchLayer defaults), all of it overwritten by _initialise_weights.
+        # With init_seed the whole build runs inside seeded_rng, so the
+        # caller's stream is exactly where it was afterwards -- also when a
+        # check below raises after some layers were built.
+        with seeded_rng(init_seed) as reseed:
+            self._config = dict(
+                n_input_features=n_input_features,
                 n_qubits=n_qubits,
                 n_layers=n_layers,
-                rotation=embedding_rotation,
+                classical_hidden_dim=classical_hidden_dim,
+                use_classical_encoder=use_classical_encoder,
+                dropout_p=dropout_p,
                 device_name=device_name,
                 diff_method=diff_method,
+                init_strategy=init_strategy,
+                encoding_type=encoding_type,
+                embedding_rotation=embedding_rotation,
                 entangler=entangler,
                 readout=readout,
+                encoder_activation=encoder_activation,
+                init_std=init_std,
                 noise_level=noise_level,
                 noise_position=noise_position,
+                init_seed=init_seed,
             )
-        elif encoding_type == "iqp":
-            if embedding_rotation != "X":
+
+            if encoder_activation not in ("tanh", "sigmoid"):
                 raise ValueError(
-                    "embedding_rotation applies to encoding_type='angle' only; IQP embedding "
-                    "has no rotation axis."
+                    f"encoder_activation must be 'tanh' or 'sigmoid'; got {encoder_activation!r}."
                 )
-            self.quantum_layer = IQPEncodingLayer(
-                n_qubits=n_qubits,
-                n_layers=n_layers,
-                n_repeats=1,
-                device_name=device_name,
-                diff_method=diff_method,
-                entangler=entangler,
-                readout=readout,
-                noise_level=noise_level,
-                noise_position=noise_position,
+            if init_strategy not in ("restricted", "block_local", "normal"):
+                raise ValueError(
+                    f"init_strategy must be 'restricted', 'block_local' or 'normal'; "
+                    f"got {init_strategy!r}."
+                )
+            if init_std <= 0.0:
+                raise ValueError(f"init_std must be > 0; got {init_std}.")
+            if init_strategy != "normal" and init_std != _DEFAULT_INIT_STD:
+                raise ValueError(
+                    f"init_std applies to init_strategy='normal' only; "
+                    f"'{init_strategy}' derives its own sigma from the circuit size, so "
+                    f"init_std={init_std} would be recorded in the config and ignored."
+                )
+
+            self.n_input_features = n_input_features
+            self.n_qubits = n_qubits
+            self.n_layers = n_layers
+            self.classical_hidden_dim = classical_hidden_dim
+            self.init_strategy = init_strategy
+            self.use_classical_encoder = use_classical_encoder
+            self.encoder_activation = encoder_activation
+            self.init_std = init_std
+
+            # ── Classical branch (MLP) ────────────────────────────────────────
+            self.classical_branch = nn.Sequential(
+                nn.Linear(n_input_features, classical_hidden_dim),
+                nn.ReLU(),
+                nn.Linear(classical_hidden_dim, classical_hidden_dim),
+                nn.ReLU(),
             )
-        else:
-            raise ValueError(f"Unsupported encoding_type: {encoding_type}")
-        n_readouts = self.quantum_layer.n_outputs
 
-        # ── Fusion + regularisation ────────────────────────────────────────
-        self.dropout = nn.Dropout(p=dropout_p) if dropout_p > 0.0 else nn.Identity()
+            # ── Quantum branch: classical encoder ─────────────────────────────
+            if use_classical_encoder:
+                self.classical_encoder: nn.Module = nn.Sequential(
+                    nn.Linear(n_input_features, n_qubits),
+                    nn.Tanh() if encoder_activation == "tanh" else nn.Sigmoid(),
+                )
+            else:
+                if n_input_features != n_qubits:
+                    raise ValueError(
+                        f"When use_classical_encoder=False, n_input_features "
+                        f"({n_input_features}) must equal n_qubits ({n_qubits})."
+                    )
+                if encoder_activation != _DEFAULT_ENCODER_ACTIVATION:
+                    raise ValueError(
+                        f"encoder_activation applies with use_classical_encoder=True only; "
+                        f"without the encoder the features enter the circuit as given, so "
+                        f"{encoder_activation!r} would be recorded in the config and ignored."
+                    )
+                self.classical_encoder = nn.Identity()
 
-        # ── Classical head ────────────────────────────────────────────────
-        self.head = nn.Linear(classical_hidden_dim + n_readouts, 1)
+            # ── Quantum branch: quantum encoding layer ────────────────────────
+            if encoding_type == "angle":
+                self.quantum_layer: QuantumEncodingLayer | IQPEncodingLayer = QuantumEncodingLayer(
+                    n_qubits=n_qubits,
+                    n_layers=n_layers,
+                    rotation=embedding_rotation,
+                    device_name=device_name,
+                    diff_method=diff_method,
+                    entangler=entangler,
+                    readout=readout,
+                    noise_level=noise_level,
+                    noise_position=noise_position,
+                )
+            elif encoding_type == "iqp":
+                if embedding_rotation != "X":
+                    raise ValueError(
+                        "embedding_rotation applies to encoding_type='angle' only; IQP embedding "
+                        "has no rotation axis."
+                    )
+                self.quantum_layer = IQPEncodingLayer(
+                    n_qubits=n_qubits,
+                    n_layers=n_layers,
+                    n_repeats=1,
+                    device_name=device_name,
+                    diff_method=diff_method,
+                    entangler=entangler,
+                    readout=readout,
+                    noise_level=noise_level,
+                    noise_position=noise_position,
+                )
+            else:
+                raise ValueError(f"Unsupported encoding_type: {encoding_type}")
+            n_readouts = self.quantum_layer.n_outputs
 
-        # ── Small-angle restricted-variance initialisation ─────────────────
-        self._initialise_weights()
+            # ── Fusion + regularisation ────────────────────────────────────────
+            self.dropout = nn.Dropout(p=dropout_p) if dropout_p > 0.0 else nn.Identity()
+
+            # ── Classical head ────────────────────────────────────────────────
+            self.head = nn.Linear(classical_hidden_dim + n_readouts, 1)
+
+            # ── Small-angle restricted-variance initialisation ─────────────────
+            reseed()
+            self._initialise_weights()
 
     # ------------------------------------------------------------------
     @classmethod

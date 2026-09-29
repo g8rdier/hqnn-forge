@@ -94,3 +94,28 @@ def grad_of() -> Callable[[torch.Tensor], torch.Tensor]:
     ``prepend`` import mode.
     """
     return _grad
+
+
+def _cnot_pairs(target: object) -> list[tuple[int, int]]:
+    """
+    CNOT ``(control, target)`` pairs, in circuit order, of a tape or of an
+    encoding layer's circuit decomposed to ``LOGICAL_GATE_SET`` (zero inputs,
+    the layer's current weights).  Order and direction are what a wire-pattern
+    test pins; gate counts are invariant under a reversed ring or a permuted
+    wire order (#183).
+    """
+    import pennylane as qml
+
+    from hqnn_forge.diagnostics.circuit import _logical_tape
+
+    if isinstance(target, qml.tape.QuantumScript):
+        tape = target
+    else:
+        tape = _logical_tape(target.qlayer, target.n_qubits)  # type: ignore[attr-defined]
+    return [(int(op.wires[0]), int(op.wires[1])) for op in tape.operations if op.name == "CNOT"]
+
+
+@pytest.fixture
+def cnot_pairs() -> Callable[[object], list[tuple[int, int]]]:
+    """``_cnot_pairs`` as a fixture, for the same reason as ``grad_of``."""
+    return _cnot_pairs
