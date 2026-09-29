@@ -404,6 +404,7 @@ and versioning policy this project follows.
 - Havlíček et al. (2019) — *Supervised learning with quantum-enhanced feature spaces*
 - Schuld & Killoran (2019) — *Quantum machine learning in feature Hilbert spaces*
 - Hubregtsen et al. (2022) — *Training quantum embedding kernels on near-term quantum computers*
+- Higham (1988) — *Computing a nearest symmetric positive semidefinite matrix*
 - Pérez-Salinas et al. (2020) — *Data re-uploading for a universal quantum classifier*
 - Schuld, Sweke & Meyer (2021) — *Effect of data encoding on the expressive power of variational quantum-machine-learning models*
 - Möttönen et al. (2005) — *Transformation of quantum states using uniformly controlled rotations*
