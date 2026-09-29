@@ -496,3 +496,14 @@ class TestExecutionCount:
         torch.manual_seed(0)
         layer = QuantumEncodingLayer(n_qubits=3, n_layers=2)
         assert _executions(layer, torch.rand(5, 3)) == 10
+
+    def test_parameter_shift_repeats_its_shifts_per_output(self) -> None:
+        # The one real k factor: per row, the forward plus 2d shifted circuits
+        # for each of the k = 3 outputs, d = 2 layers x 3 qubits x 3 angles.
+        torch.manual_seed(0)
+        layer = QuantumEncodingLayer(
+            n_qubits=3, n_layers=2, device_name="default.qubit", diff_method="parameter-shift"
+        )
+        d = layer.qlayer.weights.numel()
+        assert d == 18
+        assert _executions(layer, torch.rand(5, 3)) == 5 * (1 + 3 * 2 * d)  # 545

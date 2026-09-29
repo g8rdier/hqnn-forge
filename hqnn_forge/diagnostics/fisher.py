@@ -273,16 +273,15 @@ def fisher_information_matrix(model: nn.Module, data_sample: torch.Tensor) -> Fi
     ``lightning.qubit``, whatever ``k`` is.  Only ``parameter-shift`` repeats
     its ``2d`` shifted circuits for each output.
 
-    Computing the Jacobians from one batched forward instead (#223), with
-    vectorised backward passes, was measured and is slower on every path:
-    an 8-qubit layer over 100 rows took 108 s instead of 1.5 s on
-    ``lightning.qubit``/``adjoint`` and 11 s instead of 5.8 s on
-    ``default.qubit``/``backprop``, with the same number of executions, and
-    it cannot vectorise through ``parameter-shift`` at all.  The per-row loop
-    is kept for that reason.  The model is run in eval mode (its mode is restored
-    afterwards), so dropout is off and a model built with ``noise_level > 0``
-    is measured on its noiseless circuit, as :func:`gradient_variance` is.  To
-    measure it under noise, call this inside
+    Computing the Jacobians from one batched forward instead, with vectorised
+    backward passes, was measured slower on every path, with the same number
+    of executions, and it cannot vectorise through ``parameter-shift`` at all
+    (#223, #286), so the per-row loop is kept.
+
+    The model is run in eval mode (its mode is restored afterwards), so
+    dropout is off and a model built with ``noise_level > 0`` is measured on
+    its noiseless circuit, as :func:`gradient_variance` is.  To measure it
+    under noise, call this inside
     :func:`hqnn_forge.noise.apply_depolarizing_noise`.
     """
     layer, weights, _, _ = _resolve_weights(model, caller="fisher_information_matrix")
