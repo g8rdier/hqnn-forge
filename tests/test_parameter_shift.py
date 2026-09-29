@@ -26,6 +26,7 @@ from functools import partial
 from typing import Any
 
 import numpy as np
+import pennylane as qml
 import pennylane.gradients.parameter_shift as parameter_shift_module
 import pytest
 import torch
@@ -37,7 +38,19 @@ from hqnn_forge.models import (
     MulticlassHybridClassifier,
     ParallelHybridClassifier,
 )
-from hqnn_forge.sklearn import HybridClassifierEstimator
+
+
+def _lightning_available() -> bool:
+    try:
+        qml.device("lightning.qubit", wires=1)
+    except Exception:  # noqa: BLE001 - any failure means "not installed"
+        return False
+    return True
+
+
+requires_lightning = pytest.mark.skipif(
+    not _lightning_available(), reason="pennylane-lightning not installed"
+)
 
 N_QUBITS = 3
 # Everything runs in float64, where the methods agree to a few 1e-16
@@ -153,6 +166,7 @@ class TestAgainstBackprop:
     def test_every_gradient_matches(self, factory: Any, input_grads: bool) -> None:
         _assert_matches_backprop(factory, input_grads, "default.qubit", "parameter-shift", ATOL)
 
+    @requires_lightning
     def test_adjoint_on_lightning_matches(self, factory: Any, input_grads: bool) -> None:
         # The default backend's method, against the same reference.
         _assert_matches_backprop(
@@ -269,6 +283,10 @@ def test_sklearn_estimator_fits_under_parameter_shift(model: str) -> None:
     # The estimator passes diff_method through to the model it builds; a fit
     # under parameter-shift follows the backprop fit from the same seed (the
     # two differ only by float32 round-off accumulated over the steps).
+    # scikit-learn is an optional extra: skip this test alone without it.
+    pytest.importorskip("sklearn")
+    from hqnn_forge.sklearn import HybridClassifierEstimator
+
     rng = np.random.default_rng(3)
     X = rng.normal(size=(32, 4)).astype(np.float32)
     y = (X[:, 0] > 0).astype(np.int64)
