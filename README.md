@@ -98,7 +98,12 @@ X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, random_sta
 clf = make_pipeline(
     StandardScaler(),
     HybridClassifierEstimator(
-        n_qubits=4, n_layers=2, max_epochs=20, validation_fraction=0.2, random_state=0
+        n_qubits=4,
+        n_layers=2,
+        max_epochs=20,
+        batch_size=8,
+        validation_fraction=0.2,
+        random_state=0,
     ),
 )
 clf.fit(X_train, y_train)  # about a minute on a laptop CPU
@@ -111,7 +116,9 @@ print(f"MCC per 1,000 parameters {parameter_efficiency(clf[-1].model_, mcc):.2f}
 The model's classical encoder (`Linear` + `tanh`, scaled by π) maps any number of features
 onto the qubits, so the input width is free. With `validation_fraction` set, a stratified
 share of the training data drives early stopping and picks the decision threshold that
-`predict` uses. MCC, not accuracy, is the metric here: with 5% positives, predicting the
+`predict` uses. On a dataset this small, a batch size well below the default 64 gives the
+optimiser enough steps in 20 epochs; with the default, early stopping often ends the run
+before the model has learnt anything. MCC, not accuracy, is the metric here: with 5% positives, predicting the
 majority class alone is 95% accurate.
 
 ### Non-tabular data: precomputed embeddings
