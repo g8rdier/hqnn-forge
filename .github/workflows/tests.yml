@@ -15,9 +15,12 @@ permissions:
 
 # A new push to a PR cancels its still-running, now superseded runs. Title/body
 # edits get their own group: concurrency applies before the jobs' `if`, so the
-# skipped run would otherwise cancel the PR's real one.
+# skipped run would otherwise cancel the PR's real one. Pushes to main group per
+# commit: a group holds one running and one pending run, and a third arrival
+# cancels the pending one even without cancel-in-progress, so merges in quick
+# succession would leave main commits without a completed run.
 concurrency:
-  group: tests-${{ github.event.pull_request.number || github.ref }}${{ github.event.action == 'edited' && !github.event.changes.base && '-edit' || '' }}
+  group: tests-${{ github.event.pull_request.number || github.sha }}${{ github.event.action == 'edited' && !github.event.changes.base && '-edit' || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
