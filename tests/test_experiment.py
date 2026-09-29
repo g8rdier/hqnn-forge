@@ -39,7 +39,12 @@ SETTINGS: dict[str, Any] = dict(
 
 def _hybrid(n_input_features: int) -> nn.Module:
     return HybridBinaryClassifier(
-        n_input_features, 2, 1, device_name="default.qubit", diff_method="backprop"
+        n_input_features,
+        2,
+        1,
+        device_name="default.qubit",
+        diff_method="backprop",
+        init_strategy="normal",
     )
 
 
