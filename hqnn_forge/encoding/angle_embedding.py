@@ -680,6 +680,8 @@ class QuantumEncodingLayer(nn.Module):
     Attributes
     ----------
     n_qubits : int
+    n_features : int
+        Width of the input, one feature per qubit: ``n_qubits``.
     n_layers : int
     n_outputs : int
         Width of the output: ``n_qubits`` or 1.
@@ -720,6 +722,7 @@ class QuantumEncodingLayer(nn.Module):
         super().__init__()
 
         self.n_qubits = n_qubits
+        self.n_features = n_qubits
         self.n_layers = n_layers
         self.entangler = entangler
         self.readout = readout

@@ -148,7 +148,8 @@ class IQPEncodingLayer(nn.Module):
 
     ``entangler`` and ``readout`` are the options of
     :class:`~hqnn_forge.encoding.QuantumEncodingLayer`; the output width is
-    ``n_outputs`` (``n_qubits``, or 1 with ``readout="first"``).
+    ``n_outputs`` (``n_qubits``, or 1 with ``readout="first"``), and the
+    input width ``n_features`` is ``n_qubits``, one feature per qubit.
     ``noise_level`` / ``noise_position`` add training-time depolarizing
     noise exactly as in :class:`~hqnn_forge.encoding.QuantumEncodingLayer`.
     """
@@ -168,6 +169,7 @@ class IQPEncodingLayer(nn.Module):
         super().__init__()
 
         self.n_qubits = n_qubits
+        self.n_features = n_qubits
         self.n_layers = n_layers
         self.n_repeats = n_repeats
         self.entangler = entangler

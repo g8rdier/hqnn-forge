@@ -96,6 +96,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   they keep their distribution and lose only their link to the input
 - `examples/does_the_quantum_layer_help.py`: a step-by-step hybrid-versus-control comparison on
   one's own data, with a plain-words verdict from the paired Wilcoxon test
+- The encoding layer contract, exported from `hqnn_forge.encoding`: the `EncodingLayer`
+  protocol (`qlayer`, `n_qubits`, `n_features`, `prepare_inputs`, with `forward(x)` equal to
+  `qlayer(prepare_inputs(x))` outside training noise), the weaker `CircuitLayer` (`qlayer`,
+  `n_qubits`) the diagnostics accept, and the `is_encoding_layer` / `is_circuit_layer` runtime
+  checks. `QuantumEncodingLayer`, `IQPEncodingLayer` and `DataReuploadingLayer` gain an
+  `n_features` attribute, their input width, equal to `n_qubits`
 
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from

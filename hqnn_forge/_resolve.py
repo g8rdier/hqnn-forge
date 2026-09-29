@@ -85,11 +85,12 @@ def require_prepare_inputs(layer: CircuitLayer, caller: str) -> EncodingLayer:
     Raises
     ------
     TypeError
-        If ``layer`` has no callable ``prepare_inputs``.
+        If ``layer`` has no callable ``prepare_inputs`` or no ``int``
+        ``n_features``.
     """
     if not is_encoding_layer(layer):
         raise TypeError(
-            f"{caller} expects an encoding layer with a prepare_inputs method, which "
-            f"{type(layer).__name__} does not have."
+            f"{caller} expects an encoding layer with a prepare_inputs method and an "
+            f"int n_features, which {type(layer).__name__} does not have."
         )
     return layer

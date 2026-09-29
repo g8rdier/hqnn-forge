@@ -32,10 +32,11 @@ input_scaling_shape     Shape of the re-uploading QNode's input_scaling weights.
 
 The encoder interface:
 
-EncodingLayer           Protocol: qlayer, n_qubits, prepare_inputs; forward is
-                        qlayer(prepare_inputs(x)).  The contract is spelled out
-                        in hqnn_forge._encoding_contract.
-CircuitLayer            Protocol: qlayer and n_qubits, what the diagnostics read.
+EncodingLayer           Protocol: qlayer, n_qubits, n_features, prepare_inputs;
+                        forward is qlayer(prepare_inputs(x)).  The contract is
+                        spelled out in hqnn_forge._encoding_contract.
+CircuitLayer            Protocol: qlayer and n_qubits, the minimum the
+                        diagnostics accept.
 is_encoding_layer       Runtime check for EncodingLayer (isinstance cannot do it).
 is_circuit_layer        Runtime check for CircuitLayer.
 

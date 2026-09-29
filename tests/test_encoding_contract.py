@@ -98,7 +98,7 @@ def _build(name: str) -> EncodingLayer:
 
 
 def _inputs(layer: EncodingLayer) -> torch.Tensor:
-    width = getattr(layer, "n_features", layer.n_qubits)
+    width = layer.n_features
     # Unnormalised, wider than [-1, 1], and float32 as a caller would pass
     # them: the amplitude layer's normalisation has something to do.
     return 3 * torch.randn(4, width, generator=torch.Generator().manual_seed(1))
@@ -111,6 +111,16 @@ class TestEveryEncoder:
         assert is_circuit_layer(layer) and is_encoding_layer(layer)
         assert isinstance(layer.qlayer, qml.qnn.TorchLayer)
         assert layer.n_qubits == N_QUBITS
+        expected_width = 5 if name == "amplitude-padded" else N_QUBITS
+        assert type(layer.n_features) is int and layer.n_features == expected_width
+
+    def test_prepare_inputs_accepts_n_features(self, name: str) -> None:
+        # n_features is the width prepare_inputs takes: the contract member
+        # callers size their own inputs by (the width-rejection test below
+        # checks that one less or one more is refused).
+        layer = _build(name)
+        x = torch.randn(2, layer.n_features, generator=torch.Generator().manual_seed(3))
+        assert layer.prepare_inputs(x).shape[0] == 2
 
     @pytest.mark.parametrize("mode", ["eval", "train"])
     def test_forward_is_qlayer_of_prepare_inputs(self, name: str, mode: str) -> None:
@@ -219,6 +229,17 @@ class TestTheChecks:
         assert found is bare
         with pytest.raises(TypeError, match="f expects an encoding layer with a prepare_inputs"):
             require_prepare_inputs(found, "f")
+
+    @pytest.mark.parametrize("n_features", [None, True, 3.0, "3"])
+    def test_n_features_must_be_a_plain_int(self, n_features: object) -> None:
+        layer = _build("angle")
+        if n_features is None:
+            del layer.n_features
+        else:
+            layer.n_features = n_features  # type: ignore[assignment]
+        assert is_circuit_layer(layer) and not is_encoding_layer(layer)
+        with pytest.raises(TypeError, match="and an int n_features"):
+            require_prepare_inputs(layer, "f")
 
     def test_a_non_callable_prepare_inputs(self) -> None:
         bare = _bare_circuit_layer()
