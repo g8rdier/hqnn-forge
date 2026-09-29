@@ -33,8 +33,10 @@ same parameter count) get exactly the same:
 
 Reported per dataset and model
 ------------------------------
-``mcc_mean``/``mcc_std`` over the test folds, ``n_parameters`` and MCC per
-1,000 parameters (:func:`parameter_efficiency` of the mean), the wall-clock
+``mcc_mean``/``mcc_std`` over the test folds, ``n_parameters`` (the total
+trainable count, ``count_parameters()``, including circuit weights that can
+never move the output) and MCC per 1,000 of them
+(:func:`parameter_efficiency` of the mean), the wall-clock
 training time summed over folds (simulating the circuit is part of an honest
 efficiency comparison), and the paired Wilcoxon signed-rank test of hybrid
 against control over the per-fold MCCs, with its effect size.  The test

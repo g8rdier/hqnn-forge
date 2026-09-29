@@ -291,8 +291,9 @@ data. Its trainable parameter count is matched to `model.count_parameters()`, wh
 rotation angle as one parameter, the same convention as the MCC/kParam figures, so the two
 models are compared at the same parameter budget. The serial model's control is one hidden
 layer in place of encoder, circuit and head; the parallel model's is its classical branch plus a
-head, widened to the matching width. The published SHNN's 122 parameters get a 121-parameter
-control. A seeded hybrid (`init_seed`) gets a control seeded with the same seed.
+head, widened to the matching width. The match is on the total, including circuit weights that
+can never move the output: the published SHNN's 122 parameters, 102 of them live, get a
+121-parameter control. A seeded hybrid (`init_seed`) gets a control seeded with the same seed.
 Switching a trained model's circuit off with `disable_quantum_layer` measures something
 else, how much that model depends on the circuit.
 

@@ -64,7 +64,10 @@ convention of ``count_parameters`` and of the MCC/kParam efficiency figures the
 hybrid models are reported with, so the control is matched on the budget the
 results are compared on.  It does not claim an angle is worth a ``Linear``
 weight; it holds the count fixed so that the comparison is about what the
-parameters are, not how many there are.
+parameters are, not how many there are.  The match is on the total trainable
+count, including circuit weights that can never move the output
+(``circuit_summary(...).n_inert_params``): the published SHNN's 122, of which
+102 are live, get a 121-parameter control, not a 102-parameter one (#234).
 
 The architecture keeps the hybrid's classical shape and replaces the circuit's
 capacity with width:
