@@ -352,7 +352,9 @@ def _check_ranks(ranks: npt.ArrayLike, n_datasets: int) -> npt.NDArray[np.float6
     k = r.size
     if k < 2 or n_datasets < 2:
         raise ValueError(f"need at least 2 datasets and 2 models; got {n_datasets} and {k}.")
-    if not math.isclose(float(r.sum()), k * (k + 1) / 2, rel_tol=0, abs_tol=1e-6):
+    # Published ranks are rounded; half a unit in the second decimal per rank
+    # accepts two-decimal tables and still catches a mistyped rank.
+    if not math.isclose(float(r.sum()), k * (k + 1) / 2, rel_tol=0, abs_tol=0.005 * k):
         raise ValueError(
             f"average ranks of {k} models must sum to k(k+1)/2 = {k * (k + 1) / 2}; "
             f"got {float(r.sum())}."
@@ -368,7 +370,8 @@ def friedman_from_ranks(average_ranks: npt.ArrayLike, n_datasets: int) -> Friedm
     Parameters
     ----------
     average_ranks:
-        Mean rank of each of the ``k`` models; they must sum to ``k(k+1)/2``.
+        Mean rank of each of the ``k`` models; they must sum to ``k(k+1)/2``,
+        up to rounding to two decimals (``0.005 k``).
     n_datasets:
         Number of datasets ``N`` the ranks were averaged over.
     """

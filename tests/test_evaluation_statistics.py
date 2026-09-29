@@ -243,6 +243,14 @@ class TestFriedmanAgainstDemsar:
         assert res.iman_davenport_p_value == pytest.approx(0.019823, abs=1e-6)
         assert res.p_value == pytest.approx(0.025807, abs=1e-6)
 
+    def test_ranks_as_printed_in_the_paper(self) -> None:
+        # The docstring's use case: ranks copied from a table, rounded.
+        res = friedman_from_ranks([3.143, 2.000, 2.893, 1.964], DEMSAR_N)
+        assert round(res.statistic, 2) == 9.28
+        assert round(res.iman_davenport, 2) == 3.69
+        # Two decimals, summing to 5.99 rather than 6, are still accepted.
+        friedman_from_ranks([1.33, 2.33, 2.33], 10)
+
     def test_nemenyi_critical_difference(self) -> None:
         assert round(nemenyi_critical_difference(4, DEMSAR_N, 0.05), 2) == 1.25
 
@@ -333,6 +341,8 @@ class TestFriedmanFromScores:
     def test_ranks_must_sum_correctly(self) -> None:
         with pytest.raises(ValueError, match=r"sum to k\(k\+1\)/2 = 6.0"):
             friedman_from_ranks([1.0, 2.0, 2.0], 5)
+        with pytest.raises(ValueError, match="must sum"):
+            friedman_from_ranks([1.33, 2.33, 2.32], 10)  # off by 0.02 > 0.015
 
     def test_control_out_of_range(self) -> None:
         with pytest.raises(ValueError, match="control must be a column index"):
