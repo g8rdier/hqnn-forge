@@ -20,8 +20,12 @@ permissions:
 # (called from retarget.yml, with the caller's `edited` event context) gets its
 # own group: cancelling the run for the old base would leave its jobs marked
 # cancelled under the real check names, which is the shadowing #346 removed.
+# Pushes to main group per commit: a group holds one running and one pending
+# run, and a third arrival cancels the pending one even without
+# cancel-in-progress, so merges in quick succession would leave main commits
+# without a completed run.
 concurrency:
-  group: tests-${{ github.event.pull_request.number || github.ref }}${{ github.event.action == 'edited' && '-retarget' || '' }}
+  group: tests-${{ github.event.pull_request.number || github.sha }}${{ github.event.action == 'edited' && '-retarget' || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -111,7 +115,11 @@ jobs:
         python -m pip install --upgrade pip
         pip install -e ".[dev,lightning,sklearn,examples]"
         
+    # A missing extra would otherwise turn its tests into skips and the job
+    # would still pass; with this set, any skip not marked may_skip fails.
     - name: Run pytest
+      env:
+        HQNN_FORGE_FAIL_ON_SKIP: "1"
       run: |
         pytest tests/ -v
 
@@ -143,7 +151,10 @@ jobs:
     - name: Install dependencies from the lockfile
       run: uv sync --locked --all-extras
 
+    # Skips fail here too, as in the test job above.
     - name: Run pytest
+      env:
+        HQNN_FORGE_FAIL_ON_SKIP: "1"
       run: uv run --frozen pytest tests/ -v
 
   # The two matrices above never install the declared floors: test resolves to
@@ -187,5 +198,11 @@ jobs:
     - name: Check every floor was installed
       run: uv run --no-sync python .github/scripts/check_floors.py
 
+    # Skips fail here too, which also catches an extra that installs at its
+    # floor but does not work (a lightning.qubit that cannot create a device).
+    # matplotlib is not installed in this job by design, so its one module is
+    # left out explicitly rather than skipped.
     - name: Run pytest
-      run: uv run --no-sync pytest tests/ -v
+      env:
+        HQNN_FORGE_FAIL_ON_SKIP: "1"
+      run: uv run --no-sync pytest tests/ -v --ignore=tests/test_evaluation_plots.py
