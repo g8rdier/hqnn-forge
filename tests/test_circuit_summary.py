@@ -28,7 +28,7 @@ from hqnn_forge.diagnostics import (
     draw_circuit,
     gradient_variance,
 )
-from hqnn_forge.diagnostics.circuit import _logical_tape, sample_input
+from hqnn_forge.diagnostics.circuit import _logical_tape, _written_tape, sample_input
 from hqnn_forge.encoding import AmplitudeEncodingLayer, QuantumEncodingLayer
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
@@ -452,6 +452,44 @@ class TestAmplitudeEmbedding:
         assert summary.gate_counts["RY"] > 0
         drawing = draw_circuit(layer, torch.tensor([0.3, -1.0, 2.0, 0.5, 1.5]))
         assert all(f"{w}: " in drawing for w in range(3)) and drawing.count("<Z>") == 3
+
+    def test_the_circuit_gets_the_padded_normalised_state(self) -> None:
+        """The state prepared is x zero-padded to 2**n and scaled to unit norm, by hand."""
+        layer = _amplitude(3, n_features=5)
+        x = torch.tensor([0.3, -1.0, 2.0, 0.5, 1.5], dtype=torch.float64)
+        padded = torch.cat([x, torch.zeros(3, dtype=torch.float64)])
+        by_hand = padded / math.sqrt(float((padded**2).sum()))
+        (state,) = _written_tape(layer, x).operations[0].data
+        torch.testing.assert_close(state, by_hand)
+        default = _written_tape(layer).operations[0].data[0]
+        full = torch.tensor([-1.0, 2.0, 3.0, 4.0, 5.0, 0.0, 0.0, 0.0], dtype=torch.float64)
+        torch.testing.assert_close(default, full / math.sqrt(55.0))
+
+    def test_gradient_variance_matches_hand_built_inputs(self) -> None:
+        """
+        Each draw is 2**n raw features uniform in [-π, π], padded and
+        normalised, not n_qubits of them: recomputed here on the raw QNode.
+        """
+        layer = _amplitude(3)
+        w0 = torch.linspace(0.1, 2.0, 9, dtype=torch.float32).reshape(1, 3, 3)
+
+        def fixed(w: torch.Tensor) -> None:
+            w.copy_(w0)
+
+        n = 3
+        result = gradient_variance(
+            layer, n_samples=n, init=fixed, generator=torch.Generator().manual_seed(7)
+        )
+        gen = torch.Generator().manual_seed(7)
+        grads = []
+        for _ in range(n):
+            x = (torch.rand(1, 8, generator=gen) * 2 - 1) * math.pi
+            state = x[0].to(torch.float64) / torch.linalg.vector_norm(x[0].to(torch.float64))
+            w = w0.clone().requires_grad_(True)
+            (z0, *_) = layer.qlayer.qnode(state, weights=w)
+            (g,) = torch.autograd.grad(z0, w)
+            grads.append(g.to(torch.float64))
+        torch.testing.assert_close(result.per_parameter, torch.stack(grads).var(dim=0))
 
     def test_draw_default_and_width_check(self) -> None:
         layer = _amplitude(3)
