@@ -323,7 +323,7 @@ class ParallelHybridClassifier(BinaryClassifierBase):
                         "use_classical_encoder=True; use_classical_encoder=False feeds the "
                         "input to the circuit directly, with no encoder at all."
                     )
-                self.classical_encoder = custom_encoder(
+                self.classical_encoder: nn.Module = custom_encoder(
                     classical_encoder, n_input_features, n_qubits, encoder_activation
                 )
             elif use_classical_encoder:
@@ -347,7 +347,7 @@ class ParallelHybridClassifier(BinaryClassifierBase):
 
             # ── Quantum branch: quantum encoding layer ────────────────────────
             if encoding_type == "angle":
-                self.quantum_layer = QuantumEncodingLayer(
+                self.quantum_layer: QuantumEncodingLayer | IQPEncodingLayer = QuantumEncodingLayer(
                     n_qubits=n_qubits,
                     n_layers=n_layers,
                     rotation=embedding_rotation,

@@ -17,17 +17,12 @@ from __future__ import annotations
 
 import copy
 import warnings
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import torch
 import torch.nn as nn
 
 from hqnn_forge.utils.modes import eval_mode
-
-if TYPE_CHECKING:
-    # Annotations only: the encoding modules are not needed at runtime here.
-    from hqnn_forge.encoding.angle_embedding import QuantumEncodingLayer
-    from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 
 
 def custom_encoder(
@@ -111,24 +106,18 @@ class BinaryClassifierBase(nn.Module):
 
     Attributes
     ----------
-    Every subclass assigns these three in ``__init__``; they are declared here
-    so code that only reads them can be typed against this class instead of a
-    union of the concrete models.
-
-    classical_encoder : nn.Module
-        ``nn.Sequential`` (Linear + activation), or ``nn.Identity`` when the
-        encoder is bypassed.
-    quantum_layer : QuantumEncodingLayer or IQPEncodingLayer
-        The encoding layer with the variational circuit.
     head : nn.Linear
-        The classification head producing the logit.
+        The output layer producing the single logit.  Every subclass assigns it
+        in ``__init__``, so code that only reads it can be typed against this
+        class.  ``classical_encoder`` and ``quantum_layer`` are deliberately not
+        declared here: the hybrid models have them, but ``ClassicalBaseline``
+        does not, so a declaration on the base would let mypy accept an access
+        that raises ``AttributeError`` at runtime.
     """
 
     _config: dict[str, Any] | None = None
-    # Declarations only: nn.Module registers the submodules when a subclass
-    # assigns them, so these change neither state_dict keys nor checkpoints.
-    classical_encoder: nn.Module
-    quantum_layer: QuantumEncodingLayer | IQPEncodingLayer
+    # Declaration only: nn.Module registers the submodule when a subclass
+    # assigns it, so this changes neither state_dict keys nor checkpoints.
     head: nn.Linear
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # pragma: no cover - abstract
