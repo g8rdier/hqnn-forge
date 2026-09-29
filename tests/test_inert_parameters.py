@@ -105,7 +105,8 @@ class TestAgainstAutograd:
         )
 
     @pytest.mark.parametrize(
-        ("entangler", "expected", "dead"), [("ring", 12, 12), ("strongly_entangling", 8, 12)]
+        ("entangler", "expected", "dead"),
+        [("ring", 12, 12), ("strongly_entangling", 8, 12), ("brickwork", 16, 17)],
     )
     def test_first_readout(self, entangler: Entangler, expected: int, dead: int) -> None:
         """
@@ -113,7 +114,11 @@ class TestAgainstAutograd:
         dead as a whole, far beyond the n_qubits ω of readout="all".  For the
         strongly entangling ansatz autograd finds more: the Z_0 content
         cancels through the range-2 CNOTs, which the per-wire propagation
-        cannot see, so the structural count stays a lower bound.
+        cannot see, so the structural count stays a lower bound.  Brickwork's
+        light cone is the narrowest: the structural 16 are the last layer's
+        Rot off wire 0 and wire 0's ω, and layer 0's Rot on wires 2 and 3.
+        Autograd adds layer 0's φ on wire 1, which CNOT(1, 2) leaves acting
+        on a state diagonal in Z_1 under RX embedding (#150).
         """
         layer = QuantumEncodingLayer(
             n_qubits=4, n_layers=2, entangler=entangler, readout="first", **CPU
@@ -121,7 +126,7 @@ class TestAgainstAutograd:
         assert circuit_summary(layer).n_inert_params == expected
         assert _zero_gradient_entries(layer) == dead
 
-    @pytest.mark.parametrize("entangler", ["ring", "strongly_entangling"])
+    @pytest.mark.parametrize("entangler", ["ring", "strongly_entangling", "brickwork"])
     @pytest.mark.parametrize("readout", ["all", "first"])
     def test_one_gate_slot_per_weight_entry(self, entangler: Entangler, readout: Readout) -> None:
         """
@@ -202,6 +207,16 @@ class TestHandBuiltTapes:
             [qml.expval(qml.PauliZ(1))],
         )
         assert count_inert_parameters(tape) == 0  # X_1 → X_1 through the CNOT: the RZ is live
+
+    def test_global_phase_neither_mixes_nor_counts(self) -> None:
+        # Graph-based decomposition emits GlobalPhase.  It commutes with the
+        # measurement, so the RZ before it stays inert; its own parameter is
+        # not counted, since under state() a global phase is observable.
+        tape = _tape(
+            lambda: (qml.RX(_p(0.4), 0), qml.RZ(_p(0.3), 0), qml.GlobalPhase(_p(0.2), wires=0)),
+            [qml.expval(qml.PauliZ(0))],
+        )
+        assert count_inert_parameters(tape) == 1
 
     def test_non_z_measurement_disables_the_shortcut(self) -> None:
         tape = _tape(lambda: (qml.RZ(_p(0.3), 0),), [qml.expval(qml.PauliX(0))])
