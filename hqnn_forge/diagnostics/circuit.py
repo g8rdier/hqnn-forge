@@ -210,9 +210,11 @@ def sample_input(layer: nn.Module) -> torch.Tensor:
     all-positive vector has no phases and so shows no ``RZ`` at all, and
     other sign patterns drop some ``RZ`` blocks.  It gets
     ``[-1, 2, 3, …, n_features]`` instead: distinct magnitudes and one
-    negative entry make every block non-zero, so the counts are those of the
-    full preparation, ``2**n - 1`` ``RY`` and ``2**n - 1`` ``RZ`` rotations --
-    the most any input needs.
+    negative entry make every block non-zero, so the counts are the most any
+    input needs: ``2**n - 1`` ``RY`` and ``2**n - 1`` ``RZ`` rotations when
+    ``n_features == 2**n``.  With fewer features the zero padding leaves out
+    the ``RY`` rotations that act only on padded amplitudes (for ``n = 3``,
+    6 with 4 features, 4 with 2), since no input can make those non-zero.
     """
     width = input_width(layer)
     zeros = torch.zeros(1, width, dtype=torch.float64)
