@@ -136,6 +136,31 @@ class TestEveryEncoder:
             layer.prepare_inputs(x)
         assert str(from_prepare.value) == str(from_forward.value)
 
+    @pytest.mark.parametrize("delta", [-1, 1])
+    def test_prepare_inputs_rejects_the_wrong_width_as_forward_does(
+        self, name: str, delta: int
+    ) -> None:
+        # The width check is the other half of the validation the contract
+        # puts in prepare_inputs; the kernels rely on it to refuse bad X.
+        layer = _build(name)
+        width = _inputs(layer).shape[1] + delta
+        x = torch.randn(4, width, generator=torch.Generator().manual_seed(2))
+        with pytest.raises(ValueError) as from_forward:
+            layer(x)
+        with pytest.raises(ValueError) as from_prepare:
+            layer.prepare_inputs(x)
+        assert str(from_prepare.value) == str(from_forward.value)
+
+    def test_forward_returns_expectation_values(self, name: str) -> None:
+        # One row per sample, one ⟨Z⟩ per read-out wire, each in [-1, 1].
+        layer = _build(name)
+        x = _inputs(layer)
+        n_outputs = 1 if getattr(layer, "readout", "all") == "first" else N_QUBITS
+        with torch.no_grad():
+            out = layer(x)
+        assert out.shape == (x.shape[0], n_outputs)
+        assert torch.isfinite(out).all() and out.abs().max() <= 1 + 1e-6
+
     def test_the_resolver_accepts_it(self, name: str) -> None:
         layer = _build(name)
         found, qlayer, n_qubits = resolve_encoding_layer(layer, "f", allow_model=False)
