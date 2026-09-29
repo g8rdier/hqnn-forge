@@ -91,6 +91,8 @@ import pennylane as qml
 import torch
 from torch import nn
 
+from hqnn_forge._resolve import resolve_encoding_layer
+
 __all__ = [
     "encoded_states",
     "kernel_from_states",
@@ -103,21 +105,20 @@ __all__ = [
 PrepareInputs = Callable[[torch.Tensor], torch.Tensor]
 
 
-def _resolve_layer(layer: nn.Module) -> tuple[qml.qnn.TorchLayer, int, PrepareInputs]:
-    """``(qlayer, n_qubits, prepare_inputs)`` of an encoding layer, or raise ``TypeError``."""
-    qlayer = getattr(layer, "qlayer", None)
-    n_qubits = getattr(layer, "n_qubits", None)
+def _resolve_layer(layer: nn.Module, caller: str) -> tuple[qml.qnn.TorchLayer, int, PrepareInputs]:
+    """
+    ``(qlayer, n_qubits, prepare_inputs)`` of an encoding layer, or raise.
+
+    A hybrid classifier is refused, not unwrapped: the kernel is defined by the
+    encoder alone, and the classifier's classical encoder would sit between
+    ``X`` and the feature map (see ``resolve_encoding_layer``).
+    """
+    _, qlayer, n_qubits = resolve_encoding_layer(layer, caller, allow_model=False)
     prepare = getattr(layer, "prepare_inputs", None)
-    if (
-        not isinstance(qlayer, qml.qnn.TorchLayer)
-        or not isinstance(n_qubits, int)
-        or not callable(prepare)
-    ):
+    if not callable(prepare):
         raise TypeError(
-            f"quantum_kernel_matrix expects an encoding layer with a qlayer TorchLayer, "
-            f"an integer n_qubits and a prepare_inputs method (QuantumEncodingLayer, "
-            f"IQPEncodingLayer, AmplitudeEncodingLayer, DataReuploadingLayer); "
-            f"got {type(layer).__name__}."
+            f"{caller} expects an encoding layer with a prepare_inputs method, which "
+            f"{type(layer).__name__} does not have."
         )
     # The level=0 tape drops every transform on the QNode and the replay runs
     # on default.qubit, so a transformed circuit (apply_depolarizing_noise's
@@ -207,7 +208,7 @@ def encoded_states(X: torch.Tensor, layer: nn.Module) -> torch.Tensor:
         :func:`hqnn_forge.noise.apply_depolarizing_noise`: the replay would
         drop it, so it refuses rather than return the untransformed states.
     """
-    qlayer, n_qubits, prepare = _resolve_layer(layer)
+    qlayer, n_qubits, prepare = _resolve_layer(layer, "encoded_states")
     return _simulate(_prepare(X, prepare, "X"), qlayer, n_qubits)
 
 
@@ -236,9 +237,25 @@ def kernel_from_states(
 
     Examples
     --------
+    Simulate each set once and build the train and test kernels from the
+    same training states:
+
+    >>> import torch
+    >>> from sklearn.svm import SVC
+    >>> from hqnn_forge.encoding import QuantumEncodingLayer
+    >>> from hqnn_forge.kernels import encoded_states, kernel_from_states
+    >>> layer = QuantumEncodingLayer(n_qubits=4, n_layers=1, device_name="default.qubit")
+    >>> g = torch.Generator().manual_seed(0)
+    >>> X_train, X_test = torch.rand(10, 4, generator=g), torch.rand(3, 4, generator=g)
+    >>> y_train = [0, 1] * 5
     >>> S_train = encoded_states(X_train, layer)
-    >>> svm = SVC(kernel="precomputed").fit(kernel_from_states(S_train).numpy(), y_train)
+    >>> K_train = kernel_from_states(S_train)
+    >>> bool(torch.allclose(K_train.diagonal(), torch.ones(10, dtype=torch.float64)))
+    True
+    >>> svm = SVC(kernel="precomputed").fit(K_train.numpy(), y_train)
     >>> K_test = kernel_from_states(encoded_states(X_test, layer), S_train)
+    >>> K_test.shape
+    torch.Size([3, 10])
     >>> y_pred = svm.predict(K_test.numpy())
     """
     symmetric = states_y is None
@@ -308,11 +325,17 @@ def quantum_kernel_matrix(
 
     Examples
     --------
+    >>> import torch
     >>> from sklearn.svm import SVC
     >>> from hqnn_forge.encoding import QuantumEncodingLayer
     >>> from hqnn_forge.kernels import quantum_kernel_matrix
     >>> layer = QuantumEncodingLayer(n_qubits=4, n_layers=1, device_name="default.qubit")
+    >>> g = torch.Generator().manual_seed(0)
+    >>> X_train, X_test = torch.rand(10, 4, generator=g), torch.rand(3, 4, generator=g)
+    >>> y_train = [0, 1] * 5
     >>> K_train = quantum_kernel_matrix(X_train, layer)
+    >>> K_train.shape, K_train.dtype
+    (torch.Size([10, 10]), torch.float64)
     >>> svm = SVC(kernel="precomputed").fit(K_train.numpy(), y_train)
     >>> K_test = quantum_kernel_matrix(X_test, layer, Y=X_train)
     >>> y_pred = svm.predict(K_test.numpy())
@@ -332,7 +355,7 @@ def quantum_kernel_matrix(
     positive semi-definite itself; small negative eigenvalues of order 1e-15
     are rounding.
     """
-    qlayer, n_qubits, prepare = _resolve_layer(layer)
+    qlayer, n_qubits, prepare = _resolve_layer(layer, "quantum_kernel_matrix")
     # Validate both input sets before simulating either.
     prepared_x = _prepare(X, prepare, "X")
     if Y is None:
@@ -429,7 +452,7 @@ def overlap_kernel_matrix(
         raise ValueError(f"shots must be a positive integer or None; got {shots}.")
     if project_psd and Y is not None:
         raise ValueError("project_psd applies to the square matrix only; pass Y=None.")
-    qlayer, n_qubits, prepare = _resolve_layer(layer)
+    qlayer, n_qubits, prepare = _resolve_layer(layer, "overlap_kernel_matrix")
     prepared_x = _prepare(X, prepare, "X")
     prepared_y = None if Y is None else _prepare(Y, prepare, "Y")
     ops_x = _operations(prepared_x, qlayer)
