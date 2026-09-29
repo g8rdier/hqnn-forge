@@ -19,7 +19,7 @@ from matplotlib.text import Annotation
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
-from matplotlib.figure import Figure
+from matplotlib.figure import Figure, SubFigure
 
 from hqnn_forge.evaluation import plots
 
@@ -200,6 +200,13 @@ class TestSubfigureAxes:
     """
 
     @staticmethod
+    def _subfigures(parent: Figure | SubFigure, nrows: int = 1, ncols: int = 2) -> np.ndarray:
+        """``parent.subfigures``, narrowed: more than one sub-figure comes as an array."""
+        subs = parent.subfigures(nrows, ncols)
+        assert isinstance(subs, np.ndarray)
+        return subs
+
+    @staticmethod
     def _draw(kind: str, ax: Axes) -> Figure:
         if kind == "confusion":
             return plots.plot_confusion_matrix([0, 1, 1], [0, 1, 0], ax=ax)
@@ -210,7 +217,7 @@ class TestSubfigureAxes:
     @pytest.mark.parametrize("kind", ["confusion", "boxplot", "frontier"])
     def test_returns_the_root_figure_which_can_be_saved(self, kind: str) -> None:
         root = plt.figure()
-        sub = root.subfigures(1, 2)[1]
+        sub = self._subfigures(root)[1]
         ax = sub.subplots()
         out = self._draw(kind, ax)
         assert out is root and type(out) is Figure
@@ -218,14 +225,14 @@ class TestSubfigureAxes:
 
     def test_nested_subfigures_reach_the_root(self) -> None:
         root = plt.figure()
-        inner = root.subfigures(1, 2)[0].subfigures(2, 1)[1]
+        inner = self._subfigures(self._subfigures(root)[0], 2, 1)[1]
         assert self._draw("confusion", inner.subplots()) is root
 
     def test_confusion_contents_land_on_the_subfigure(self) -> None:
         # The root is returned, but the colorbar is stolen from the sub-figure
         # axes and lives on that sub-figure, not on the root beside it.
         root = plt.figure()
-        sub = root.subfigures(1, 2)[1]
+        sub = self._subfigures(root)[1]
         ax = sub.subplots()
         self._draw("confusion", ax)
         assert len(sub.axes) == 2 and ax in sub.axes

@@ -7,6 +7,8 @@ Unit tests for hqnn_forge.utils.disable_quantum_layer and permute_quantum_layer.
 from __future__ import annotations
 
 import warnings
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from typing import Any, TypedDict, TypeVar
 
 import pytest
@@ -29,6 +31,7 @@ N_FEATURES, N_QUBITS = 6, 3
 
 Model = HybridBinaryClassifier | ParallelHybridClassifier
 M = TypeVar("M", bound=Model)
+_Ablation = Callable[[nn.Module], AbstractContextManager[nn.Module]]
 
 
 def _model(cls: type[M], **kw: Any) -> M:
@@ -218,7 +221,7 @@ class TestPermutation:
     """#179: the circuit runs; its rows are shuffled across the batch."""
 
     def test_output_is_a_row_permutation_of_the_real_output(
-        self, cls: type, x: torch.Tensor
+        self, cls: type[Model], x: torch.Tensor
     ) -> None:
         model = _model(cls).eval()
         layer = model.quantum_layer
@@ -231,7 +234,7 @@ class TestPermutation:
         assert not torch.equal(perm, torch.arange(5))
         torch.testing.assert_close(shuffled, real[perm], rtol=0, atol=0)
 
-    def test_same_seed_same_permutation(self, cls: type, x: torch.Tensor) -> None:
+    def test_same_seed_same_permutation(self, cls: type[Model], x: torch.Tensor) -> None:
         model = _model(cls).eval()
         outs = []
         for _ in range(2):
@@ -240,27 +243,30 @@ class TestPermutation:
         torch.testing.assert_close(outs[0], outs[1], rtol=0, atol=0)
 
     def test_no_gradient_reaches_the_quantum_layer_or_upstream(
-        self, cls: type, x: torch.Tensor
+        self, cls: type[Model], x: torch.Tensor
     ) -> None:
         model = _model(cls)
         with permute_quantum_layer(model, generator=_gen()):
             model(x).sum().backward()
         assert model.quantum_layer.qlayer.weights.grad is None
-        assert model.classical_encoder[0].weight.grad is None
+        encoder = model.classical_encoder
+        assert isinstance(encoder, nn.Sequential)
+        assert encoder[0].weight.grad is None
 
-    def test_forward_is_restored_including_on_exception(self, cls: type) -> None:
+    def test_forward_is_restored_including_on_exception(self, cls: type[Model]) -> None:
         model = _model(cls)
         with pytest.raises(RuntimeError, match="boom"), permute_quantum_layer(model):
             raise RuntimeError("boom")
         assert "forward" not in vars(model.quantum_layer)
 
-    def test_cannot_nest_with_either_ablation(self, cls: type) -> None:
+    def test_cannot_nest_with_either_ablation(self, cls: type[Model]) -> None:
         model = _model(cls)
-        for outer, inner in [
+        ablations: list[tuple[_Ablation, _Ablation]] = [
             (permute_quantum_layer, permute_quantum_layer),
             (permute_quantum_layer, disable_quantum_layer),
             (disable_quantum_layer, permute_quantum_layer),
-        ]:
+        ]
+        for outer, inner in ablations:
             with outer(model), pytest.raises(RuntimeError, match="cannot be nested"):
                 with inner(model):
                     pass

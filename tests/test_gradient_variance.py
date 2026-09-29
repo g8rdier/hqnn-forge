@@ -26,8 +26,9 @@ from hqnn_forge.diagnostics import (
     gradient_variance,
     gradient_variance_sweep,
 )
+from hqnn_forge.diagnostics.gradients import InitName
 from hqnn_forge.encoding import DataReuploadingLayer, QuantumEncodingLayer
-from hqnn_forge.encoding.angle_embedding import DeviceName, DiffMethod
+from hqnn_forge.encoding.angle_embedding import DeviceName, DiffMethod, RotationAxis
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.models import HybridBinaryClassifier
 
@@ -221,7 +222,7 @@ class TestPhysics:
 
 class TestMechanics:
     @pytest.mark.parametrize("init", ["restricted", "block_local"])
-    def test_toy_sizes_do_not_warn(self, init: str) -> None:
+    def test_toy_sizes_do_not_warn(self, init: InitName) -> None:
         """Comparing inits where restricted restricts nothing is the point, not a misuse (#167)."""
         with warnings.catch_warnings():
             warnings.simplefilter("error")
@@ -362,14 +363,16 @@ class TestSeveralTensors:
     """
 
     @staticmethod
-    def _scaled(rotation: str = "X") -> DataReuploadingLayer:
+    def _scaled(rotation: RotationAxis = "X") -> DataReuploadingLayer:
         torch.manual_seed(0)
         return DataReuploadingLayer(
             n_qubits=2, n_layers=2, rotation=rotation, trainable_input_scaling=True, **CPU
         )
 
     @pytest.mark.parametrize(("rotation", "scaling_shape"), [("X", (2, 2)), ("Z", (1, 2))])
-    def test_is_measured_over_every_tensor(self, rotation: str, scaling_shape: tuple) -> None:
+    def test_is_measured_over_every_tensor(
+        self, rotation: RotationAxis, scaling_shape: tuple
+    ) -> None:
         result = gradient_variance(self._scaled(rotation), n_samples=5, generator=_gen())
         assert set(result.per_tensor) == {"weights", "input_scaling"}
         assert result.per_tensor["weights"].shape == (2, 2, 3)
@@ -444,9 +447,11 @@ class TestSeveralTensors:
         from hqnn_forge.diagnostics import effective_dimension, fisher_information_matrix
 
         layer = _two_weight_layer()
+        qlayer = layer.qlayer
+        assert isinstance(qlayer, qml.qnn.TorchLayer)
         with torch.no_grad():
-            layer.qlayer.w1.fill_(0.3)
-            layer.qlayer.w2.fill_(-0.7)
+            qlayer.w1.fill_(0.3)
+            qlayer.w2.fill_(-0.7)
         x = torch.tensor([[0.2, -0.5], [1.1, 0.4]])
         spectrum = fisher_information_matrix(layer, x)
         assert spectrum.parameter_slices == {"w1": slice(0, 1), "w2": slice(1, 2)}

@@ -143,13 +143,15 @@ class TestMultiWireGateCost:
         would not notice a dropped or mis-wired ladder.
         """
         layer = _multirz_layer(n_wires)
+        qlayer = layer.qlayer
+        assert isinstance(qlayer, qml.qnn.TorchLayer)
         x = torch.tensor([0.3, -1.1, 0.7, 2.0], dtype=torch.float64)
         with torch.no_grad():
-            layer.qlayer.weights.copy_(torch.tensor([0.9]))
-        qnode = layer.qlayer.qnode
-        weights = dict(layer.qlayer.qnode_weights.items())
+            qlayer.weights.copy_(torch.tensor([0.9]))
+        qnode = qlayer.qnode
+        weights = dict(qlayer.qnode_weights.items())
         written = qml.workflow.construct_tape(qnode, level="top")(x, **weights)
-        counted = _logical_tape(layer.qlayer, 4, inputs=x)
+        counted = _logical_tape(qlayer, 4, inputs=x)
         wires = list(range(4))
         u_written = qml.matrix(written, wire_order=wires)
         u_counted = qml.matrix(counted, wire_order=wires)
