@@ -33,8 +33,15 @@ N_SPLITS = 4
 
 
 def _hybrid(n_input_features: int) -> nn.Module:
+    # 2 x 1 is too small for the restricted-variance init to restrict anything
+    # (it warns), and the runner does not care which init the hybrid uses.
     return HybridBinaryClassifier(
-        n_input_features, 2, 1, device_name="default.qubit", diff_method="backprop"
+        n_input_features,
+        2,
+        1,
+        device_name="default.qubit",
+        diff_method="backprop",
+        init_strategy="normal",
     )
 
 
@@ -65,6 +72,7 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
         calls.append(
             {
                 "model": type(model).__name__,
+                "module": model,
                 "tensors": [t.clone() for t in tensors],
                 "generator": state,
                 "options": {k: v for k, v in kw.items() if k != "generator"},
@@ -143,6 +151,37 @@ class TestSameFoldsForBoth:
             assert fold.threshold == call["history"].best_threshold
             assert fold.epochs == call["history"].n_epochs
             assert call["options"]["monitor"] == "mcc"
+
+    def test_reported_mcc_is_the_test_rows_at_that_threshold(
+        self, captured: list[dict[str, Any]]
+    ) -> None:
+        # Recompute each fold's score from the trained model: standardise by
+        # the training part (train + validation rows), predict the test rows,
+        # cut at the recorded threshold and take the MCC from the confusion
+        # counts.  At 0.5 instead, at least one fold scores differently, so
+        # this also pins that the tuned threshold is the one applied.
+        X, y = _data()
+        result = _run({"a": (X, y)})
+        differs_at_half = False
+        for fold, call in zip(result.folds, captured):
+            train_part = np.sort(np.concatenate([fold.train_idx, fold.val_idx]))
+            X_fold = benchmark._standardise(X, train_part)
+            prob = call["module"].predict_proba(
+                torch.from_numpy(X_fold[fold.test_idx].astype(np.float32))
+            )
+            truth = y[fold.test_idx]
+
+            def mcc(pred: np.ndarray, truth: np.ndarray = truth) -> float:
+                tp = float(np.sum((pred == 1) & (truth == 1)))
+                tn = float(np.sum((pred == 0) & (truth == 0)))
+                fp = float(np.sum((pred == 1) & (truth == 0)))
+                fn = float(np.sum((pred == 0) & (truth == 1)))
+                den = math.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+                return 0.0 if den == 0 else (tp * tn - fp * fn) / den
+
+            assert fold.mcc == pytest.approx(mcc((prob >= fold.threshold).numpy()), abs=1e-12)
+            differs_at_half |= mcc((prob >= 0.5).numpy()) != pytest.approx(fold.mcc, abs=1e-12)
+        assert differs_at_half
 
 
 class TestNoLeakage:
