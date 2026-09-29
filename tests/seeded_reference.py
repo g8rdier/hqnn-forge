@@ -8,7 +8,10 @@ A seeded model's initial weights depend on the order in which its modules are
 built and initialised: every ``nn.Linear`` and ``TorchLayer`` draws from the
 global RNG when constructed, and ``_initialise_weights`` draws again.  A change
 to that order changes every seeded result without raising and without failing
-a shape test.  This module builds a grid of seeded configurations and
+a shape test.  With ``init_seed`` a classifier reseeds right before
+``_initialise_weights`` (#175), so there only the draws inside it count; the
+``*-init-seed`` configurations pin that path, which the scikit-learn estimator
+and the benchmark runner take.  This module builds a grid of seeded configurations and
 summarises each one's initial state dict and its eval-mode output on a fixed
 input; the test compares against the summary stored in
 ``tests/data/seeded_reference.json``.
@@ -31,9 +34,14 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from hqnn_forge.encoding import AmplitudeEncodingLayer, DataReuploadingLayer, QuantumEncodingLayer
-from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
+from hqnn_forge.encoding import (
+    AmplitudeEncodingLayer,
+    DataReuploadingLayer,
+    IQPEncodingLayer,
+    QuantumEncodingLayer,
+)
 from hqnn_forge.models import (
+    ClassicalBaseline,
     HybridBinaryClassifier,
     MulticlassHybridClassifier,
     ParallelHybridClassifier,
@@ -47,6 +55,10 @@ N_VALUES = 4
 CPU: dict[str, Any] = {"device_name": "default.qubit", "diff_method": "backprop"}
 CLASSIFIER: dict[str, Any] = {"n_input_features": 5, "n_qubits": 3, "n_layers": 2, **CPU}
 LAYER: dict[str, Any] = {"n_qubits": 3, "n_layers": 2, **CPU}
+
+#: A seed other than ``SEED``, so an ``init_seed`` that fell back to the
+#: global RNG (seeded with ``SEED`` in :func:`summarise`) would not match.
+INIT_SEED = 7
 
 #: name -> (builder, width of the fixed input)
 CONFIGS: dict[str, tuple[Callable[[], nn.Module], int]] = {
@@ -79,6 +91,10 @@ CONFIGS: dict[str, tuple[Callable[[], nn.Module], int]] = {
         5,
     ),
     "serial-dropout": (lambda: HybridBinaryClassifier(**CLASSIFIER, dropout_p=0.2), 5),
+    "serial-init-seed": (
+        lambda: HybridBinaryClassifier(**CLASSIFIER, init_seed=INIT_SEED),
+        5,
+    ),
     # The parallel classifier: its MLP branch is built first and initialised
     # with its own scheme.
     "parallel": (lambda: ParallelHybridClassifier(**CLASSIFIER), 5),
@@ -94,6 +110,10 @@ CONFIGS: dict[str, tuple[Callable[[], nn.Module], int]] = {
         ),
         5,
     ),
+    "parallel-init-seed": (
+        lambda: ParallelHybridClassifier(**CLASSIFIER, init_seed=INIT_SEED),
+        5,
+    ),
     # The multiclass classifier.
     "multiclass": (lambda: MulticlassHybridClassifier(**CLASSIFIER, n_classes=3), 5),
     "multiclass-ovr-iqp": (
@@ -104,6 +124,16 @@ CONFIGS: dict[str, tuple[Callable[[], nn.Module], int]] = {
     ),
     "multiclass-normal-init": (
         lambda: MulticlassHybridClassifier(**CLASSIFIER, init_strategy="normal", init_std=0.2),
+        5,
+    ),
+    "multiclass-init-seed": (
+        lambda: MulticlassHybridClassifier(**CLASSIFIER, n_classes=3, init_seed=INIT_SEED),
+        5,
+    ),
+    # The classical control (#178), initialised like the hybrid heads.
+    "classical-baseline": (lambda: ClassicalBaseline(5, [6, 4]), 5),
+    "classical-baseline-init-seed": (
+        lambda: ClassicalBaseline(5, [6, 4], init_seed=INIT_SEED),
         5,
     ),
     # The encoding layers on their own: TorchLayer's own initialisation.

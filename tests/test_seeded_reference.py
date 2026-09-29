@@ -93,3 +93,17 @@ def test_the_summary_is_sensitive_to_one_extra_draw() -> None:
         assert _compare(key, shifted["state_dict"][key], want), key
         moved += 1
     assert moved >= 3  # encoder, circuit and head weights
+
+
+@pytest.mark.parametrize("name", sorted(n for n in CONFIGS if n.endswith("-init-seed")))
+def test_init_seed_configurations_ignore_the_global_rng(name: str) -> None:
+    # The *-init-seed entries pin the private-RNG path (#175): an extra draw
+    # before construction must leave them exactly where they are.
+    baseline = summarise(name)
+    build, width = CONFIGS[name]
+    try:
+        CONFIGS[name] = (lambda: (torch.rand(1), build())[1], width)
+        shifted = summarise(name)
+    finally:
+        CONFIGS[name] = (build, width)
+    assert shifted == baseline
