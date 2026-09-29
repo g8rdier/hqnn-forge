@@ -438,7 +438,8 @@ def _make_angle_embedding_circuit(
     n_layers:
         Number of variational layers L.  Depth = O(n_qubits * n_layers).
     rotation:
-        Pauli axis used by AngleEmbedding: ``"X"`` | ``"Y"`` | ``"Z"``.
+        Pauli axis used by AngleEmbedding: ``"X"`` | ``"Y"``.
+        :func:`build_encoding_qnode` refuses ``"Z"``, a phase on ``|0⟩``.
     entangler:
         ``"ring"`` (steps 2 and 3 above), ``"strongly_entangling"``
         (``qml.StronglyEntanglingLayers``: Rot first, then a CNOT ring of
