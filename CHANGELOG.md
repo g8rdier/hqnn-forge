@@ -123,6 +123,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   angles, and the new `GradientVarianceResult.per_tensor` maps each tensor to its variance.
   `per_parameter` keeps the weight tensor's shape for a single-tensor layer and is the flat
   concatenation otherwise
+
 ### Fixed
 - `circuit_summary` and `count_inert_parameters` raised `TypeError` with PennyLane's
   graph-based decomposition enabled (`qml.decomposition.enable_graph()`), which requires a
