@@ -185,7 +185,8 @@ rotation angle as one parameter, the same convention as the MCC/kParam figures, 
 models are compared at the same parameter budget. The serial model's control is one hidden
 layer in place of encoder, circuit and head; the parallel model's is its classical branch plus a
 head, widened to the matching width. The published SHNN's 122 parameters get a 121-parameter
-control. Switching a trained model's circuit off with `disable_quantum_layer` measures something
+control. A seeded hybrid (`init_seed`) gets a control seeded with the same seed.
+Switching a trained model's circuit off with `disable_quantum_layer` measures something
 else, how much that model depends on the circuit.
 
 ---

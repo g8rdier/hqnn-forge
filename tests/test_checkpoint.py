@@ -655,6 +655,7 @@ CONSTRUCTOR_ARGS = {
         "hidden_dims",
         "activation",
         "dropout_p",
+        "init_seed",
     },
 }
 
@@ -704,6 +705,7 @@ FIRST_CHECKPOINTED_ARGS = {
         "hidden_dims",
         "activation",
         "dropout_p",
+        "init_seed",
     },
 }
 

@@ -76,7 +76,11 @@ unit adds: ``(n_in + 2) / 2`` for the serial control, ``(2w + n_in + 4) / 2``
 for the parallel one.  At 30 features, 8 qubits and 2 layers that bound is
 5.2% of the serial model's 305 parameters (the control has 289) and 3.4% of
 the parallel model's 1089 (the control has 1061); the published SHNN's 122
-get a 121-parameter control.  ``dropout_p`` is carried over.
+get a 121-parameter control.  ``dropout_p`` is carried over, and so is
+``init_seed``: a seeded hybrid gets a control seeded with the same seed, so the
+pair is reproducible without touching the global torch RNG (#175), and an
+unseeded one gets a control drawn from the global RNG as before.  For another
+seed, rebuild it: ``ClassicalBaseline(**{**control.get_config(), "init_seed": s})``.
 """
 
 from __future__ import annotations
@@ -110,8 +114,8 @@ def classical_baseline(model: nn.Module) -> ClassicalBaseline:
     -------
     ClassicalBaseline
         With ``count_parameters()`` within half a width step of
-        ``model.count_parameters()``, and ``model``'s ``n_input_features`` and
-        ``dropout_p``.
+        ``model.count_parameters()``, and ``model``'s ``n_input_features``,
+        ``dropout_p`` and ``init_seed``.
 
     Raises
     ------
@@ -160,7 +164,11 @@ def classical_baseline(model: nn.Module) -> ClassicalBaseline:
     if width > 1 and target - count(width - 1) <= count(width) - target:
         width -= 1
     return ClassicalBaseline(
-        n_in, shape(width), activation=activation, dropout_p=config["dropout_p"]
+        n_in,
+        shape(width),
+        activation=activation,
+        dropout_p=config["dropout_p"],
+        init_seed=config["init_seed"],
     )
 
 

@@ -17,7 +17,7 @@ Dropout → Linear(h_k → 1)``, returning one raw logit per sample like every
 classifier in this package, so it trains under
 :func:`hqnn_forge.training.train_model` and scores through ``predict_proba``.
 Linear layers are initialised as in the hybrid classifiers: Xavier-uniform
-weights, zero biases.
+weights, zero biases, drawn from a private RNG when ``init_seed`` is given.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ import torch
 import torch.nn as nn
 
 from hqnn_forge.models.base import BinaryClassifierBase
+from hqnn_forge.utils.rng import as_seed, seeded_rng
 
 _ACTIVATIONS = {"relu": nn.ReLU, "tanh": nn.Tanh}
 
@@ -53,6 +54,11 @@ class ClassicalBaseline(BinaryClassifierBase):
         ``"relu"`` (default) or ``"tanh"``, after every hidden layer.
     dropout_p:
         Dropout before the output layer, in ``[0, 1)``.  Default: 0.0.
+    init_seed:
+        Seed for weight initialisation, as on the hybrid classifiers.  ``None``
+        (default) draws the initial weights from the global torch RNG; an int
+        draws them from a private RNG seeded with it, so the same seed gives
+        the same weights and the global RNG is left exactly as it was.
 
     Examples
     --------
@@ -68,36 +74,46 @@ class ClassicalBaseline(BinaryClassifierBase):
         *,
         activation: str = "relu",
         dropout_p: float = 0.0,
+        init_seed: int | None = None,
     ) -> None:
         super().__init__()
-        hidden = [int(h) for h in hidden_dims]
-        self._config = dict(
-            n_input_features=n_input_features,
-            hidden_dims=hidden,
-            activation=activation,
-            dropout_p=dropout_p,
-        )
-        if not hidden or min(hidden) < 1:
-            raise ValueError(f"hidden_dims must hold at least one width >= 1; got {hidden}.")
-        if activation not in _ACTIVATIONS:
-            raise ValueError(
-                f"activation must be one of {sorted(_ACTIVATIONS)}; got {activation!r}."
+        init_seed = as_seed(init_seed)
+        # As in the hybrid classifiers: the whole build runs inside seeded_rng,
+        # so a seeded model leaves the caller's stream where it was, also when
+        # a check below raises.
+        with seeded_rng(init_seed) as reseed:
+            hidden = [int(h) for h in hidden_dims]
+            self._config = dict(
+                n_input_features=n_input_features,
+                hidden_dims=hidden,
+                activation=activation,
+                dropout_p=dropout_p,
+                init_seed=init_seed,
             )
-        if not 0.0 <= dropout_p < 1.0:
-            raise ValueError(f"dropout_p must lie in [0, 1); got {dropout_p}.")
+            if not hidden or min(hidden) < 1:
+                raise ValueError(f"hidden_dims must hold at least one width >= 1; got {hidden}.")
+            if activation not in _ACTIVATIONS:
+                raise ValueError(
+                    f"activation must be one of {sorted(_ACTIVATIONS)}; got {activation!r}."
+                )
+            if not 0.0 <= dropout_p < 1.0:
+                raise ValueError(f"dropout_p must lie in [0, 1); got {dropout_p}.")
 
-        self.n_input_features = n_input_features
-        layers: list[nn.Module] = []
-        for w_in, w_out in itertools.pairwise([n_input_features, *hidden]):
-            layers += [nn.Linear(w_in, w_out), _ACTIVATIONS[activation]()]
-        self.body = nn.Sequential(*layers)
-        self.dropout = nn.Dropout(dropout_p) if dropout_p > 0 else nn.Identity()
-        self.head = nn.Linear(hidden[-1], 1)
+            self.n_input_features = n_input_features
+            layers: list[nn.Module] = []
+            for w_in, w_out in itertools.pairwise([n_input_features, *hidden]):
+                layers += [nn.Linear(w_in, w_out), _ACTIVATIONS[activation]()]
+            self.body = nn.Sequential(*layers)
+            self.dropout = nn.Dropout(dropout_p) if dropout_p > 0 else nn.Identity()
+            self.head = nn.Linear(hidden[-1], 1)
 
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                nn.init.zeros_(module.bias)
+            # nn.Linear's own init draws are all overwritten below; reseeding
+            # first makes the seeded weights independent of how many it took.
+            reseed()
+            for module in self.modules():
+                if isinstance(module, nn.Linear):
+                    nn.init.xavier_uniform_(module.weight)
+                    nn.init.zeros_(module.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Raw logits, shape ``(batch_size, 1)``."""

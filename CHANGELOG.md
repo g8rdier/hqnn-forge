@@ -73,7 +73,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ClassicalBaseline` (a plain MLP with the classifiers' interface) and
   `hqnn_forge.utils.classical_baseline(model)`, which builds the untrained classical control
   of a hybrid model with its trainable parameter count matched to the hybrid's, every rotation
-  angle counted as one parameter
+  angle counted as one parameter. `ClassicalBaseline` takes `init_seed` like the other
+  classifiers, and the builder carries the hybrid's `init_seed` over, so a seeded hybrid gets
+  a seeded control
 
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from

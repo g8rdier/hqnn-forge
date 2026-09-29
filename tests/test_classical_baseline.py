@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 import torch
 import torch.nn as nn
@@ -29,6 +30,10 @@ CPU: dict[str, Any] = dict(device_name="default.qubit", diff_method="backprop")
 
 def _hybrid(cls: type, **kwargs: Any) -> Any:
     return cls(**{"n_input_features": 30, "n_qubits": 8, "n_layers": 2, **CPU, **kwargs})
+
+
+def _same_weights(a: nn.Module, b: nn.Module) -> bool:
+    return all(torch.equal(x, y) for x, y in zip(a.state_dict().values(), b.state_dict().values()))
 
 
 def _step(control: ClassicalBaseline) -> int:
@@ -63,6 +68,28 @@ class TestClassicalBaseline:
     def test_invalid_arguments(self, kwargs: dict, match: str) -> None:
         with pytest.raises(ValueError, match=match):
             ClassicalBaseline(4, **kwargs)
+
+    def test_init_seed(self) -> None:
+        """As on the hybrid classifiers (#175): reproducible from the seed, the
+        global RNG left exactly as it was, and non-integers refused."""
+        torch.manual_seed(1)
+        a = ClassicalBaseline(4, [6, 2], init_seed=np.int64(3))  # type: ignore[arg-type]
+        torch.manual_seed(2)
+        before = torch.random.get_rng_state()
+        b = ClassicalBaseline(4, [6, 2], init_seed=3)
+        assert torch.equal(torch.random.get_rng_state(), before)
+        assert type(a.get_config()["init_seed"]) is int
+        assert _same_weights(a, b)
+        assert not _same_weights(a, ClassicalBaseline(4, [6, 2], init_seed=4))
+        with pytest.raises(TypeError, match="init_seed"):
+            ClassicalBaseline(4, [6], init_seed=1.5)  # type: ignore[arg-type]
+
+    def test_a_failed_build_leaves_the_global_rng_alone(self) -> None:
+        torch.manual_seed(123)
+        before = torch.random.get_rng_state()
+        with pytest.raises(ValueError, match="dropout_p"):
+            ClassicalBaseline(4, [6], dropout_p=1.0, init_seed=3)
+        assert torch.equal(torch.random.get_rng_state(), before)
 
     def test_checkpoint_round_trip(self, tmp_path: Path) -> None:
         model = ClassicalBaseline(4, [6, 2], activation="tanh", dropout_p=0.1).eval()
@@ -114,6 +141,30 @@ class TestBuilder:
         assert control.get_config()["n_input_features"] == 11
         assert control.get_config()["dropout_p"] == 0.2
 
+    def test_a_seeded_hybrid_gets_a_seeded_control(self, cls: type) -> None:
+        """The hybrid's init_seed is carried over: same weights whatever the
+        global state, and the global RNG is neither reseeded nor advanced."""
+        hybrid = _hybrid(cls, init_seed=7)
+        torch.manual_seed(1)
+        a = classical_baseline(hybrid)
+        torch.manual_seed(2)
+        before = torch.random.get_rng_state()
+        b = classical_baseline(hybrid)
+        assert torch.equal(torch.random.get_rng_state(), before)
+        assert a.get_config()["init_seed"] == 7
+        assert _same_weights(a, b)
+        assert _same_weights(a, ClassicalBaseline(**a.get_config()))
+
+    def test_an_unseeded_hybrid_gets_an_unseeded_control(self, cls: type) -> None:
+        hybrid = _hybrid(cls)
+        torch.manual_seed(5)
+        a = classical_baseline(hybrid)
+        torch.manual_seed(5)
+        b = classical_baseline(hybrid)
+        assert a.get_config()["init_seed"] is None
+        assert _same_weights(a, b)
+        assert not _same_weights(a, classical_baseline(hybrid))
+
     def test_it_trains(self, cls: type) -> None:
         g = torch.Generator().manual_seed(0)
         x = torch.randn(200, 30, generator=g)
@@ -141,6 +192,7 @@ class TestShapes:
             "hidden_dims": [9],
             "activation": "tanh",
             "dropout_p": 0.0,
+            "init_seed": None,
         }
 
     def test_parallel_is_the_widened_branch(self) -> None:
