@@ -425,6 +425,28 @@ class TestStructuralDiagonals:
         tape = _tape(circuit, [qml.expval(qml.PauliZ(0))])
         assert count_inert_parameters(tape) == 0
 
+    def test_a_wide_parameterless_gate_never_builds_its_matrix(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A 20-wire QFT's dense matrix would take 16 TiB; it counts as mixing.
+        widths: list[int] = []
+        real_matrix = qml.matrix
+
+        def spy(op: Any, *args: Any, **kwargs: Any) -> Any:
+            widths.append(len(op.wires))
+            return real_matrix(op, *args, **kwargs)
+
+        monkeypatch.setattr(qml, "matrix", spy)
+        tape = _tape(
+            lambda: (qml.RZ(_p(0.3), 0), qml.QFT(wires=range(20)), qml.RZ(_p(0.4), 0)),
+            [qml.expval(qml.PauliZ(0))],
+        )
+        assert count_inert_parameters(tape) == 1  # the trailing RZ only
+        assert all(w <= 6 for w in widths)
+        # A narrow parameterless diagonal gate is still judged by its matrix.
+        tape = _tape(lambda: (qml.RZ(_p(0.3), 0), qml.CCZ([0, 1, 2])), [qml.probs(wires=[0])])
+        assert count_inert_parameters(tape) == 1
+
 
 _GATES_1 = ["RX", "RY", "RZ", "PhaseShift", "Rot", "Hadamard", "S", "T"]
 _GATES_2 = ["CNOT", "CZ", "IsingZZ", "MultiRZ", "SWAP", "CRX", "CRZ", "ControlledPhaseShift"]

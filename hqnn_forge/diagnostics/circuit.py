@@ -254,8 +254,24 @@ def _z_only(pauli_rep: Any) -> bool:
     return all(set(word.values()) <= {"Z"} for word in pauli_rep)
 
 
-def _off_diagonal_zero(matrix: Any) -> bool:
-    """Every entry off the diagonal of a fixed (parameterless) matrix is zero."""
+#: Widest operator whose dense matrix the diagonality fallback builds: a
+#: ``2**n``-square matrix of a parameterless ``QFT`` on 16 wires alone would
+#: take 64 GiB.  A wider operator counts as not diagonal, which keeps the
+#: inert count a lower bound.
+_MATRIX_CHECK_MAX_WIRES = 6
+
+
+def _off_diagonal_zero(op: qml.operation.Operator) -> bool:
+    """
+    Every entry off the diagonal of the fixed (parameterless) matrix of ``op``
+    is zero; ``False`` when ``op`` has no matrix or is too wide to build one.
+    """
+    if len(op.wires) > _MATRIX_CHECK_MAX_WIRES:
+        return False
+    try:
+        matrix = qml.matrix(op, wire_order=op.wires)
+    except (qml.exceptions.MatrixUndefinedError, NotImplementedError):
+        return False
     arr = np.asarray(qml.math.to_numpy(matrix))
     return bool(np.all(np.abs(arr - np.diag(np.diag(arr))) < 1e-12))
 
@@ -271,7 +287,8 @@ def _is_diagonal_gate(op: qml.operation.Operator) -> bool:
     * a gate whose generator has only ``Z``/identity Pauli words
       (``CRZ``, ``ControlledPhaseShift``, ...), since then ``exp(-iθG)`` is
       diagonal for every ``θ``;
-    * a gate without parameters whose matrix is diagonal (``S``, ``CCZ``).
+    * a gate without parameters whose matrix is diagonal (``S``, ``CCZ``),
+      checked only up to ``_MATRIX_CHECK_MAX_WIRES`` wires.
 
     A parametrised gate is never judged by its matrix: at a particular value
     it can be diagonal by coincidence (``RX(0)`` is the identity), which says
@@ -289,10 +306,7 @@ def _is_diagonal_gate(op: qml.operation.Operator) -> bool:
         except (qml.exceptions.GeneratorUndefinedError, NotImplementedError, AttributeError):
             return False
         return rep is not None and _z_only(rep)
-    try:
-        return _off_diagonal_zero(qml.matrix(op, wire_order=op.wires))
-    except (qml.exceptions.MatrixUndefinedError, NotImplementedError):
-        return False
+    return _off_diagonal_zero(op)
 
 
 #: Measurements in the computational basis without an observable: they read
@@ -315,10 +329,7 @@ def _is_diagonal_measurement(measurement: qml.measurements.MeasurementProcess) -
     rep = obs.pauli_rep
     if rep is not None:
         return _z_only(rep)
-    try:
-        return _off_diagonal_zero(qml.matrix(obs, wire_order=obs.wires))
-    except (qml.exceptions.MatrixUndefinedError, NotImplementedError):
-        return False
+    return _off_diagonal_zero(obs)
 
 
 def count_inert_parameters(tape: qml.tape.QuantumScript) -> int:
@@ -355,7 +366,8 @@ def count_inert_parameters(tape: qml.tape.QuantumScript) -> int:
     A measurement counts as diagonal when every Pauli word of its observable
     is a product of ``Z`` (``Z(0)``, ``2 * Z(0)``, ``Z(0) + Z(1)``, nested
     products, ``Z(0) @ I(1)``; for an observable without a Pauli
-    representation, when its matrix is diagonal), and when it is a
+    representation, when its matrix is diagonal and it acts on at most
+    six wires), and when it is a
     computational-basis measurement without an observable (``probs``,
     ``sample``, ``counts``).  ``state``, ``density_matrix`` and any other
     measurement mark their wires as ``X``/``Y`` content, and a measurement
@@ -364,7 +376,8 @@ def count_inert_parameters(tape: qml.tape.QuantumScript) -> int:
     its wire, since its outcome may drive a conditional gate or be returned.
     Whether a gate is diagonal is decided structurally
     (:func:`_is_diagonal_gate`: its generator, a symbolic wrapper of a
-    diagonal gate, or the matrix of a gate without parameters), so
+    diagonal gate, or the matrix of a gate without parameters on at most
+    six wires, so a wide ``QFT`` never builds its dense matrix), so
     ``CRZ``, ``ControlledPhaseShift``, ``Adjoint(RZ)`` or a conditional
     ``RZ`` count as diagonal.  Gates that are neither diagonal nor ``CNOT``
     nor ``Rot`` are treated as fully mixing, which keeps the count a lower
