@@ -89,6 +89,7 @@ References
 
 from __future__ import annotations
 
+import numbers
 from collections.abc import Callable
 
 import pennylane as qml
@@ -159,7 +160,11 @@ def _prepare(X: torch.Tensor, prepare: PrepareInputs, name: str) -> torch.Tensor
 
 
 def _check_batch_size(batch_size: int | None) -> None:
-    if batch_size is not None and (isinstance(batch_size, bool) or batch_size < 1):
+    if batch_size is not None and (
+        isinstance(batch_size, bool)
+        or not isinstance(batch_size, numbers.Integral)
+        or batch_size < 1
+    ):
         raise ValueError(f"batch_size must be a positive integer or None; got {batch_size!r}.")
 
 
@@ -175,17 +180,19 @@ def _simulate(
 
     With ``differentiable`` the layer's weights are not detached and the
     replay runs under backprop, so the states carry gradients to them.  With
-    ``batch_size`` the rows are replayed that many at a time and the states
-    joined, so the simulator's working memory scales with ``batch_size``
-    rather than with the number of rows.
+    ``batch_size`` the rows are replayed that many at a time and written into
+    one preallocated output, so the simulator's working memory scales with
+    ``batch_size`` rather than with the number of rows.  (Joining a list of
+    slices with ``torch.cat`` would hold every slice and the joined copy at
+    once, twice the states.)
     """
-    if batch_size is not None and batch_size < prepared.shape[0]:
-        return torch.cat(
-            [
-                _simulate(prepared[start : start + batch_size], qlayer, n_qubits, differentiable)
-                for start in range(0, prepared.shape[0], batch_size)
-            ]
-        )
+    n_rows = prepared.shape[0]
+    if batch_size is not None and batch_size < n_rows:
+        states = torch.empty(n_rows, 2**n_qubits, dtype=torch.complex128)
+        for start in range(0, n_rows, batch_size):
+            stop = start + batch_size
+            states[start:stop] = _simulate(prepared[start:stop], qlayer, n_qubits, differentiable)
+        return states
     # One tape for the whole batch from the layer's own QNode (level=0: the
     # circuit as written, before any batching or gradient transform), with the
     # measurements swapped for the state and run on a state-vector device,
@@ -216,8 +223,9 @@ def encoded_states(
     ``X`` first goes through the layer's ``prepare_inputs``, the validation and
     classical transform ``forward`` applies before its QNode (a width check,
     and for the amplitude encoder padding and normalisation).  The layer's
-    circuit is then replayed on ``default.qubit`` for the whole batch at once,
-    with its measurements replaced by ``qml.state()``.
+    circuit is then replayed on ``default.qubit`` for the whole batch at once
+    (or ``batch_size`` rows at a time), with its measurements replaced by
+    ``qml.state()``.
 
     Compute the states once and pass them to :func:`kernel_from_states` to
     reuse them, for example the training states at every prediction.
@@ -240,7 +248,9 @@ def encoded_states(
         ``batch_size`` rows.  The returned states still take
         ``M · 2**n_qubits · 16`` bytes.  All of ``X`` is validated before the
         first batch runs.  ``None`` (default): one pass.  The result is the
-        same either way.
+        same either way.  With ``differentiable=True`` the bound does not
+        hold: autograd keeps every batch's per-gate intermediates until
+        ``backward``, so the graph takes as much memory as a single pass.
 
     Returns
     -------
@@ -255,7 +265,7 @@ def encoded_states(
     ValueError
         If ``X`` is not a non-empty 2-D tensor, contains NaN or ±inf, or
         ``prepare_inputs`` rejects it (wrong number of features, an all-zero
-        amplitude vector).
+        amplitude vector), or if ``batch_size`` is not a positive integer.
     RuntimeError
         If the layer's QNode carries a transform other than
         ``broadcast_expand``, for example inside
@@ -414,7 +424,7 @@ def quantum_kernel_matrix(
     side by side, about ``24 n²`` bytes, which is 9.6 GB at ``n = 20,000``.
     The states take ``(n_x + n_y) · 2^q · 16`` bytes more, and simulating them
     in one pass a multiple of that; ``batch_size`` bounds the simulation
-    part.  For larger training sets, compute :func:`encoded_states` once and
+    part (not with ``differentiable=True``, see :func:`encoded_states`).  For larger training sets, compute :func:`encoded_states` once and
     build the matrix in row blocks with :func:`kernel_from_states`, so the
     full matrix is never held as a complex Gram product::
 

@@ -912,7 +912,7 @@ class TestBatchedSimulation:
 
         torch.testing.assert_close(grads(2), grads(None), rtol=0, atol=1e-15)
 
-    @pytest.mark.parametrize("batch_size", [0, -3, True])
+    @pytest.mark.parametrize("batch_size", [0, -3, True, 2.5])
     def test_rejected_batch_size(self, batch_size: int) -> None:
         with pytest.raises(ValueError, match="batch_size must be a positive integer"):
             encoded_states(_angles(3), _angle_layer(), batch_size=batch_size)
