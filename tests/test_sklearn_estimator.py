@@ -483,6 +483,33 @@ class TestCalibration:
         ).threshold
         assert est.threshold_ == pytest.approx(expected)
 
+    def test_a_decreasing_platt_map_under_a_loss_monitor_keeps_one_half(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # val_loss searches no threshold, so there is no metric to search again
+        # with: the 0.5 fallback applies to the calibrated probabilities.
+        from hqnn_forge import sklearn as est_module
+
+        monkeypatch.setattr(
+            est_module.PlattScaler, "fit", classmethod(lambda cls, z, y: cls(-1.0, 0.0))
+        )
+        X, _ = self._noisy_data()
+        est = self._fit("platt", monitor="val_loss")
+        assert est.threshold_ == 0.5
+        np.testing.assert_array_equal(
+            est.predict(X), est.classes_[(est.predict_proba(X)[:, 1] >= 0.5).astype(int)]
+        )
+
+    def test_pickle_keeps_the_fitted_calibrator(self) -> None:
+        X, _ = self._noisy_data()
+        est = self._fit("platt")
+        loaded = pickle.loads(pickle.dumps(est))
+        assert (loaded.calibrator_.a, loaded.calibrator_.b) == (
+            est.calibrator_.a,
+            est.calibrator_.b,
+        )
+        np.testing.assert_array_equal(loaded.predict_proba(X), est.predict_proba(X))
+
     def test_fixed_threshold_applies_to_calibrated_probabilities(self) -> None:
         X, _ = self._noisy_data()
         est = self._fit("temperature", threshold=0.5)

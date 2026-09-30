@@ -113,7 +113,8 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         exactly what it would uncalibrated.  A Platt slope ≤ 0 (a model
         anti-correlated with the labels) reverses the order instead, and the
         threshold is then searched again on the calibrated validation
-        probabilities.  A fixed threshold applies to the calibrated
+        probabilities (under ``monitor="val_loss"``, which searches none,
+        0.5 applies to them).  A fixed threshold applies to the calibrated
         probabilities as given.
     random_state:
         Seeds weight initialisation, dropout, the validation split and batch
@@ -335,9 +336,12 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
                     # A decreasing map reverses the order, so the old
                     # threshold has no image: search again, as train_model
                     # did, on the probabilities predict will now threshold.
-                    threshold = find_optimal_threshold(
-                        val[1].long(), calibrator(val_logits), metric=self.monitor
-                    ).threshold
+                    # A loss monitor has no metric to search, so the 0.5
+                    # fallback applies to the calibrated probabilities.
+                    if self.monitor != "val_loss":
+                        threshold = find_optimal_threshold(
+                            val[1].long(), calibrator(val_logits), metric=self.monitor
+                        ).threshold
                 else:
                     # An increasing map: the threshold's image splits every
                     # input exactly as before, so calibration changes the
