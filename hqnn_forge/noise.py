@@ -91,7 +91,7 @@ Two methods, chosen with ``noise_method``:
     ``p = 0.01``, and with noise only before measurement, trajectory
     training matched the density channel; at ``p = 0.05`` after every gate
     it collapsed in 3 of 20 runs (``k = 1`` twice, ``k = 4`` once), density
-    in none.  A follow-up over 10 seeds (#347,
+    in none.  A follow-up on the same data over 10 seeds (#347,
     ``docs/results/trajectory-collapse-study.md``) found that
     ``noise_trajectories = 8`` removes the collapses (0 of 100 runs across
     five training variants, against 10 of 100 at ``k = 1`` and 6 of 100 at
@@ -99,8 +99,8 @@ Two methods, chosen with ``noise_method``:
     clipping and a noise warm-up do not reliably help.  On ``default.qubit``
     with backprop the draws run as one batch, so ``k = 8`` cost 1.1 to 1.4
     times ``k = 1`` at 4 and 6 qubits; on the adjoint path each sample runs
-    separately and it costs about 8 times, which is why the default stays
-    1.  So keep ``"density"`` where it fits (up to about 6 qubits), and
+    separately, so it is expected to cost about 8 times (not measured),
+    which is why the default stays 1.  So keep ``"density"`` where it fits (up to about 6 qubits), and
     beyond that use ``"trajectories"`` with ``noise_trajectories ≥ 8``.
 
     The Pauli at a site is applied as ``RZ(π·z)`` then ``RX(π·x)`` with bits

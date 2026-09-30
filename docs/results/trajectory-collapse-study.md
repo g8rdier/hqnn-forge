@@ -66,14 +66,16 @@ Median seconds per run at lr 0.05. They are comparable within this table only (1
 No run collapsed at p = 0.01 after every gate or at p = 0.05 before measurement, at any k.
 Mean test MCC under noise, against #311's density runs:
 
-| p | position | qubits | density (5 seeds) | k = 1 | k = 4 | k = 8 |
+| p | position | qubits | density (5 seeds) | k = 1 (10 seeds) | k = 4 (10 seeds) | k = 8 (10 seeds) |
 |---|---|---|---|---|---|---|
 | 0.01 | all | 4 | 0.861 | 0.894 | 0.895 | 0.869 |
 | 0.01 | all | 6 | 0.876 | 0.906 | 0.899 | 0.879 |
 | 0.05 | end | 4 | 0.839 | 0.884 | 0.888 | 0.895 |
 | 0.05 | end | 6 | 0.890 | 0.877 | 0.893 | 0.910 |
 
-Paired by seed against density, k = 8's mean difference lies between −0.012 and +0.058.
+The density means cover #311's seeds 0 to 4, the trajectory means seeds 0 to 9, so the columns
+are not directly comparable. Paired by seed against density (seeds 0 to 4 only), k = 8's mean
+difference lies between −0.012 and +0.058.
 
 ## What this shows
 
@@ -106,14 +108,17 @@ that re-run is #414.
 
 ## Recommendation
 
+On the evidence above (breast-cancer proxy, 4 and 6 qubits, backprop; the benchmark re-run is
+#414):
+
 - **Train with `noise_trajectories ≥ 8`** when using `noise_method="trajectories"` at noise of a
-  few percent per gate. On backprop devices it costs little more than k = 1.
+  few percent per gate. On backprop devices it cost little more than k = 1 here.
 - **Keep lr 0.05**; don't lower it to stabilise trajectory training.
 - **Warm-up and clipping aren't worth adding to the library** on this evidence: k = 8 does
   better alone, and adds no option.
 - **The default stays `noise_trajectories=1`.** On the adjoint path, which
   `device_name="auto"` picks above 12 qubits (#349), each sample runs separately, so k = 8
-  costs about 8× there. This study measured only 4 and 6 qubits on backprop, so it does not
+  is expected to cost about 8× there (not measured). This study measured only 4 and 6 qubits on backprop, so it does not
   justify that cost as a default. The recommendation is in the `hqnn_forge.noise` docstring.
 - **`density` remains the default** noise method where it fits (up to about 6 qubits).
 
