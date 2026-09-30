@@ -152,7 +152,8 @@ def train_model(
         (multiclass).
     loss_fn:
         ``loss_fn(logits, targets) -> scalar``, e.g. ``FocalLoss()`` or
-        ``nn.BCEWithLogitsLoss()``.  Targets are passed as float.  Mean
+        ``nn.BCEWithLogitsLoss()``.  Targets are passed as float for a binary
+        model and as integer class indices for a multiclass one.  Mean
         reduction is assumed for the reported ``train_loss``, which averages
         the batch losses weighted by batch size; with ``reduction="sum"``
         training is unaffected but ``train_loss`` is comparable neither
@@ -261,7 +262,8 @@ def train_model(
             for start, stop in itertools.pairwise(bounds):
                 idx = perm[start:stop]
                 optimizer.zero_grad()
-                loss = loss_fn(_logits(model, X_train[idx]), y_train[idx])
+                logits = _logits(model, X_train[idx])
+                loss = loss_fn(logits, _target(logits, y_train[idx]))
                 loss.backward()
                 optimizer.step()
                 total += loss.item() * idx.numel()

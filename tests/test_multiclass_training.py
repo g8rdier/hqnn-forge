@@ -7,6 +7,7 @@ model, and the scikit-learn estimator with more than two classes (#309).
 
 from __future__ import annotations
 
+import pickle
 import warnings
 from typing import Any
 
@@ -267,3 +268,49 @@ def test_the_holdout_stratifies_every_class() -> None:
     train, val = HybridClassifierEstimator._stratified_holdout(y, 0.25, np.random.default_rng(0))
     assert np.intersect1d(train, val).size == 0 and train.size + val.size == y.size
     np.testing.assert_array_equal(np.bincount(y[val]), [5, 3, 2, 10])
+
+
+def test_non_contiguous_integer_labels_round_trip() -> None:
+    X, y = _blobs()
+    labels = np.array([10, -3, 7])[y]
+    est = HybridClassifierEstimator(**FAST).fit(X, labels)
+    np.testing.assert_array_equal(est.classes_, [-3, 7, 10])
+    assert est.predict(X).dtype == labels.dtype
+    assert est.score(X, labels) > 0.8
+
+
+@pytest.mark.parametrize("strategy", ["softmax", "one_vs_rest"])
+def test_fitted_multiclass_estimator_pickles(strategy: Any) -> None:
+    X, y = _blobs()
+    est = HybridClassifierEstimator(**{**FAST, "max_epochs": 2}, strategy=strategy).fit(X, y)
+    loaded = pickle.loads(pickle.dumps(est))
+    assert isinstance(loaded.model_, MulticlassHybridClassifier)
+    assert loaded.model_.strategy == strategy
+    np.testing.assert_array_equal(loaded.predict_proba(X), est.predict_proba(X))
+    np.testing.assert_array_equal(loaded.predict(X), est.predict(X))
+
+
+def test_train_model_casts_integer_binary_labels_for_bce() -> None:
+    # Labels are cast per loss call; a binary model given integer labels must
+    # still train (BCEWithLogitsLoss rejects integer targets) and match the
+    # same run on float labels exactly.
+    rng = np.random.default_rng(0)
+    X = torch.tensor(rng.standard_normal((40, 2)), dtype=torch.float32)
+    y = (X[:, 0] > 0).long()
+    runs = []
+    for labels in (y, y.float()):
+        torch.manual_seed(0)
+        model = nn.Linear(2, 1)
+        history = train_model(
+            model,
+            nn.BCEWithLogitsLoss(),
+            torch.optim.SGD(model.parameters(), lr=0.1),
+            X,
+            labels,
+            X,
+            labels,
+            max_epochs=3,
+            generator=torch.Generator().manual_seed(0),
+        )
+        runs.append([(r.train_loss, r.val_loss) for r in history.epochs])
+    assert runs[0] == runs[1]
