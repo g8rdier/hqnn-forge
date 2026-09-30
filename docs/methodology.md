@@ -44,9 +44,12 @@ would measure a model trained *with* the circuit, not what a classical model ach
   `count_parameters()`, ties to the smaller model, so the two differ by at most half a width
   step. `dropout_p` is carried over.
 - **Which count.** Matching uses the *total* trainable count, including circuit parameters
-  that can never reach the measurement. The published SHNN has 122 trainable parameters of
-  which 102 are live (#234); `circuit_summary(...).n_inert_params` gives the inert ones, and
-  efficiency over the live count is reported only when stated.
+  that can never reach the measurement: the published SHNN's 122 get a 121-parameter control.
+  `circuit_summary(...).n_inert_params` counts the structurally inert ones (16 of the
+  published SHNN's 122; by gradient, 102 of them are live, #234). #293 changes the match to
+  the live count, `count_parameters() - circuit_summary(model).n_inert_params`, which gives
+  the published SHNN a 101-parameter control; efficiency figures keep the total. Update this
+  bullet when it merges.
 
 ## Data handling
 
