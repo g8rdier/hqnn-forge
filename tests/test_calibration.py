@@ -211,6 +211,23 @@ class TestTrainingHistory:
         )
         assert history.temperature is None
 
+    def test_none_for_soft_validation_targets(self) -> None:
+        x, y = self._data()
+        soft = y * 0.9 + 0.05
+        model = nn.Linear(3, 1)
+        history = train_model(
+            model,
+            nn.BCEWithLogitsLoss(),
+            torch.optim.SGD(model.parameters(), lr=0.1),
+            x[:150],
+            soft[:150],
+            x[150:],
+            soft[150:],
+            monitor="val_loss",
+            max_epochs=2,
+        )
+        assert history.n_epochs == 2 and history.temperature is None
+
 
 class TestBenchmark:
     def test_fit_and_score_reports_the_test_probabilities_calibration(self) -> None:
