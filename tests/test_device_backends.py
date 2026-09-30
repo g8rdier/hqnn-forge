@@ -110,11 +110,10 @@ class TestFallbackChain:
         assert "lightning.qubit" in messages[1] and "default.qubit" in messages[1]
         assert "Install pennylane-lightning" in messages[1]
 
+    @pytest.mark.requires_lightning
     def test_missing_gpu_backend_stops_at_lightning_when_it_works(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        if not _available("lightning.qubit"):
-            pytest.skip("pennylane-lightning not installed")
         monkeypatch.setattr(ae.qml, "device", _failing_device({"lightning.kokkos": RuntimeError}))
         with pytest.warns(
             RuntimeWarning, match="lightning.kokkos.*Falling back to 'lightning.qubit'"
