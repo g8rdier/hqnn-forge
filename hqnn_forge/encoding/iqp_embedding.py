@@ -225,15 +225,17 @@ class IQPEncodingLayer(nn.Module):
         return self.qlayer(x)
 
     def extra_repr(self) -> str:
-        noise = (
-            f", noise_level={self.noise_level}, noise_position={self.noise_position!r}"
-            f"{_noise_method_repr(self.noise_method, self.noise_trajectories)}"
-            if self.noise_level
-            else ""
-        )
+        options = ""
+        if self.entangler != "ring":
+            options += f", entangler={self.entangler!r}"
+        if self.readout != "all":
+            options += f", readout={self.readout!r}"
+        if self.noise_level:
+            options += f", noise_level={self.noise_level}, noise_position={self.noise_position!r}"
+            options += _noise_method_repr(self.noise_method, self.noise_trajectories)
         return (
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "
             f"n_repeats={self.n_repeats}, "
-            f"n_params={self.n_layers * self.n_qubits * 3}{noise}"
+            f"n_params={self.n_layers * self.n_qubits * 3}{options}"
         )

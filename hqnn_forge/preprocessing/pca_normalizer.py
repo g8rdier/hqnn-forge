@@ -116,7 +116,8 @@ class PCANormalizer:
     >>> rng = np.random.default_rng(42)
     >>> X_train = rng.standard_normal((1000, 30))  # 1000 samples, 30 raw features
     >>> pca = PCANormalizer(n_components=8)
-    >>> pca.fit(X_train)
+    >>> pca.fit(X_train)  # returns the fitted normaliser
+    PCANormalizer(n_components=8, scale_to_pi=True, status=fitted)
     >>> X_enc = pca.transform(X_train)  # torch.Tensor, shape (1000, 8)
     >>> X_enc.shape
     torch.Size([1000, 8])

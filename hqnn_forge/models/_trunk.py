@@ -35,6 +35,7 @@ from hqnn_forge.initializers.restricted_variance import (
     block_local_init_,
     restricted_normal_init_,
 )
+from hqnn_forge.models.base import custom_encoder
 from hqnn_forge.noise import NoiseMethod, Position
 
 #: Constructor defaults that mark an option as "not asked for".  Both options
@@ -89,6 +90,7 @@ class QuantumTrunk(nn.Module):
     init_std: float
     use_classical_encoder: bool
     encoder_activation: str
+    _custom_encoder_ids: frozenset[int]
 
     def _build_trunk(
         self,
@@ -111,9 +113,14 @@ class QuantumTrunk(nn.Module):
         noise_position: Position,
         noise_method: NoiseMethod,
         noise_trajectories: int,
+        classical_encoder: nn.Module | None,
     ) -> int:
         """
         Build ``classical_encoder``, ``quantum_layer`` and ``dropout`` on ``self``.
+
+        A custom ``classical_encoder`` module is wrapped with the activation
+        and recorded in ``_custom_encoder_ids``, so the model's classical init
+        leaves it as given (it may be pretrained).
 
         Returns the quantum layer's readout width, which the head reads.
         Raises ``ValueError`` for an inconsistent option.
@@ -132,7 +139,17 @@ class QuantumTrunk(nn.Module):
         self.init_std = init_std
 
         # ── Classical encoder ─────────────────────────────────────────────
-        if use_classical_encoder:
+        if classical_encoder is not None:
+            if not use_classical_encoder:
+                raise ValueError(
+                    "classical_encoder replaces the built-in encoder and needs "
+                    "use_classical_encoder=True; use_classical_encoder=False feeds the "
+                    "input to the circuit directly, with no encoder at all."
+                )
+            self.classical_encoder = custom_encoder(
+                classical_encoder, n_input_features, n_qubits, encoder_activation
+            )
+        elif use_classical_encoder:
             self.classical_encoder = nn.Sequential(
                 nn.Linear(n_input_features, n_qubits),
                 nn.Tanh() if encoder_activation == "tanh" else nn.Sigmoid(),
@@ -190,6 +207,9 @@ class QuantumTrunk(nn.Module):
 
         # ── Dropout ───────────────────────────────────────────────────────
         self.dropout = nn.Dropout(p=dropout_p) if dropout_p > 0.0 else nn.Identity()
+        self._custom_encoder_ids = frozenset(
+            map(id, classical_encoder.modules()) if classical_encoder is not None else ()
+        )
         return self.quantum_layer.n_outputs
 
     # ------------------------------------------------------------------

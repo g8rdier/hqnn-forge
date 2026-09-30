@@ -189,3 +189,21 @@ class TestOneImplementation:
         for cls in MODELS:
             assert isinstance(_build(cls).dropout, nn.Identity)
             assert isinstance(_build(cls, dropout_p=0.3).dropout, nn.Dropout)
+
+
+@pytest.mark.parametrize("cls", MODELS)
+def test_every_model_keeps_a_custom_encoder_as_given(cls: type) -> None:
+    # The trunk owns the custom encoder, so the multiclass model gets it too,
+    # and no model's classical init overwrites its (possibly pretrained) weights.
+    encoder = nn.Linear(5, 3)
+    with torch.no_grad():
+        encoder.weight.fill_(0.25)
+        encoder.bias.fill_(-0.5)
+    model = _build(cls, classical_encoder=encoder, init_seed=3)
+    assert model.classical_encoder[0] is encoder
+    assert torch.equal(encoder.weight, torch.full((3, 5), 0.25))
+    assert torch.equal(encoder.bias, torch.full((3,), -0.5))
+    x = _input(model)
+    with torch.no_grad():
+        expected = model.quantum_layer(torch.tanh(encoder(x)) * torch.pi)
+        torch.testing.assert_close(model._quantum_features(x), expected, rtol=0, atol=0)
