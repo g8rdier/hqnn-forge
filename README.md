@@ -274,7 +274,10 @@ Options shared by both models:
 - `published_shnn()` on either class builds the configuration published in the thesis and in
   `hqnn-fraud-detection-benchmark`: 8 qubits, 2 layers, RY embedding, strongly-entangling
   ansatz, ⟨Z_0⟩ readout, sigmoid encoder, `N(0, 0.1²)` init — 122 trainable parameters for the
-  serial model. Keyword arguments override it.
+  serial model, of which **102 are live**: with the ⟨Z_0⟩ readout, 20 quantum weights can never
+  move the output. They are kept, so the published model and its checkpoints stay as published,
+  and both counts are reported; parameter-efficiency figures use the total unless stated
+  (4.72 MCC/kParam published, 5.65 over the live 102). Keyword arguments override it.
 - `use_classical_encoder=False` to feed features already scaled into (-π, π), for example from
   `PCANormalizer(scale_to_pi=True)`, straight into the circuit. `n_input_features` must then
   equal `n_qubits`.
@@ -285,12 +288,16 @@ Options shared by both models:
 
 `hqnn_forge.utils.classical_baseline(model)` builds the classical model a hybrid result should
 be compared with: an untrained `ClassicalBaseline` MLP, to be trained from scratch on the same
-data. Its trainable parameter count is matched to `model.count_parameters()`, which counts every
-rotation angle as one parameter, the same convention as the MCC/kParam figures, so the two
-models are compared at the same parameter budget. The serial model's control is one hidden
-layer in place of encoder, circuit and head; the parallel model's is its classical branch plus a
-head, widened to the matching width. The published SHNN's 122 parameters get a 121-parameter
-control. A seeded hybrid (`init_seed`) gets a control seeded with the same seed.
+data. Its trainable parameter count is matched to the hybrid's **live** count,
+`model.count_parameters()` minus the circuit weights that can never move the output
+(`circuit_summary(model).n_inert_params`), with every other rotation angle counted as one
+parameter, so the two models are compared at the same usable parameter budget. The serial
+model's control is one hidden layer in place of encoder, circuit and head; the parallel model's
+is its classical branch plus a head, widened to the matching width. The published SHNN's 122
+parameters, 102 of them live, get a 101-parameter control; matched on the total it would get
+121. The structural inert count is a lower bound (16 of the 20 here), so the control is never
+smaller than an exact live match would make it. Efficiency figures (MCC/kParam) still use the
+total. A seeded hybrid (`init_seed`) gets a control seeded with the same seed.
 Switching a trained model's circuit off with `disable_quantum_layer` measures something
 else, how much that model depends on the circuit.
 
