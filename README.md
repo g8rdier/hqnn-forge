@@ -421,3 +421,5 @@ and versioning policy this project follows.
 - Holm (1979) — *A Simple Sequentially Rejective Multiple Test Procedure*
 - Nemenyi (1963) — *Distribution-Free Multiple Comparisons*
 - Bergholm et al. (2022) — *PennyLane: Automatic differentiation of hybrid quantum-classical computations*
+- Spall (1992) — *Multivariate stochastic approximation using a simultaneous perturbation gradient approximation*
+- Spall (1998) — *Implementation of the simultaneous perturbation algorithm for stochastic optimization*
