@@ -12,6 +12,8 @@ abstract: >-
   PyTorch models) with matched classical controls, imbalance-aware training and
   evaluation, and circuit diagnostics.
 authors:
+  - family-names: "Kobilarov"
+    given-names: "Gregor"
   - name: "HQNN-Forge Contributors"
 version: 0.1.0
 license: Apache-2.0
