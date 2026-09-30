@@ -112,6 +112,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Quantum kernels under depolarising noise: `noise_level`/`noise_position` on
   `quantum_kernel_matrix` give the Hilbert–Schmidt kernel `Tr[ρ(x)ρ(y)]` with the same channel
   insertion as `hqnn_forge.noise`; `encoded_density_matrices` and `kernel_from_density_matrices`
+- `hqnn_forge.sklearn.QuantumKernelClassifier`: an `SVC(kernel="precomputed")` on the fidelity
+  kernel of any encoding, with optional kernel-target alignment, depolarising noise and Platt
+  probabilities, for `cross_val_score`, `GridSearchCV` and `Pipeline`; not yet usable in
+  `run_benchmark` (#409)
 
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from
