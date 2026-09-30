@@ -314,3 +314,17 @@ def test_train_model_casts_integer_binary_labels_for_bce() -> None:
         )
         runs.append([(r.train_loss, r.val_loss) for r in history.epochs])
     assert runs[0] == runs[1]
+
+
+def test_train_model_rejects_fractional_multiclass_labels() -> None:
+    # Class indices are cast with .long(), which truncates: a soft label of
+    # 1.7 would silently train as class 1.  Whole-valued float labels are fine.
+    X = torch.randn(30, 2)
+    model = nn.Linear(2, 3)
+    opt = torch.optim.SGD(model.parameters(), lr=0.1)
+    y = torch.arange(30) % 3
+    with pytest.raises(ValueError, match="integer class labels"):
+        train_model(model, nn.CrossEntropyLoss(), opt, X, y.float() + 0.5, max_epochs=1)
+    with pytest.raises(ValueError, match="integer class labels"):
+        train_model(model, nn.CrossEntropyLoss(), opt, X, y, X, y.float() + 0.5, max_epochs=1)
+    train_model(model, nn.CrossEntropyLoss(), opt, X, y.float(), X, y.float(), max_epochs=1)

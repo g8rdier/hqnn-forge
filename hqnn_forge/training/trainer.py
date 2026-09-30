@@ -113,7 +113,16 @@ def _logits(model: nn.Module, x: torch.Tensor) -> torch.Tensor:
 
 def _target(logits: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     """Labels as the loss expects them: class indices for multiclass logits, else float."""
-    return y.long() if logits.ndim == 2 else y.float()
+    if logits.ndim == 1:
+        return y.float()
+    # .long() truncates, so a fractional (soft) label would silently become
+    # another class; only whole-valued labels are class indices.
+    if y.is_floating_point() and not torch.equal(y, torch.trunc(y)):
+        raise ValueError(
+            "a multiclass model needs integer class labels; got non-integer values "
+            "(soft or probabilistic targets are not supported)."
+        )
+    return y.long()
 
 
 def _check_pair(x: torch.Tensor, y: torch.Tensor, name: str) -> None:
