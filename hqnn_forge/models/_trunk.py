@@ -86,6 +86,7 @@ def _check_encoding_options(
     diff_method: str,
     embedding_rotation: str,
     trainable_input_scaling: bool,
+    shots: int | None = None,
 ) -> int:
     """
     Raise ``ValueError`` for an option ``encoding_type`` cannot use; return the
@@ -120,7 +121,13 @@ def _check_encoding_options(
                 f"encoding_type='amplitude' with a classical encoder trains the encoder "
                 f"through the amplitude embedding, whose input gradient is only correct "
                 f"under diff_method='backprop' (on default.qubit); got "
-                f"diff_method={diff_method!r}."
+                f"diff_method={diff_method!r}"
+                + (
+                    ", which shots require: backprop cannot run on samples.  Use "
+                    "shots=None, or use_classical_encoder=False."
+                    if shots is not None
+                    else "."
+                )
             )
         if not use_classical_encoder and not 1 <= n_input_features <= width:
             raise ValueError(
@@ -224,6 +231,7 @@ class QuantumTrunk(nn.Module):
             diff_method=diff_method,
             embedding_rotation=embedding_rotation,
             trainable_input_scaling=trainable_input_scaling,
+            shots=shots,
         )
 
         self.n_input_features = n_input_features

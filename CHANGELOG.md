@@ -123,12 +123,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as Adam from the same two evaluations, at no extra circuit executions (#316)
 
 ### Changed
-- `device_name` and `diff_method` default to `"auto"` everywhere (encoding layers, QNode
-  factories, classifiers, the scikit-learn estimator): `default.qubit` with backprop up to
-  12 qubits, `lightning.qubit` with adjoint above, parameter-shift with `shots`, and backprop
-  for amplitude encoding behind the classical encoder. The default was `lightning.qubit` with
-  adjoint, about 15× slower for batched training at the default 8 qubits (#312, #349).
-  Checkpoints record their explicit names and load unchanged.
+- **Behaviour change:** `device_name` and `diff_method` default to `"auto"` everywhere
+  (encoding layers, QNode factories, classifiers including `published_shnn()`, the
+  scikit-learn estimator): `default.qubit` with backprop up to 12 qubits, `lightning.qubit`
+  with adjoint above, parameter-shift with `shots`, and backprop for amplitude encoding behind
+  the classical encoder. The default was `lightning.qubit` with adjoint, about 15× slower for
+  batched training at the default 8 qubits (#312, #349). Outputs and gradients agree with the
+  old default to float32 rounding, but Adam can take different steps on inert weights (zero
+  gradient up to rounding), so training runs are not bit-identical to earlier ones; pass
+  `device_name="lightning.qubit", diff_method="adjoint"` to reproduce them. Checkpoints
+  written before this change record their explicit names and load unchanged; new ones record
+  `"auto"`, and the encoding layers' `repr` shows the device and method actually used.
 - `MulticlassHybridClassifier` builds the same encoder → circuit → dropout trunk as
   `HybridBinaryClassifier`, from shared code, so it now accepts every trunk option:
   `embedding_rotation`, `entangler`, `readout` (the head reads `Linear(n_outputs, n_classes)`),

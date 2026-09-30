@@ -63,6 +63,7 @@ from hqnn_forge.encoding._common import (
     Readout,
     RotationAxis,
     apply_variational_layers,
+    backend_repr,
     check_inputs,
     expand_batch_dimension,
     is_out_of_memory,
@@ -605,7 +606,7 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
             options += f", entangler={self.entangler!r}"
         if self.readout != "all":
             options += f", readout={self.readout!r}"
-        options += self._noise_repr() + shots_repr(self.shots)
+        options += self._noise_repr() + shots_repr(self.shots) + backend_repr(self.qlayer)
         return (
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "

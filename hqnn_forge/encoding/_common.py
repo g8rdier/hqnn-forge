@@ -53,7 +53,11 @@ FALLBACK_CHAIN: tuple[str, ...] = ("lightning.qubit", "default.qubit")
 #: fourfold per two qubits, has passed 1 GB against lightning's 22 MB.  At 13
 #: backprop was still faster (0.5 s against 0.9 s) but took +526 MB against
 #: +18 MB, so the switch comes one qubit early, to bound memory rather than to
-#: win the last bit of speed.
+#: win the last bit of speed.  Only batch 64 was measured: backprop's memory
+#: also grows with the batch (scaled linearly, the +299 MB at 12 qubits would
+#: be about 5 GB at batch 1024; not measured), so for large batches near the
+#: threshold pass
+#: ``device_name="lightning.qubit"`` explicitly.
 AUTO_BACKPROP_MAX_QUBITS = 12
 
 
@@ -353,6 +357,17 @@ def validate_shots(shots: int | None, diff_method: str) -> None:
 def shots_repr(shots: int | None) -> str:
     """The ``extra_repr`` fragment for a finite shot count; empty for exact values."""
     return "" if shots is None else f", shots={shots}"
+
+
+def backend_repr(qlayer: qml.qnn.TorchLayer) -> str:
+    """
+    The ``extra_repr`` fragment naming the device and method the QNode runs on.
+
+    These are the names after ``"auto"`` and the fallback chain are resolved,
+    which ``get_config`` does not record (it keeps ``"auto"``).
+    """
+    qnode = qlayer.qnode
+    return f", device={qnode.device.name!r}, diff_method={qnode.diff_method!r}"
 
 
 def resolve_device(device_name: DeviceName, n_qubits: int) -> qml.devices.Device:

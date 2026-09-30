@@ -40,6 +40,7 @@ from hqnn_forge.encoding._common import (
     Entangler,
     Readout,
     apply_variational_layers,
+    backend_repr,
     check_inputs,
     expand_batch_dimension,
     measure_z,
@@ -246,5 +247,5 @@ class IQPEncodingLayer(TrainingNoiseMixin, nn.Module):
             f"n_layers={self.n_layers}, "
             f"n_repeats={self.n_repeats}, "
             f"n_params={sum(p.numel() for p in self.parameters())}{options}"
-            f"{shots_repr(self.shots)}"
+            f"{shots_repr(self.shots)}{backend_repr(self.qlayer)}"
         )
