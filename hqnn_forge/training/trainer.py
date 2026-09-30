@@ -113,16 +113,7 @@ def _logits(model: nn.Module, x: torch.Tensor) -> torch.Tensor:
 
 def _target(logits: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     """Labels as the loss expects them: class indices for multiclass logits, else float."""
-    if logits.ndim == 1:
-        return y.float()
-    # .long() truncates, so a fractional (soft) label would silently become
-    # another class; only whole-valued labels are class indices.
-    if y.is_floating_point() and not torch.equal(y, torch.trunc(y)):
-        raise ValueError(
-            "a multiclass model needs integer class labels; got non-integer values "
-            "(soft or probabilistic targets are not supported)."
-        )
-    return y.long()
+    return y.long() if logits.ndim == 2 else y.float()
 
 
 def _check_pair(x: torch.Tensor, y: torch.Tensor, name: str) -> None:
@@ -244,6 +235,15 @@ def train_model(
                 f"stratified one), or monitor='val_loss'."
             )
     has_val = val is not None
+    # _target's .long() truncates, so a fractional (soft) label would silently
+    # become another class.  Checked once here, raised at the first multiclass
+    # logits -- before any optimiser step touches the caller's model.
+    labels = {"y_train": y_train} | ({"y_val": val[1]} if val is not None else {})
+    fractional = [
+        name
+        for name, y in labels.items()
+        if y.is_floating_point() and not torch.equal(y, torch.trunc(y))
+    ]
 
     lower_is_better = monitor == "val_loss"
     history = TrainingHistory(monitor=monitor)
@@ -272,6 +272,12 @@ def train_model(
                 idx = perm[start:stop]
                 optimizer.zero_grad()
                 logits = _logits(model, X_train[idx])
+                if fractional and logits.ndim == 2:
+                    raise ValueError(
+                        f"a multiclass model needs integer class labels; "
+                        f"{' and '.join(fractional)} holds non-integer values "
+                        f"(soft or probabilistic targets are not supported)."
+                    )
                 loss = loss_fn(logits, _target(logits, y_train[idx]))
                 loss.backward()
                 optimizer.step()

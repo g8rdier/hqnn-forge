@@ -323,8 +323,14 @@ def test_train_model_rejects_fractional_multiclass_labels() -> None:
     model = nn.Linear(2, 3)
     opt = torch.optim.SGD(model.parameters(), lr=0.1)
     y = torch.arange(30) % 3
-    with pytest.raises(ValueError, match="integer class labels"):
-        train_model(model, nn.CrossEntropyLoss(), opt, X, y.float() + 0.5, max_epochs=1)
-    with pytest.raises(ValueError, match="integer class labels"):
+    before = {k: v.clone() for k, v in model.state_dict().items()}
+    one_soft = y.float()
+    one_soft[-1] = 1.7  # a single soft label, possibly outside the first batch
+    with pytest.raises(ValueError, match="integer class labels; y_train holds"):
+        train_model(model, nn.CrossEntropyLoss(), opt, X, one_soft, max_epochs=1, batch_size=8)
+    with pytest.raises(ValueError, match="integer class labels; y_val holds"):
         train_model(model, nn.CrossEntropyLoss(), opt, X, y, X, y.float() + 0.5, max_epochs=1)
+    # Raised before any optimiser step: the caller's model is untouched.
+    for k, v in model.state_dict().items():
+        assert torch.equal(v, before[k])
     train_model(model, nn.CrossEntropyLoss(), opt, X, y.float(), X, y.float(), max_epochs=1)
