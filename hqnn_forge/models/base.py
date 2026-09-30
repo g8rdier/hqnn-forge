@@ -15,12 +15,70 @@ Subclasses implement ``__init__`` and ``forward`` only.
 
 from __future__ import annotations
 
+import copy
+import warnings
 from typing import Any
 
 import torch
 import torch.nn as nn
 
 from hqnn_forge.utils.modes import eval_mode
+
+
+def custom_encoder(
+    module: nn.Module, n_input_features: int, n_qubits: int, activation: str
+) -> nn.Sequential:
+    """
+    ``module`` followed by the model's ``activation``, after checking that it
+    maps ``(batch, n_input_features)`` to ``(batch, n_qubits)``.
+
+    The width is checked with one forward pass on zeros, in eval mode and
+    without gradients, so it neither trains nor updates running statistics.
+    ``module`` is used as given -- not copied and not re-initialised -- so a
+    pretrained extractor keeps its weights and trains with the model.
+
+    Raises
+    ------
+    TypeError
+        If ``module`` is not an ``nn.Module``.
+    ValueError
+        If the forward pass fails or returns another shape.
+
+    Warns
+    -----
+    UserWarning
+        If ``module`` ends in ``nn.Tanh`` or ``nn.Sigmoid``: the model applies
+        ``activation`` on top, so the angles would be squashed twice.
+    """
+    if not isinstance(module, nn.Module):
+        raise TypeError(f"classical_encoder must be an nn.Module; got {type(module).__name__}.")
+    probe = torch.zeros(2, n_input_features)
+    try:
+        with torch.no_grad(), eval_mode(module):
+            out = module(probe)
+    except Exception as exc:
+        raise ValueError(
+            f"classical_encoder failed on an input of shape {tuple(probe.shape)}, i.e. "
+            f"(batch, n_input_features={n_input_features}): {type(exc).__name__}: {exc}"
+        ) from exc
+    shape = tuple(out.shape) if isinstance(out, torch.Tensor) else None
+    if shape != (2, n_qubits):
+        raise ValueError(
+            f"classical_encoder must map (batch, n_input_features={n_input_features}) to "
+            f"(batch, n_qubits={n_qubits}); on a batch of 2 it returned "
+            f"{shape if shape is not None else type(out).__name__}."
+        )
+    last = list(module.modules())[-1]
+    if isinstance(last, (nn.Tanh, nn.Sigmoid)):
+        warnings.warn(
+            f"classical_encoder ends in {type(last).__name__}, and the model applies "
+            f"encoder_activation={activation!r} on top of it, so the angles are squashed "
+            f"twice.  Drop the final activation from the module; the model bounds the "
+            f"angles itself.",
+            UserWarning,
+            stacklevel=3,
+        )
+    return nn.Sequential(module, nn.Tanh() if activation == "tanh" else nn.Sigmoid())
 
 
 class BinaryClassifierBase(nn.Module):
@@ -123,10 +181,18 @@ class BinaryClassifierBase(nn.Module):
         model built with ``init_seed`` rebuilds the *same* initial weights, so
         for restarts or ensemble members pass ``init_seed=None`` or a new seed.
         Used by ``hqnn_forge.utils.checkpoint``.
+
+        A module argument (a custom ``classical_encoder``) is deep-copied, so
+        a model built from the config does not share it with this one; the
+        copy carries the module's current weights, since the model never
+        re-initialises a custom encoder.
         """
         if self._config is None:
             raise NotImplementedError(
                 f"{type(self).__name__} does not record its constructor arguments; "
                 f"set self._config in __init__."
             )
-        return dict(self._config)
+        return {
+            name: copy.deepcopy(value) if isinstance(value, nn.Module) else value
+            for name, value in self._config.items()
+        }

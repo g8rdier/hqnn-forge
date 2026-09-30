@@ -664,3 +664,29 @@ class TestOverlapKernel:
         with apply_depolarizing_noise(layer, 0.1):
             with pytest.raises(RuntimeError, match="apply_depolarizing_noise"):
                 kernels.overlap_kernel_matrix(_angles(3), layer)
+
+
+class TestConstantKernelIsRefused:
+    """
+    A single RZ embedding would map every input to one state, so its kernel
+    would be all ones and a precomputed-kernel SVM a constant classifier
+    (#212).  The layer is refused at construction instead.
+    """
+
+    def test_rotation_z_layer_cannot_be_built(self) -> None:
+        with pytest.raises(ValueError, match="global phase"):
+            QuantumEncodingLayer(
+                n_qubits=N_QUBITS, n_layers=1, rotation="Z", device_name="default.qubit"
+            )
+
+    def test_accepted_axes_give_a_kernel_that_depends_on_the_data(self) -> None:
+        for rotation in ("X", "Y"):
+            layer = QuantumEncodingLayer(
+                n_qubits=N_QUBITS,
+                n_layers=1,
+                rotation=rotation,  # type: ignore[arg-type]
+                device_name="default.qubit",
+            )
+            K = quantum_kernel_matrix(_angles(M), layer)
+            off_diagonal = K[~torch.eye(M, dtype=torch.bool)]
+            assert off_diagonal.max() < 1 - 1e-6, rotation

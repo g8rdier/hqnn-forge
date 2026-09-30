@@ -259,8 +259,9 @@ Options shared by both models:
 - `init_strategy="restricted"` (one σ for the whole circuit), `"block_local"` (the same σ in
   the first layer, narrowing by up to √2 towards the last) or `"normal"` (plain
   `N(0, init_std²)`, `init_std=0.1` by default); see `hqnn_forge.initializers`.
-- `embedding_rotation="X"` (default), `"Y"` or `"Z"`: the Pauli axis of the angle embedding
-  (angle encoding only).
+- `embedding_rotation="X"` (default) or `"Y"`: the Pauli axis of the angle embedding
+  (angle encoding only). `"Z"` raises: a single `RZ` embedding on `|0⟩` is a global phase,
+  so the quantum layer would ignore its inputs.
 - `entangler="ring"` (default: CNOT ring then per-qubit `Rot`), `"strongly_entangling"`
   (`qml.StronglyEntanglingLayers`: `Rot` first, then a CNOT ring whose range grows with the
   layer index) or `"brickwork"` (nearest-neighbour CNOT pairs without wrap-around, so each
@@ -414,4 +415,11 @@ and versioning policy this project follows.
 - Chawla et al. (2002) — *SMOTE: Synthetic Minority Over-sampling Technique*
 - Wilcoxon (1945) — *Individual comparisons by ranking methods*
 - Kerby (2014) — *The simple difference formula: an approach to teaching nonparametric correlation*
+- Efron (1987) — *Better bootstrap confidence intervals*
+- Efron & Tibshirani (1993) — *An Introduction to the Bootstrap*
+- Demšar (2006) — *Statistical Comparisons of Classifiers over Multiple Data Sets*
+- Friedman (1937) — *The Use of Ranks to Avoid the Assumption of Normality Implicit in the Analysis of Variance*
+- Iman & Davenport (1980) — *Approximations of the Critical Region of the Friedman Statistic*
+- Holm (1979) — *A Simple Sequentially Rejective Multiple Test Procedure*
+- Nemenyi (1963) — *Distribution-Free Multiple Comparisons*
 - Bergholm et al. (2022) — *PennyLane: Automatic differentiation of hybrid quantum-classical computations*
