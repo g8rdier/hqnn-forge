@@ -85,7 +85,9 @@ Two methods, chosen with ``noise_method``:
     fresh draw every forward pass resembles.  ``noise_trajectories = k``
     averages ``k`` draws per sample, at ``k`` times the cost, to reduce it.
 
-    Measured (#311, ``docs/results/trajectory-noise-study.md``): at
+    Measured on one small proxy dataset (#311, breast cancer, 4 and 6
+    qubits, 5 seeds; ``docs/results/trajectory-noise-study.md``; the
+    benchmark datasets are #414): at
     ``p = 0.01``, and with noise only before measurement, trajectory
     training matched the density channel; at ``p = 0.05`` after every gate
     it collapsed in 3 of 20 runs (``k = 1`` twice, ``k = 4`` once), density

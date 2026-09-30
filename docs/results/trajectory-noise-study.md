@@ -42,6 +42,10 @@ The noiseless model is trained once per seed, taking about 5 s. Total training t
 
 ## What this shows
 
+Everything below was measured on the breast-cancer proxy only: one small dataset, 4 and 6
+qubits, 5 seeds. It has not been checked on the credit-card or UCI data that #311 names; that
+is #414.
+
 1. **At p = 0.01, and with noise only before measurement, trajectories train as well as the
    exact channel.** Paired by seed, the mean difference from density is between −0.01 and
    +0.05, which is within the seed-to-seed spread.
@@ -76,9 +80,10 @@ The noiseless model is trained once per seed, taking about 5 s. Total training t
   a Wilcoxon signed-rank test cannot go below p = 0.0625, so none of the differences above is
   statistically significant. The collapses are the robust observation.
 - The issue asked for the credit-card and UCI benchmarks through `run_benchmark`. When the study
-  ran, the loaders (#266) and the benchmark runner (#269–#297) were on other open stacks; they
-  have since been merged into this branch's base, but the study has not been re-run on them. The
-  credit-card data also needs the Kaggle download, and the UCI sets a download from the UCI
-  repository. The script's `run_one` is the unit to port.
+  ran, the loaders (#266) and the benchmark runner (#269–#297) were on other open stacks. They
+  have since been merged into this branch's base, but the study has not been re-run on them,
+  for two reasons. First, cost: a 6-qubit density step at batch 256 took 9.1 s, so one epoch of
+  one credit-card fold would take about 3.6 h. Second, `run_benchmark` does not return its
+  trained models, so `noise_sweep` cannot score them. The re-run is #414.
 - The learning rate and schedule were not tuned per method. A lower learning rate may prevent
   the collapses; that is the obvious follow-up.
