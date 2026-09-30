@@ -11,8 +11,8 @@ by hand.
 What both models share
 ----------------------
 For each dataset, the outer folds come from :func:`stratified_kfold`, and in
-every fold the hybrid model and its control (:func:`classical_baseline`, the
-same parameter count) get exactly the same:
+every fold the hybrid model and its control (:func:`classical_baseline`,
+matched to the hybrid's live parameter count) get exactly the same:
 
 * **Scaling.**  Features are standardised with the mean and standard deviation
   of the fold's training part only, then applied to every row of the fold.
@@ -35,8 +35,13 @@ Reported per dataset and model
 ------------------------------
 ``mcc_mean``/``mcc_std`` over the test folds (with ``n_seeds > 1``, of each
 fold's mean over its initialisation seeds, and ``mcc_seed_std`` the mean
-across-seed standard deviation), ``n_parameters`` and MCC per
-1,000 parameters (:func:`parameter_efficiency` of the mean), the wall-clock
+across-seed standard deviation), ``n_parameters`` (the total trainable count,
+``count_parameters()``, including circuit weights that can never move the
+output) and MCC per 1,000 of them (:func:`parameter_efficiency` of the mean).
+The control is matched to the hybrid's live count, so the two rows'
+``n_parameters`` differ by the hybrid's inert weights as well as by the width
+rounding: for the published SHNN, 122 (102 live) against 101 (#234).  Then the
+wall-clock
 training time summed over folds (simulating the circuit is part of an honest
 efficiency comparison), and the paired Wilcoxon signed-rank test of hybrid
 against control over the per-fold MCCs, with its effect size.  The test
