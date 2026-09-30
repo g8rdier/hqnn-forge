@@ -15,6 +15,7 @@ import pennylane as qml
 import pytest
 import torch
 
+from hqnn_forge.circuits import hardware_efficient_layer
 from hqnn_forge.diagnostics import (
     circuit_summary,
     effective_dimension,
@@ -53,6 +54,14 @@ class TestCircuit:
         layer = QuantumEncodingLayer(n_qubits=4, n_layers=3, **HE)
         assert tuple(layer.qlayer.weights.shape) == (3, 4)
         assert variational_weight_shape("hardware_efficient", 4, 3) == (3, 4)
+
+    @pytest.mark.parametrize("shape", [(3, 3), (4,), (3, 1), ()])
+    def test_primitive_rejects_any_shape_but_one_angle_per_qubit(
+        self, shape: tuple[int, ...]
+    ) -> None:
+        # (3, 3) is a Rot row: shape[0] matches n_qubits, and RY would broadcast over it.
+        with pytest.raises(ValueError, match=r"n_qubits=3"):
+            hardware_efficient_layer(torch.zeros(shape), 3)
 
     @pytest.mark.parametrize("rotation", ["X", "Y"])
     def test_angle_layer_matches_the_hand_written_circuit(self, rotation: RotationAxis) -> None:
