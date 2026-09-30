@@ -25,16 +25,6 @@ N_LAYERS = 2
 BATCH = 6
 
 
-def _lightning_available() -> bool:
-    try:
-        import pennylane as qml
-
-        qml.device("lightning.qubit", wires=1)
-        return True
-    except Exception:  # noqa: BLE001 - any failure means "not installed"
-        return False
-
-
 DEVICE_CONFIGS = [
     pytest.param("default.qubit", "parameter-shift", id="default.qubit/parameter-shift"),
     pytest.param("default.qubit", "backprop", id="default.qubit/backprop"),
@@ -42,9 +32,7 @@ DEVICE_CONFIGS = [
         "lightning.qubit",
         "adjoint",
         id="lightning.qubit/adjoint",
-        marks=pytest.mark.skipif(
-            not _lightning_available(), reason="pennylane-lightning not installed"
-        ),
+        marks=pytest.mark.requires_lightning,
     ),
 ]
 

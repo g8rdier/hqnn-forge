@@ -40,14 +40,6 @@ def _gen(seed: int = 0) -> torch.Generator:
     return torch.Generator().manual_seed(seed)
 
 
-def _lightning_available() -> bool:
-    try:
-        qml.device("lightning.qubit", wires=1)
-        return True
-    except Exception:  # noqa: BLE001
-        return False
-
-
 def _two_weight_layer() -> torch.nn.Module:
     """A TorchLayer with two trainable arguments, which no library layer has."""
     dev = qml.device("default.qubit", wires=2)
@@ -455,7 +447,7 @@ class TestSeveralTensors:
 
 
 class TestDefaultDevice:
-    @pytest.mark.skipif(not _lightning_available(), reason="pennylane-lightning not installed")
+    @pytest.mark.requires_lightning
     @pytest.mark.parametrize("layer_cls", [QuantumEncodingLayer, IQPEncodingLayer])
     def test_estimates_on_the_library_default_device(self, layer_cls: type) -> None:
         """Every other test pins default.qubit/backprop; the default is lightning/adjoint."""
