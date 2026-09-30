@@ -18,7 +18,7 @@ import functools
 import inspect
 import pickle
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import pytest
@@ -35,7 +35,7 @@ from sklearn.utils.estimator_checks import estimator_checks_generator
 from hqnn_forge.sklearn import HybridClassifierEstimator
 from hqnn_forge.training import train_model
 
-FAST = dict(
+FAST: dict[str, Any] = dict(
     n_qubits=2,
     n_layers=1,
     device_name="default.qubit",
@@ -86,7 +86,7 @@ class TestParams:
 
 class TestFitPredict:
     @pytest.mark.parametrize("model", ["serial", "parallel"])
-    def test_shapes_and_learning(self, data: tuple, model: str) -> None:
+    def test_shapes_and_learning(self, data: tuple, model: Literal["serial", "parallel"]) -> None:
         X, y = data
         est = HybridClassifierEstimator(model=model, **LEARN).fit(X, y)
         proba = est.predict_proba(X)
