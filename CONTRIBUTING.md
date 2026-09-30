@@ -109,15 +109,48 @@ feat: add user authentication endpoint
 Keep commit bodies to at most 3 bullet points. If you need more, the work is probably better
 split into smaller, more atomic commits.
 
+## Linting
+
+The `lint` job in `.github/workflows/tests.yml` runs four checks, and a PR must pass all of
+them. To run the same checks locally with the same tool versions, run them through the
+lockfile:
+
+```bash
+uv run --frozen --all-extras ruff check .
+uv run --frozen --all-extras ruff format --check .   # `ruff format .` applies the fixes
+uv run --frozen --all-extras mypy hqnn_forge tests examples
+uv run --frozen --all-extras vermin --no-tips -t=3.11- --violations --eval-annotations \
+    --exclude long hqnn_forge tests examples .github/scripts
+```
+
+*   **ruff** lints the whole tree and checks its formatting, including the Python code
+    blocks in Markdown files. The pre-commit hooks in the README run both steps on each
+    commit.
+*   **mypy** type-checks the package, the tests and the examples. Modules that still fail
+    are listed under `[[tool.mypy.overrides]]` in `pyproject.toml` until #232 clears them.
+    CI also fails when an entry there no longer matches any module.
+*   **vermin** fails on stdlib calls that don't exist on Python 3.11, the `requires-python`
+    floor, which neither ruff nor mypy catches. CI also fails when vermin reports a file as
+    "incompatible", because vermin skips such a file without an error.
+*   **Why `uv run --frozen`.** It uses the ruff, mypy and vermin versions pinned in
+    `uv.lock`, which CI uses too. `--all-extras` installs every extra, as CI does. Without it, mypy
+    types matplotlib, the one typed package among the extras, as `Any`, because
+    `ignore_missing_imports` hides the missing module. The `dev` extra declares the tools without a version range, so a pip install
+    gets the newest releases, and when a new ruff changes a default, its `ruff format`
+    disagrees with CI's. The versions are deliberately not capped in `pyproject.toml`
+    either. Dependabot only updates `uv.lock`, so a cap such as `ruff<0.17` would stop it
+    from ever proposing the next minor release.
+
 ## Dependency Changes
 
 `uv.lock` is tracked in the repository and CI tests against it: the `test-locked` job in
 `.github/workflows/tests.yml` runs `uv sync --locked --all-extras`, which installs the exact
 versions the lockfile records and fails if the lockfile no longer matches `pyproject.toml`.
 
-A normal install doesn't need uv — the pip install in the README is unchanged. uv is only
-needed to regenerate the lockfile; see the [uv installation
-docs](https://docs.astral.sh/uv/getting-started/installation/) if you don't have it.
+Installing the package doesn't need uv; the README documents a pip install for that. The
+README's development setup uses uv, and uv is needed to regenerate the lockfile; see the [uv
+installation docs](https://docs.astral.sh/uv/getting-started/installation/) if you don't have
+it.
 
 *   **After editing `pyproject.toml`**, regenerate the lockfile and commit it in the same PR:
 
@@ -150,6 +183,8 @@ docs](https://docs.astral.sh/uv/getting-started/installation/) if you don't have
 Releases follow [Semantic Versioning](https://semver.org/) (`MAJOR.MINOR.PATCH`), tagged (e.g.
 `v1.2.0`) on the `main` merge commit that encapsulates the release. `CHANGELOG.md` follows
 [Keep a Changelog](https://keepachangelog.com/) and is updated as part of the release PR.
+The release PR also bumps `version` in `CITATION.cff` to the new `pyproject.toml` version
+(`tests/test_citation.py` fails until it does) and, once released, can add a `date-released`.
 
 ## Using AI Coding Assistants
 
