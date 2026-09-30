@@ -75,6 +75,7 @@ from hqnn_forge.encoding.angle_embedding import (
 from hqnn_forge.models._trunk import DEFAULT_ENCODER_ACTIVATION, DEFAULT_INIT_STD, QuantumTrunk
 from hqnn_forge.models.base import BinaryClassifierBase
 from hqnn_forge.noise import Channel, NoiseMethod, Position
+from hqnn_forge.utils.rng import as_seed, seeded_rng
 
 #: Constructor arguments of the SHNN published in the thesis (see
 #: ``HybridBinaryClassifier.published_shnn``).
@@ -104,7 +105,11 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
     n_qubits:
         Number of qubits in the quantum encoding layer.  Default: 8.
     n_layers:
-        VQC ansatz layers.  Default: 2.
+        VQC ansatz layers.  Default: 2.  At 1, with angle encoding and
+        ``readout="first"``, ⟨Z_0⟩ misses the first encoded angle under the
+        default ring and RX embedding, and most of them under
+        ``entangler="brickwork"``; use 2 or more with a ring.  See step 2 of
+        :func:`hqnn_forge.encoding.angle_embedding._make_angle_embedding_circuit`.
     use_classical_encoder:
         Prepend ``Linear(n_input_features → n_qubits) + Tanh``.  Default: True.
         If ``False``, input must already lie in (-π, π); it is not rescaled.
@@ -145,8 +150,9 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
     entangler:
         ``"ring"`` (default: CNOT ring then ``Rot``), ``"strongly_entangling"``
         (``qml.StronglyEntanglingLayers``: ``Rot`` then a CNOT ring of growing
-        range) or ``"hardware_efficient"`` (a CZ ladder then ``RY``: a third of
-        the circuit parameters).  See
+        range), ``"brickwork"`` (nearest-neighbour CNOT pairs, so each ⟨Z_i⟩
+        keeps a local light cone at shallow depth) or ``"hardware_efficient"``
+        (a CZ ladder then ``RY``: a third of the circuit parameters).  See
         :func:`hqnn_forge.encoding.angle_embedding.apply_variational_layers`.
     readout:
         ``"all"`` (default): the head reads every ⟨Z_i⟩.  ``"first"``: ⟨Z_0⟩
@@ -181,6 +187,26 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
         Draws averaged per sample with ``"trajectories"``.  Default: 1.  Use 8
         or more at noise of a few percent per gate: fewer draws occasionally
         made training collapse (#347; see :mod:`hqnn_forge.noise`).
+    init_seed:
+        Seed for weight initialisation.  ``None`` (default) draws the initial
+        weights from the global torch RNG; an int draws them from a private RNG
+        seeded with it, so the same seed gives the same weights and the global
+        RNG is left exactly as it was.
+    classical_encoder:
+        Your own module in place of the built-in ``Linear(n_input_features →
+        n_qubits)``, trained together with the quantum layer: a small MLP,
+        or a CNN or sequence model that reshapes the flat
+        ``(batch, n_input_features)`` input itself.  It must return
+        ``(batch, n_qubits)`` (``(batch, 2**n_qubits)`` with
+        ``encoding_type="amplitude"``), which is checked here with one forward pass.
+        The model owns the angle range: it applies ``encoder_activation`` and
+        the factor π on top of the module, exactly as for the built-in
+        encoder, so the module should output unbounded features and not end
+        in ``Tanh`` or ``Sigmoid`` (that warns).  The module is used as given
+        and never re-initialised, so pretrained weights are kept.  Requires
+        ``use_classical_encoder=True``.  ``save_checkpoint`` refuses a model
+        with a custom encoder; save its ``state_dict`` instead.  Default:
+        ``None``, the built-in encoder.
     trainable_input_scaling:
         With ``encoding_type="reuploading"`` only: a trainable per-upload
         scale on the features, initialised to 1.  Default: ``False``.
@@ -200,6 +226,8 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
     Attributes
     ----------
     classical_encoder : nn.Sequential or nn.Identity
+        ``Sequential(Linear, activation)``, ``Sequential(custom module,
+        activation)`` with a custom ``classical_encoder``, or ``Identity``.
     quantum_layer     : QuantumEncodingLayer
     dropout           : nn.Dropout
     head              : nn.Linear
@@ -233,6 +261,8 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
         init_std: float = DEFAULT_INIT_STD,
         noise_level: float = 0.0,
         noise_position: Position = "all",
+        init_seed: int | None = None,
+        classical_encoder: nn.Module | None = None,
         noise_method: NoiseMethod = "density",
         noise_trajectories: int = 1,
         trainable_input_scaling: bool = False,
@@ -240,59 +270,70 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
         noise_channel: Channel = "depolarizing",
     ) -> None:
         super().__init__()
-        self._config = dict(
-            n_input_features=n_input_features,
-            n_qubits=n_qubits,
-            n_layers=n_layers,
-            use_classical_encoder=use_classical_encoder,
-            dropout_p=dropout_p,
-            device_name=device_name,
-            diff_method=diff_method,
-            init_strategy=init_strategy,
-            encoding_type=encoding_type,
-            embedding_rotation=embedding_rotation,
-            entangler=entangler,
-            readout=readout,
-            encoder_activation=encoder_activation,
-            init_std=init_std,
-            noise_level=noise_level,
-            noise_position=noise_position,
-            noise_method=noise_method,
-            noise_trajectories=noise_trajectories,
-            trainable_input_scaling=trainable_input_scaling,
-            shots=shots,
-            noise_channel=noise_channel,
-        )
+        init_seed = as_seed(init_seed)
+        # Building the layers draws from the global RNG (nn.Linear and
+        # TorchLayer defaults), all of it overwritten by _initialise_weights.
+        # With init_seed the whole build runs inside seeded_rng, so the
+        # caller's stream is exactly where it was afterwards -- also when a
+        # check below raises after some layers were built.
+        with seeded_rng(init_seed) as reseed:
+            self._config = dict(
+                n_input_features=n_input_features,
+                n_qubits=n_qubits,
+                n_layers=n_layers,
+                use_classical_encoder=use_classical_encoder,
+                dropout_p=dropout_p,
+                device_name=device_name,
+                diff_method=diff_method,
+                init_strategy=init_strategy,
+                encoding_type=encoding_type,
+                embedding_rotation=embedding_rotation,
+                entangler=entangler,
+                readout=readout,
+                encoder_activation=encoder_activation,
+                init_std=init_std,
+                noise_level=noise_level,
+                noise_position=noise_position,
+                init_seed=init_seed,
+                classical_encoder=classical_encoder,
+                noise_method=noise_method,
+                noise_trajectories=noise_trajectories,
+                trainable_input_scaling=trainable_input_scaling,
+                shots=shots,
+                noise_channel=noise_channel,
+            )
 
-        n_readouts = self._build_trunk(
-            n_input_features=n_input_features,
-            n_qubits=n_qubits,
-            n_layers=n_layers,
-            use_classical_encoder=use_classical_encoder,
-            dropout_p=dropout_p,
-            device_name=device_name,
-            diff_method=diff_method,
-            init_strategy=init_strategy,
-            encoding_type=encoding_type,
-            embedding_rotation=embedding_rotation,
-            entangler=entangler,
-            readout=readout,
-            encoder_activation=encoder_activation,
-            init_std=init_std,
-            noise_level=noise_level,
-            noise_position=noise_position,
-            noise_method=noise_method,
-            noise_trajectories=noise_trajectories,
-            trainable_input_scaling=trainable_input_scaling,
-            shots=shots,
-            noise_channel=noise_channel,
-        )
+            n_readouts = self._build_trunk(
+                n_input_features=n_input_features,
+                n_qubits=n_qubits,
+                n_layers=n_layers,
+                use_classical_encoder=use_classical_encoder,
+                dropout_p=dropout_p,
+                device_name=device_name,
+                diff_method=diff_method,
+                init_strategy=init_strategy,
+                encoding_type=encoding_type,
+                embedding_rotation=embedding_rotation,
+                entangler=entangler,
+                readout=readout,
+                encoder_activation=encoder_activation,
+                init_std=init_std,
+                noise_level=noise_level,
+                noise_position=noise_position,
+                noise_method=noise_method,
+                noise_trajectories=noise_trajectories,
+                classical_encoder=classical_encoder,
+                trainable_input_scaling=trainable_input_scaling,
+                shots=shots,
+                noise_channel=noise_channel,
+            )
 
-        # ── Classical head ────────────────────────────────────────────────
-        self.head = nn.Linear(n_readouts, 1)
+            # ── Classical head ────────────────────────────────────────────────
+            self.head = nn.Linear(n_readouts, 1)
 
-        # ── Small-angle restricted-variance initialisation ─────────────────
-        self._initialise_weights()
+            # ── Small-angle restricted-variance initialisation ─────────────────
+            reseed()
+            self._initialise_weights()
 
     # ------------------------------------------------------------------
     @classmethod
@@ -317,8 +358,9 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
     # ------------------------------------------------------------------
     def _initialise_weights(self) -> None:
         """Xavier on the encoder and head; ``init_strategy`` on the quantum weights."""
+        # A custom encoder is left as given (it may be pretrained).
         for module in self.modules():
-            if isinstance(module, nn.Linear):
+            if isinstance(module, nn.Linear) and id(module) not in self._custom_encoder_ids:
                 nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
