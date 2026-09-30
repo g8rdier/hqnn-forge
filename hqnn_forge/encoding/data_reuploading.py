@@ -142,7 +142,8 @@ def _make_data_reuploading_circuit(
         circuit(inputs, weights, input_scaling)  # trainable_input_scaling=True
 
     with ``inputs`` of shape ``(n_qubits,)`` (or ``(batch, n_qubits)`` when
-    broadcasted), ``weights`` of shape ``(n_layers, n_qubits, 3)`` and
+    broadcasted), ``weights`` of shape ``(n_layers, n_qubits, 3)``
+    (``(n_layers, n_qubits)`` for ``entangler="hardware_efficient"``) and
     ``input_scaling`` of shape :func:`input_scaling_shape`.
 
     Circuit structure (per layer ℓ = 0 … L-1)
@@ -292,7 +293,7 @@ class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
 
     API-consistent with :class:`~hqnn_forge.encoding.QuantumEncodingLayer`:
     same constructor arguments (plus ``trainable_input_scaling``), same
-    ``qlayer.weights`` of shape ``(n_layers, n_qubits, 3)``, same
+    ``qlayer.weights`` shape for each ``entangler``, same
     ``(batch, n_qubits)`` input and ``(batch, n_outputs)`` output.
     The difference is inside the circuit: the features are embedded before
     every variational layer, not only before the first.
@@ -310,7 +311,8 @@ class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
 
     Weight Shapes
     -------------
-    ``qlayer.weights`` has shape ``(n_layers, n_qubits, 3)`` and, like the
+    ``qlayer.weights`` has shape ``(n_layers, n_qubits, 3)``
+    (``(n_layers, n_qubits)`` for ``entangler="hardware_efficient"``) and, like the
     other encoders, starts from ``TorchLayer``'s default Uniform(0, 2π).
     **Call** ``hqnn_forge.initializers.restricted_normal_init_`` **on it
     immediately after construction** for the library's small-angle initial
