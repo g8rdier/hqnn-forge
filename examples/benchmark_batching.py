@@ -144,6 +144,9 @@ def compare(qubits: tuple[int, ...], batches: tuple[int, ...]) -> None:
         for n in qubits:
             variants = _variants(cls, n, extra)
             width = n if per_qubit else 2**n
+            # One untimed step per variant, so first-call costs stay out of the table.
+            for layer in variants.values():
+                _run(layer, torch.rand(2, width) + 0.05, input_grads)
             for batch in batches:
                 x = torch.rand(batch, width, generator=torch.Generator().manual_seed(1)) + 0.05
                 reference, *_ = _run(variants["split"], x, input_grads)
