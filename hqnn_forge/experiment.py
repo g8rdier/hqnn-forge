@@ -123,6 +123,7 @@ def to_record(result: BenchmarkResult) -> dict[str, Any]:
             "seed_index": f.seed_index,
             "batch_seed": f.batch_seed,
             "device": f.device,
+            "hyperparameters": f.hyperparameters,
             "threshold": f.threshold,
             "mcc": f.mcc,
             "epochs": f.epochs,
@@ -271,7 +272,7 @@ def rerun_benchmark(
         one, or if the rebuilt models' configs differ from the recorded ones.
     """
     from hqnn_forge import models as model_module
-    from hqnn_forge.benchmark import fingerprint, run_benchmark
+    from hqnn_forge.benchmark import Tuning, fingerprint, run_benchmark
 
     recorded_data = record["datasets"]
     if list(datasets) != list(recorded_data):
@@ -314,6 +315,7 @@ def rerun_benchmark(
         random_state=settings["random_state"],
         smote_kwargs=settings["smote_kwargs"],
         n_seeds=settings.get("n_seeds", 1),
+        tuning=None if settings.get("tuning") is None else Tuning(**settings["tuning"]),
     )
     rebuilt = _plain(result.models)
     if rebuilt != recorded_models:
