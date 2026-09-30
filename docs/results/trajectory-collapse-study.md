@@ -77,6 +77,10 @@ Paired by seed against density, k = 8's mean difference lies between −0.012 an
 
 ## What this shows
 
+Like #311, everything below was measured on the breast-cancer proxy only: one small dataset,
+4 and 6 qubits, 10 seeds. It has not been checked on the credit-card or UCI benchmark data;
+that re-run is #414.
+
 1. **k = 8 removes the collapses; the other mitigations do not.** k = 8 never collapsed, under
    any variant, at either size. Against k = 1 that is 0 of 100 against 10 of 100
    (Fisher's exact test p = 0.002), and against k = 4, 0 against 6 (p = 0.03). Both p-values
@@ -115,7 +119,8 @@ Paired by seed against density, k = 8's mean difference lies between −0.012 an
 
 ## Limits
 
-- One small dataset, 4 and 6 qubits, one noise model (depolarizing). The ">12 qubit" regime,
+- One small proxy dataset (breast cancer; the benchmark datasets are #414), 4 and 6 qubits,
+  one noise model (depolarizing). The ">12 qubit" regime,
   where trajectories matter most, is extrapolated, not measured.
 - 10 seeds per cell. A collapse rate of a few percent at k = 8 cannot be ruled out: 0 of 100
   bounds it below about 3 % (95 %, one-sided), assuming independent runs, and they are not
