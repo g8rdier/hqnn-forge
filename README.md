@@ -379,7 +379,7 @@ uv run --frozen --all-extras vermin --no-tips -t=3.11- --violations --eval-annot
     --exclude long hqnn_forge tests examples .github/scripts
 ```
 
-[`CONTRIBUTING.md`](CONTRIBUTING.md#linting) lists every command the lint job runs.
+[`CONTRIBUTING.md`](https://github.com/g8rdier/hqnn-forge/blob/main/CONTRIBUTING.md#linting) lists every command the lint job runs.
 
 ---
 

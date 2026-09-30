@@ -179,12 +179,17 @@ Releases follow [Semantic Versioning](https://semver.org/) (`MAJOR.MINOR.PATCH`)
     git tag vX.Y.Z <merge-commit> && git push origin vX.Y.Z
     ```
 
-    `.github/workflows/release.yml` then checks that the tag equals `v` + `project.version` and
-    that the changelog has a non-empty `[X.Y.Z]` section
-    (`.github/scripts/release_notes.py`). It builds and checks the sdist and wheel, publishes
-    them to PyPI through trusted publishing (no stored token), and creates the GitHub release
-    with that changelog section as its notes. A manual run of the workflow is a dry run to
-    TestPyPI.
+    `.github/workflows/release.yml` then checks that the tag equals `v` + `project.version`,
+    that the tagged commit is on `main`, and that the changelog has a non-empty `[X.Y.Z]`
+    section (`.github/scripts/release_notes.py`). It builds and checks the sdist and wheel and
+    runs the locked test suite on that commit. Only then does the publish job, in the `pypi`
+    environment, wait for the owner's approval, publish to PyPI through trusted publishing (no
+    stored token), and create the GitHub release with that changelog section as its notes. A
+    manual run of the workflow is a dry run to TestPyPI.
+*   **The `pypi` environment must be protected before the first tag**: required reviewer the
+    owner, deployments limited to `v*` tags. A job that names an environment the repository
+    does not have creates it unprotected, so without this setup a pushed tag publishes with
+    no approval step.
 
 ## Using AI Coding Assistants
 

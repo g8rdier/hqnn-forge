@@ -4,13 +4,16 @@ name: Release
 #
 #   git tag v0.1.0 <merge commit of the release PR> && git push origin v0.1.0
 #
-# The tag must equal "v" + project.version, and CHANGELOG.md must have a
-# non-empty "## [0.1.0]" section; .github/scripts/release_notes.py checks both
-# before anything is built.  Publishing uses PyPI trusted publishing (OIDC), so
-# no token is stored in the repository.  It needs a one-time setup on PyPI and
-# TestPyPI -- a trusted publisher for this repository, workflow release.yml and
-# environment "pypi" / "testpypi" -- and the two environments in the
-# repository settings.
+# The tag must equal "v" + project.version, sit on a commit of main, and
+# CHANGELOG.md must have a non-empty "## [0.1.0]" section; the build job checks
+# all three before anything is built, and nothing is published unless the
+# build checks and the locked test suite (the test job) pass on that commit.
+# Publishing uses PyPI trusted publishing (OIDC), so no token is stored in the
+# repository.  It needs a one-time setup on PyPI and TestPyPI -- a trusted
+# publisher for this repository, workflow release.yml and environment "pypi" /
+# "testpypi" -- and the two environments in the repository settings, where
+# "pypi" MUST require the owner as reviewer and allow only "v*" tags: a job
+# naming an environment that does not exist creates it without protection.
 #
 # A manual run (workflow_dispatch) is a dry run: it builds the current commit
 # and uploads it to TestPyPI only.
@@ -28,6 +31,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
+      with:
+        # Full history, so the tagged commit can be checked against main.
+        fetch-depth: 0
     - name: Install uv
       uses: astral-sh/setup-uv@v10.1.0
       with:
@@ -35,6 +41,15 @@ jobs:
     - name: Check the tag against pyproject.toml and CHANGELOG.md
       if: github.event_name == 'push'
       run: python .github/scripts/release_notes.py check "$GITHUB_REF_NAME"
+    # CONTRIBUTING: a release is tagged on a main merge commit. A tag pushed on
+    # an unmerged branch commit would otherwise publish unreviewed code.
+    - name: Check the tagged commit is on main
+      if: github.event_name == 'push'
+      run: |
+        if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+          echo "::error::tag $GITHUB_REF_NAME points at $GITHUB_SHA, which is not on main."
+          exit 1
+        fi
     - name: Build the sdist and wheel
       run: uv build
     - name: Check the distributions' metadata
@@ -52,9 +67,29 @@ jobs:
         name: dist
         path: dist/
 
+  # The locked suite and doctests on the exact commit being released, as the
+  # test-locked job in tests.yml runs them, so a publish never rests only on an
+  # earlier run of another commit.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install uv
+      uses: astral-sh/setup-uv@v10.1.0
+      with:
+        python-version: "3.12"
+    - name: Install dependencies from the lockfile
+      run: uv sync --locked --all-extras
+    - name: Run pytest
+      env:
+        HQNN_FORGE_FAIL_ON_SKIP: "1"
+      run: uv run --frozen pytest tests/
+    - name: Run doctests
+      run: uv run --frozen pytest --doctest-modules hqnn_forge
+
   publish-pypi:
     if: github.event_name == 'push'
-    needs: build
+    needs: [build, test]
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -92,7 +127,7 @@ jobs:
 
   publish-testpypi:
     if: github.event_name == 'workflow_dispatch'
-    needs: build
+    needs: [build, test]
     runs-on: ubuntu-latest
     environment:
       name: testpypi
