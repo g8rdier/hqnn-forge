@@ -32,7 +32,8 @@ integer labels ``0 … K−1``:
 
 ``multiclass_brier_score``
     ``mean_i Σ_k (p_ik − y_ik)²`` with ``y`` one-hot: scikit-learn's
-    ``brier_score_loss`` for multiclass input.  0 is perfect; it ranges up
+    ``brier_score_loss`` for multiclass input (scikit-learn 1.7 on).  0 is
+    perfect; it ranges up
     to 2, and a constant ``1/K`` scores ``1 − 1/K``.  Note that for ``K = 2``
     it is twice the binary ``brier_score``, which counts one class only.
 ``top_label_ece``

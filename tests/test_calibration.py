@@ -296,8 +296,12 @@ class TestMulticlassBrier:
     def test_matches_scikit_learn(self) -> None:
         from sklearn.metrics import brier_score_loss
 
+        # scikit-learn takes multiclass input only from 1.7 on, above the 1.6
+        # floor, so compare with the sum of its one-vs-rest binary losses,
+        # which is the same quantity on every supported version.
         y, prob = _multiclass()
-        assert multiclass_brier_score(y, prob) == pytest.approx(brier_score_loss(y, prob))
+        one_vs_rest = sum(brier_score_loss(y == k, prob[:, k]) for k in range(prob.shape[1]))
+        assert multiclass_brier_score(y, prob) == pytest.approx(one_vs_rest)
 
     def test_known_values(self) -> None:
         k = 4
