@@ -49,7 +49,7 @@ The extras add optional parts; combine them as needed, e.g. `".[lightning,sklear
 
 | Extra | Installs | Needed for |
 |---|---|---|
-| `lightning` | `pennylane-lightning` | the `lightning.qubit` backend and adjoint differentiation, the library defaults |
+| `lightning` | `pennylane-lightning` | the `lightning.qubit` backend and adjoint differentiation, which the default `"auto"` picks above 12 qubits |
 | `sklearn` | `scikit-learn` | the scikit-learn estimator in `hqnn_forge.sklearn` |
 | `examples` | `scikit-learn`, `matplotlib` | the scripts in `examples/` and the plots in `hqnn_forge.evaluation` |
 | `dev` | test and lint tools | development; see [Development Setup](#development-setup) |
