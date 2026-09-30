@@ -7,6 +7,7 @@ model, and the scikit-learn estimator with more than two classes (#309).
 
 from __future__ import annotations
 
+import math
 import pickle
 import warnings
 from typing import Any
@@ -316,21 +317,90 @@ def test_train_model_casts_integer_binary_labels_for_bce() -> None:
     assert runs[0] == runs[1]
 
 
-def test_train_model_rejects_fractional_multiclass_labels() -> None:
-    # Class indices are cast with .long(), which truncates: a soft label of
-    # 1.7 would silently train as class 1.  Whole-valued float labels are fine.
+_NON_INTEGER = "integer class labels; {split} holds non-integer"
+_OUT_OF_RANGE = r"labels in \[0, 2\]; {split} holds"
+
+
+@pytest.mark.parametrize(
+    ("bad", "match"),
+    [
+        (1.7, _NON_INTEGER),  # .long() would truncate it to class 1
+        (0.5, _NON_INTEGER),
+        (math.nan, _NON_INTEGER),
+        (math.inf, _NON_INTEGER),
+        (3, _OUT_OF_RANGE),  # the losses raise only in the batch holding it
+        (-1, _OUT_OF_RANGE),
+        (-100, _OUT_OF_RANGE),  # CrossEntropyLoss's ignore_index: silently skipped
+    ],
+)
+@pytest.mark.parametrize("split", ["y_train", "y_val"])
+@pytest.mark.parametrize("loss_name", ["cross_entropy", "softmax_focal", "one_vs_rest"])
+def test_train_model_rejects_bad_multiclass_labels_before_any_step(
+    bad: float, match: str, split: str, loss_name: str
+) -> None:
+    # A single bad label in the last sample of either split, so outside the
+    # first batch of y_train and seen by validation only after an epoch.  The
+    # raise must come before any optimiser step, whatever the loss would do.
+    from hqnn_forge.sklearn import _OneHotLoss
+
+    losses = {
+        "cross_entropy": nn.CrossEntropyLoss(),
+        "softmax_focal": SoftmaxFocalLoss(),
+        "one_vs_rest": _OneHotLoss(nn.BCEWithLogitsLoss(), 3),
+    }
     X = torch.randn(30, 2)
     model = nn.Linear(2, 3)
     opt = torch.optim.SGD(model.parameters(), lr=0.1)
-    y = torch.arange(30) % 3
+    y = (torch.arange(30) % 3).float()
+    y_bad = y.clone()
+    y_bad[-1] = bad
+    y_train, y_val = (y_bad, y) if split == "y_train" else (y, y_bad)
     before = {k: v.clone() for k, v in model.state_dict().items()}
-    one_soft = y.float()
-    one_soft[-1] = 1.7  # a single soft label, possibly outside the first batch
-    with pytest.raises(ValueError, match="integer class labels; y_train holds"):
-        train_model(model, nn.CrossEntropyLoss(), opt, X, one_soft, max_epochs=1, batch_size=8)
-    with pytest.raises(ValueError, match="integer class labels; y_val holds"):
-        train_model(model, nn.CrossEntropyLoss(), opt, X, y, X, y.float() + 0.5, max_epochs=1)
-    # Raised before any optimiser step: the caller's model is untouched.
+    with pytest.raises(ValueError, match=match.format(split=split)):
+        train_model(
+            model, losses[loss_name], opt, X, y_train, X, y_val, max_epochs=1, batch_size=8
+        )
     for k, v in model.state_dict().items():
         assert torch.equal(v, before[k])
-    train_model(model, nn.CrossEntropyLoss(), opt, X, y.float(), X, y.float(), max_epochs=1)
+
+
+@pytest.mark.parametrize("dtype", [torch.int64, torch.int32, torch.float32, torch.float64])
+def test_train_model_accepts_class_index_labels_of_any_dtype(dtype: torch.dtype) -> None:
+    # Integer and whole-valued float labels are the same class indices and
+    # train identically.
+    X = torch.randn(30, 2)
+    y = torch.arange(30) % 3
+    losses = []
+    for labels in (y, y.to(dtype)):
+        torch.manual_seed(0)
+        model = nn.Linear(2, 3)
+        history = train_model(
+            model,
+            nn.CrossEntropyLoss(),
+            torch.optim.SGD(model.parameters(), lr=0.1),
+            X,
+            labels,
+            X,
+            labels,
+            max_epochs=2,
+            batch_size=8,
+            generator=torch.Generator().manual_seed(0),
+        )
+        losses.append([(r.train_loss, r.val_loss) for r in history.epochs])
+    assert losses[0] == losses[1]
+
+
+def test_train_model_leaves_binary_labels_unchecked() -> None:
+    # The multiclass check does not reach binary models: soft and bool labels
+    # train as before.
+    X = torch.randn(30, 2)
+    for labels in (torch.linspace(0, 1, 30), torch.arange(30) % 2 == 0):
+        model = nn.Linear(2, 1)
+        train_model(
+            model,
+            nn.BCEWithLogitsLoss(),
+            torch.optim.SGD(model.parameters(), lr=0.1),
+            X,
+            labels,
+            max_epochs=1,
+        )

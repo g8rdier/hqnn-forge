@@ -116,6 +116,31 @@ def _target(logits: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     return y.long() if logits.ndim == 2 else y.float()
 
 
+def _check_class_labels(labels: dict[str, torch.Tensor], n_classes: int) -> None:
+    """Raise unless every label of every split is a class index in ``[0, n_classes)``.
+
+    Run once over the whole of ``y_train`` and ``y_val`` before the first
+    optimiser step.  The losses would otherwise catch a bad label only in the
+    batch holding it -- after earlier batches have stepped the model -- or not
+    at all: ``.long()`` truncates a soft label to another class, and
+    ``CrossEntropyLoss`` silently skips ``-100`` (its ``ignore_index``).
+    """
+    for name, y in labels.items():
+        if y.is_floating_point() and not bool(
+            torch.all(torch.isfinite(y) & (y == torch.trunc(y)))
+        ):
+            raise ValueError(
+                f"a multiclass model needs integer class labels; {name} holds non-integer "
+                f"values (soft or probabilistic targets are not supported)."
+            )
+        low, high = int(y.min()), int(y.max())
+        if low < 0 or high >= n_classes:
+            raise ValueError(
+                f"a multiclass model with {n_classes} outputs needs class labels in "
+                f"[0, {n_classes - 1}]; {name} holds labels in [{low}, {high}]."
+            )
+
+
 def _check_pair(x: torch.Tensor, y: torch.Tensor, name: str) -> None:
     if x.shape[0] != y.shape[0]:
         raise ValueError(f"X_{name} and y_{name} differ in length: {x.shape[0]} vs {y.shape[0]}.")
@@ -161,7 +186,11 @@ def train_model(
     optimizer:
         Optimiser already bound to the parameters to train.
     X_train, y_train:
-        Training split.
+        Training split.  For a multiclass model every label of ``y_train``
+        and ``y_val`` must be a class index in ``[0, n_classes)`` (integer,
+        or a whole-valued float); anything else raises ``ValueError`` before
+        the first optimiser step.  A binary model's labels are passed to the
+        loss as float, unchecked, as before.
     X_val, y_val:
         Validation split.  Without it the loop runs ``max_epochs`` epochs and
         ``monitor``, ``patience`` and ``restore_best`` have no effect.
@@ -235,15 +264,12 @@ def train_model(
                 f"stratified one), or monitor='val_loss'."
             )
     has_val = val is not None
-    # _target's .long() truncates, so a fractional (soft) label would silently
-    # become another class.  Checked once here, raised at the first multiclass
-    # logits -- before any optimiser step touches the caller's model.
-    labels = {"y_train": y_train} | ({"y_val": val[1]} if val is not None else {})
-    fractional = [
-        name
-        for name, y in labels.items()
-        if y.is_floating_point() and not torch.equal(y, torch.trunc(y))
-    ]
+    # Multiclass labels are checked once, over both splits, at the first
+    # multiclass logits (the number of classes is known only then) -- before
+    # any optimiser step touches the caller's model.
+    unchecked_labels: dict[str, torch.Tensor] | None = {"y_train": y_train} | (
+        {"y_val": val[1]} if val is not None else {}
+    )
 
     lower_is_better = monitor == "val_loss"
     history = TrainingHistory(monitor=monitor)
@@ -272,12 +298,9 @@ def train_model(
                 idx = perm[start:stop]
                 optimizer.zero_grad()
                 logits = _logits(model, X_train[idx])
-                if fractional and logits.ndim == 2:
-                    raise ValueError(
-                        f"a multiclass model needs integer class labels; "
-                        f"{' and '.join(fractional)} holds non-integer values "
-                        f"(soft or probabilistic targets are not supported)."
-                    )
+                if unchecked_labels is not None and logits.ndim == 2:
+                    _check_class_labels(unchecked_labels, logits.shape[-1])
+                    unchecked_labels = None
                 loss = loss_fn(logits, _target(logits, y_train[idx]))
                 loss.backward()
                 optimizer.step()
