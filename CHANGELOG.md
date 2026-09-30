@@ -105,6 +105,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `compare_to_control` and `holm_correction`, NumPy-only
 - `examples/does_the_quantum_layer_help.py`: a step-by-step hybrid-versus-control comparison on
   one's own data, with a plain-words verdict from the paired Wilcoxon test
+- Any PennyLane device name as `device_name`: the four simulators keep their fallback chain;
+  any other name (a plugin or hardware) is constructed as given, and PennyLane's own error
+  surfaces if it cannot be, so a typo still raises instead of falling back (#314)
+- `shots: int | None = None` on the four encoding layers, the three classifiers and
+  checkpoints (weight-safe, `None` for older files): a finite count samples every readout,
+  needs `diff_method="parameter-shift"` (adjoint and backprop are refused at construction)
+  and trains with noise only under `noise_method="trajectories"`. `hqnn_forge.noise.apply_shots` evaluates a
+  model at a shot count inside a block and `shot_sweep` repeats `predict_proba` across shot
+  counts. `shots=None` is bit-identical to before. The scikit-learn estimator does not take
+  `shots` yet (#411) (#314)
 
 ### Changed
 - `MulticlassHybridClassifier` builds the same encoder → circuit → dropout trunk as
