@@ -127,8 +127,10 @@ class QuantumTrunk(nn.Module):
         """
         validate_encoder_activation(encoder_activation)
         validate_init(init_strategy, init_std)
-        if not 0.0 <= dropout_p < 1.0:
-            raise ValueError(f"dropout_p must be in [0, 1); got {dropout_p}.")
+        # dropout_p is deliberately not validated here: the binary models have
+        # always handed it to nn.Dropout unchecked, and tightening that changes
+        # which checkpoints load, so it is its own change (#404).  The
+        # multiclass model keeps its own [0, 1) check.
 
         self.n_input_features = n_input_features
         self.n_qubits = n_qubits

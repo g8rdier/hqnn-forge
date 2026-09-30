@@ -101,6 +101,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one's own data, with a plain-words verdict from the paired Wilcoxon test
 
 ### Changed
+- `MulticlassHybridClassifier` builds the same encoder → circuit → dropout trunk as
+  `HybridBinaryClassifier`, from shared code, so it now accepts every trunk option:
+  `embedding_rotation`, `entangler`, `readout` (the head reads `Linear(n_outputs, n_classes)`),
+  `encoder_activation`, `noise_level` / `noise_position` / `noise_method` /
+  `noise_trajectories`, and a custom `classical_encoder`. Each defaults to the behaviour the
+  model had before, and a multiclass checkpoint that predates them loads as before, with the
+  "predates" warning. `save_checkpoint` / `load_checkpoint` are typed against the new
+  head-agnostic `ClassifierBase`. The binary models' constructors do not change
 - `load_checkpoint` fills constructor arguments a checkpoint predates from
   `checkpoint._LEGACY_DEFAULTS` — the behaviour from before each argument existed — with a
   `RuntimeWarning` naming them, instead of refusing the file. A checkpoint written before the

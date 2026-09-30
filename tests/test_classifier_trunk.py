@@ -123,8 +123,6 @@ class TestMulticlassTrainingNoise:
         ({"init_strategy": "xavier"}, "init_strategy must be"),
         ({"init_std": 0.3}, "init_std applies to init_strategy='normal' only"),
         ({"init_strategy": "normal", "init_std": 0.0}, "init_std must be > 0"),
-        ({"dropout_p": 1.0}, r"dropout_p must be in \[0, 1\)"),
-        ({"dropout_p": -0.1}, r"dropout_p must be in \[0, 1\)"),
         ({"use_classical_encoder": False}, "must equal n_qubits"),
         (
             {
@@ -144,6 +142,23 @@ def test_every_model_rejects_the_same_trunk_options(
 ) -> None:
     with pytest.raises(ValueError, match=match):
         _build(cls, **options)
+
+
+@pytest.mark.parametrize("cls", [HybridBinaryClassifier, ParallelHybridClassifier])
+def test_binary_models_keep_their_unvalidated_dropout_p(cls: type) -> None:
+    # The refactor leaves dropout_p exactly as the binary models took it
+    # before: handed to nn.Dropout unchecked, so 1.0 and negative values
+    # build (and such checkpoints load).  Tightening this is #404.
+    assert isinstance(_build(cls, dropout_p=1.0).dropout, nn.Dropout)
+    assert isinstance(_build(cls, dropout_p=-0.1).dropout, nn.Identity)
+    with pytest.raises(ValueError, match="dropout probability has to be between 0 and 1"):
+        _build(cls, dropout_p=1.5)
+
+
+@pytest.mark.parametrize("dropout_p", [1.0, -0.1])
+def test_multiclass_keeps_its_dropout_range(dropout_p: float) -> None:
+    with pytest.raises(ValueError, match=r"dropout_p must be in \[0, 1\)"):
+        _build(MulticlassHybridClassifier, dropout_p=dropout_p)
 
 
 class TestOneImplementation:
