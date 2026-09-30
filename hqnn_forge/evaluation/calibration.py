@@ -1,7 +1,8 @@
 """
 hqnn_forge.evaluation.calibration
 =================================
-Calibration of a binary classifier's probabilities, and post-hoc fixes (#319).
+Calibration of a classifier's probabilities, and post-hoc fixes (#319; the
+multiclass measures #360).
 
 For risk scoring -- fraud, credit, churn -- the predicted probability is used as
 a probability, so it has to mean what it says: of the samples scored 0.2, about
@@ -26,6 +27,23 @@ Measures
     Per non-empty bin, the mean probability and the observed frequency, the
     points of a reliability diagram (``plots.plot_reliability_diagram``).
 
+For ``K`` classes, with ``(n, K)`` probabilities whose rows sum to 1 and
+integer labels ``0 … K−1``:
+
+``multiclass_brier_score``
+    ``mean_i Σ_k (p_ik − y_ik)²`` with ``y`` one-hot: scikit-learn's
+    ``brier_score_loss`` for multiclass input (scikit-learn 1.7 on).  0 is
+    perfect; it ranges up
+    to 2, and a constant ``1/K`` scores ``1 − 1/K``.  Note that for ``K = 2``
+    it is twice the binary ``brier_score``, which counts one class only.
+``top_label_ece``
+    The ECE of the confidence ``max_k p_ik`` against whether the top class
+    is right, Guo et al.'s definition: does a 70 % prediction come true
+    70 % of the time?
+``classwise_ece``
+    The mean over classes of each class's one-vs-rest ECE: every class's
+    probability, not only the top one, must be calibrated (Kull et al. 2019).
+
 Post-hoc calibration
 --------------------
 Both are fitted on a validation split by minimising the negative
@@ -38,6 +56,10 @@ log-likelihood of the labels, and applied to logits:
 ``PlattScaler``
     ``σ(a·z + b)`` (Platt 1999): also shifts the base rate, e.g. after
     training on oversampled data.  Monotone for ``a > 0``.
+``MulticlassTemperatureScaler``
+    ``softmax(z / T)`` for ``(n, K)`` logits, one ``T`` shared by every
+    class (Guo et al. 2017): dividing every logit by the same positive
+    number keeps their order, so the predicted class never changes.
 
 References
 ----------
@@ -48,6 +70,9 @@ References
   networks", ICML.
 * Mukhoti et al. (2020) "Calibrating deep neural networks using focal loss",
   NeurIPS.
+* Kull et al. (2019) "Beyond temperature scaling: obtaining well-calibrated
+  multi-class probabilities with Dirichlet calibration", NeurIPS (classwise
+  ECE).
 """
 
 from __future__ import annotations
@@ -59,11 +84,15 @@ import torch
 import torch.nn.functional as F
 
 __all__ = [
+    "MulticlassTemperatureScaler",
     "PlattScaler",
     "TemperatureScaler",
     "brier_score",
+    "classwise_ece",
     "expected_calibration_error",
+    "multiclass_brier_score",
     "reliability_curve",
+    "top_label_ece",
 ]
 
 BinStrategy = Literal["uniform", "quantile"]
@@ -129,6 +158,58 @@ def expected_calibration_error(
     """``Σ_b (n_b / n) · |frequency_b − mean probability_b|`` over the bins."""
     confidence, frequency, counts = reliability_curve(y_true, prob, n_bins, strategy)
     return float((counts / counts.sum() * (frequency - confidence).abs()).sum())
+
+
+def _multiclass_pair(y_true: object, prob: object) -> tuple[torch.Tensor, torch.Tensor]:
+    """Integer labels ``(n,)`` and probabilities ``(n, K)``, validated."""
+    p = torch.as_tensor(prob).to(torch.float64)
+    if p.ndim != 2 or p.shape[1] < 2:
+        raise ValueError(f"prob must have shape (n, K) with K ≥ 2; got {tuple(p.shape)}.")
+    y = torch.as_tensor(y_true).reshape(-1)
+    if y.numel() != p.shape[0]:
+        raise ValueError(f"y_true and prob differ in length: {y.numel()} vs {p.shape[0]}.")
+    if y.numel() == 0:
+        raise ValueError("y_true is empty.")
+    if y.is_floating_point() and not torch.equal(y, y.round()):
+        raise ValueError("y_true must hold integer class labels 0 … K−1.")
+    y = y.long()
+    if y.min() < 0 or y.max() >= p.shape[1]:
+        raise ValueError(f"y_true must hold class labels 0 … {p.shape[1] - 1}.")
+    if torch.isnan(p).any() or p.min() < 0 or p.max() > 1:
+        raise ValueError("prob must hold probabilities in [0, 1].")
+    if not torch.allclose(p.sum(1), torch.ones(p.shape[0], dtype=torch.float64), atol=1e-6):
+        raise ValueError("each row of prob must sum to 1.")
+    return y, p
+
+
+def multiclass_brier_score(y_true: object, prob: object) -> float:
+    """``mean_i Σ_k (p_ik − onehot(y_i)_k)²``; see the module docstring."""
+    y, p = _multiclass_pair(y_true, prob)
+    onehot = F.one_hot(y, p.shape[1]).to(torch.float64)
+    return float(((p - onehot) ** 2).sum(1).mean())
+
+
+def top_label_ece(
+    y_true: object, prob: object, n_bins: int = 10, strategy: BinStrategy = "uniform"
+) -> float:
+    """ECE of the top-class confidence against top-class correctness."""
+    y, p = _multiclass_pair(y_true, prob)
+    confidence, predicted = p.max(1)
+    return expected_calibration_error(
+        (predicted == y).to(torch.float64), confidence, n_bins, strategy
+    )
+
+
+def classwise_ece(
+    y_true: object, prob: object, n_bins: int = 10, strategy: BinStrategy = "uniform"
+) -> float:
+    """Mean over classes of the one-vs-rest ECE of each class's probability."""
+    y, p = _multiclass_pair(y_true, prob)
+    per_class = [
+        expected_calibration_error((y == k).to(torch.float64), p[:, k], n_bins, strategy)
+        for k in range(p.shape[1])
+    ]
+    return float(sum(per_class) / len(per_class))
 
 
 def _logit_pair(logits: object, y_true: object) -> tuple[torch.Tensor, torch.Tensor]:
@@ -209,3 +290,41 @@ class PlattScaler:
         """Calibrated positive-class probabilities, ``float64``."""
         z = torch.as_tensor(logits).detach().to(torch.float64)
         return torch.sigmoid(self.a * z + self.b)
+
+
+@dataclass(frozen=True)
+class MulticlassTemperatureScaler:
+    """``softmax(z / temperature)`` for ``(n, K)`` logits; see the module docstring."""
+
+    temperature: float
+
+    @classmethod
+    def fit(cls, logits: object, y_true: object) -> MulticlassTemperatureScaler:
+        """The temperature minimising the validation cross-entropy (L-BFGS on ``log T``)."""
+        z = torch.as_tensor(logits).detach().to(torch.float64)
+        y, _ = _multiclass_pair(y_true, torch.softmax(z, dim=-1) if z.ndim == 2 else z)
+        if torch.unique(y).numel() < 2:
+            raise ValueError("fitting a calibration needs at least two classes in y_true.")
+        log_t = torch.zeros((), dtype=torch.float64, requires_grad=True)
+        optimiser = torch.optim.LBFGS(
+            [log_t],
+            lr=1.0,
+            max_iter=500,
+            tolerance_grad=1e-10,
+            tolerance_change=1e-14,
+            line_search_fn="strong_wolfe",
+        )
+
+        def closure() -> torch.Tensor:
+            optimiser.zero_grad()
+            loss = F.cross_entropy(z / log_t.exp(), y)
+            loss.backward()
+            return loss
+
+        optimiser.step(closure)
+        return cls(float(log_t.detach().exp()))
+
+    def __call__(self, logits: object) -> torch.Tensor:
+        """Calibrated class probabilities ``(n, K)``, ``float64``."""
+        z = torch.as_tensor(logits).detach().to(torch.float64)
+        return torch.softmax(z / self.temperature, dim=-1)
