@@ -207,6 +207,27 @@ class TestApplyShots:
             with apply_shots(model, 20):
                 pass
 
+    def test_noise_block_refuses_a_sampled_layer(self) -> None:
+        # The noise block's default.mixed QNode is exact, so it would silently
+        # drop the shots of a layer built with them or inside apply_shots.
+        model = self._model()
+        original = model.quantum_layer.qlayer.qnode
+        with (
+            apply_shots(model, 20),
+            pytest.raises(RuntimeError, match="ignore the layer's shots=20"),
+        ):
+            with apply_depolarizing_noise(model, 0.1):
+                pass
+        assert model.quantum_layer.qlayer.qnode is original
+        layer = QuantumEncodingLayer(n_qubits=3, n_layers=1, shots=50, **SHIFT)
+        with pytest.raises(RuntimeError, match="ignore the layer's shots=50"):
+            with apply_depolarizing_noise(layer, 0.1):
+                pass
+        assert getattr(layer.qlayer, "_hqnn_noise_depth", 0) == 0
+        # p = 0 replaces nothing, so it stays allowed.
+        with apply_depolarizing_noise(layer, 0.0):
+            pass
+
     def test_errors_name_apply_shots(self) -> None:
         with (
             pytest.raises(TypeError, match="apply_shots expects"),

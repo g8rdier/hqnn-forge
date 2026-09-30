@@ -73,7 +73,7 @@ strategy:
 use_classical_encoder, dropout_p, device_name, diff_method, init_strategy,
 encoding_type, embedding_rotation, entangler, readout, encoder_activation,
 init_std, noise_level, noise_position, noise_method, noise_trajectories,
-trainable_input_scaling, shots:
+trainable_input_scaling, init_seed, classical_encoder, shots:
     As for :class:`~hqnn_forge.models.HybridBinaryClassifier`.
 """
 
@@ -94,6 +94,7 @@ from hqnn_forge.encoding.angle_embedding import (
 from hqnn_forge.models._trunk import DEFAULT_ENCODER_ACTIVATION, DEFAULT_INIT_STD, QuantumTrunk
 from hqnn_forge.models.base import ClassifierBase
 from hqnn_forge.noise import NoiseMethod, Position
+from hqnn_forge.utils.rng import as_seed, seeded_rng
 
 MulticlassStrategy = Literal["softmax", "one_vs_rest"]
 
@@ -119,10 +120,15 @@ class MulticlassHybridClassifier(QuantumTrunk, ClassifierBase):
     use_classical_encoder, dropout_p, device_name, diff_method,
     init_strategy, encoding_type, embedding_rotation, entangler, readout,
     encoder_activation, init_std, noise_level, noise_position, noise_method,
-    noise_trajectories, trainable_input_scaling, shots:
+    noise_trajectories, classical_encoder, trainable_input_scaling, shots:
         The trunk's options, exactly as for
         :class:`~hqnn_forge.models.HybridBinaryClassifier`.  With
         ``readout="first"`` every class head reads ⟨Z_0⟩ alone.
+    init_seed:
+        Seed for weight initialisation.  ``None`` (default) draws the initial
+        weights from the global torch RNG; an int draws them from a private RNG
+        seeded with it, so the same seed gives the same weights and the global
+        RNG is left exactly as it was.
 
     Attributes
     ----------
@@ -169,77 +175,93 @@ class MulticlassHybridClassifier(QuantumTrunk, ClassifierBase):
         noise_position: Position = "all",
         noise_method: NoiseMethod = "density",
         noise_trajectories: int = 1,
+        init_seed: int | None = None,
+        classical_encoder: nn.Module | None = None,
         trainable_input_scaling: bool = False,
         shots: int | None = None,
     ) -> None:
         super().__init__()
-        self._config = dict(
-            n_input_features=n_input_features,
-            n_qubits=n_qubits,
-            n_layers=n_layers,
-            n_classes=n_classes,
-            strategy=strategy,
-            use_classical_encoder=use_classical_encoder,
-            dropout_p=dropout_p,
-            device_name=device_name,
-            diff_method=diff_method,
-            init_strategy=init_strategy,
-            encoding_type=encoding_type,
-            embedding_rotation=embedding_rotation,
-            entangler=entangler,
-            readout=readout,
-            encoder_activation=encoder_activation,
-            init_std=init_std,
-            noise_level=noise_level,
-            noise_position=noise_position,
-            noise_method=noise_method,
-            noise_trajectories=noise_trajectories,
-            trainable_input_scaling=trainable_input_scaling,
-            shots=shots,
-        )
+        init_seed = as_seed(init_seed)
+        # Building the layers draws from the global RNG (nn.Linear and
+        # TorchLayer defaults), all of it overwritten by _initialise_weights.
+        # With init_seed the whole build runs inside seeded_rng, so the
+        # caller's stream is exactly where it was afterwards -- also when a
+        # check below raises after some layers were built.
+        with seeded_rng(init_seed) as reseed:
+            self._config = dict(
+                n_input_features=n_input_features,
+                n_qubits=n_qubits,
+                n_layers=n_layers,
+                n_classes=n_classes,
+                strategy=strategy,
+                use_classical_encoder=use_classical_encoder,
+                dropout_p=dropout_p,
+                device_name=device_name,
+                diff_method=diff_method,
+                init_strategy=init_strategy,
+                encoding_type=encoding_type,
+                embedding_rotation=embedding_rotation,
+                entangler=entangler,
+                readout=readout,
+                encoder_activation=encoder_activation,
+                init_std=init_std,
+                noise_level=noise_level,
+                noise_position=noise_position,
+                noise_method=noise_method,
+                noise_trajectories=noise_trajectories,
+                init_seed=init_seed,
+                classical_encoder=classical_encoder,
+                trainable_input_scaling=trainable_input_scaling,
+                shots=shots,
+            )
 
-        if n_classes < 2:
-            raise ValueError(f"n_classes must be ≥ 2; got {n_classes}.")
-        if strategy not in ("softmax", "one_vs_rest"):
-            raise ValueError(f"strategy must be 'softmax' or 'one_vs_rest'; got {strategy!r}.")
-        self.n_classes = n_classes
-        self.strategy = strategy
+            if n_classes < 2:
+                raise ValueError(f"n_classes must be ≥ 2; got {n_classes}.")
+            if strategy not in ("softmax", "one_vs_rest"):
+                raise ValueError(f"strategy must be 'softmax' or 'one_vs_rest'; got {strategy!r}.")
+            if not 0.0 <= dropout_p < 1.0:
+                raise ValueError(f"dropout_p must be in [0, 1); got {dropout_p}.")
+            self.n_classes = n_classes
+            self.strategy = strategy
 
-        # ── Shared trunk: encoder → quantum layer → dropout ───────────────
-        n_readouts = self._build_trunk(
-            n_input_features=n_input_features,
-            n_qubits=n_qubits,
-            n_layers=n_layers,
-            use_classical_encoder=use_classical_encoder,
-            dropout_p=dropout_p,
-            device_name=device_name,
-            diff_method=diff_method,
-            init_strategy=init_strategy,
-            encoding_type=encoding_type,
-            embedding_rotation=embedding_rotation,
-            entangler=entangler,
-            readout=readout,
-            encoder_activation=encoder_activation,
-            init_std=init_std,
-            noise_level=noise_level,
-            noise_position=noise_position,
-            noise_method=noise_method,
-            noise_trajectories=noise_trajectories,
-            trainable_input_scaling=trainable_input_scaling,
-            shots=shots,
-        )
+            # ── Shared trunk: encoder → quantum layer → dropout ───────────────
+            n_readouts = self._build_trunk(
+                n_input_features=n_input_features,
+                n_qubits=n_qubits,
+                n_layers=n_layers,
+                use_classical_encoder=use_classical_encoder,
+                dropout_p=dropout_p,
+                device_name=device_name,
+                diff_method=diff_method,
+                init_strategy=init_strategy,
+                encoding_type=encoding_type,
+                embedding_rotation=embedding_rotation,
+                entangler=entangler,
+                readout=readout,
+                encoder_activation=encoder_activation,
+                init_std=init_std,
+                noise_level=noise_level,
+                noise_position=noise_position,
+                noise_method=noise_method,
+                noise_trajectories=noise_trajectories,
+                classical_encoder=classical_encoder,
+                trainable_input_scaling=trainable_input_scaling,
+                shots=shots,
+            )
 
-        # ── Class heads: one row per class ────────────────────────────────
-        self.head = nn.Linear(n_readouts, n_classes)
+            # ── Class heads: one row per class ────────────────────────────────
+            self.head = nn.Linear(n_readouts, n_classes)
 
-        # ── Small-angle restricted-variance initialisation ─────────────────
-        self._initialise_weights()
+            # ── Small-angle restricted-variance initialisation ─────────────────
+            reseed()
+            self._initialise_weights()
 
     # ------------------------------------------------------------------
     def _initialise_weights(self) -> None:
         """Xavier on the encoder and heads; ``init_strategy`` on the quantum weights."""
+        # A custom encoder is left as given (it may be pretrained).
         for module in self.modules():
-            if isinstance(module, nn.Linear):
+            if isinstance(module, nn.Linear) and id(module) not in self._custom_encoder_ids:
                 nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
