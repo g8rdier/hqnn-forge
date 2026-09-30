@@ -55,7 +55,7 @@ default 5000 pairs take roughly half a minute at 4 qubits.
 
 References
 ----------
-* Sim, Johnson & Aspuru-Guzik (2019) "Expressibility and entangling
+* Sim et al. (2019) "Expressibility and entangling
   capability of parameterized quantum circuits for hybrid quantum-classical
   algorithms", Adv. Quantum Technol. 2, 1900070.
 * Meyer & Wallach (2002) "Global entanglement in multiparticle systems",
@@ -150,12 +150,24 @@ def haar_fidelity_bin_probabilities(n_qubits: int, n_bins: int) -> torch.Tensor:
     """
     Exact probability of each of ``n_bins`` equal bins of ``[0, 1]`` under
     ``P_Haar(F) = (N − 1)(1 − F)^(N − 2)``, ``N = 2^n_qubits``.  Sums to 1.
+
+    From about 8 qubits the high-fidelity bins are below the smallest float64
+    and come out as 0; the KL divergence uses their logarithms instead.
+    """
+    return _haar_log_bin_probabilities(n_qubits, n_bins).exp()
+
+
+def _haar_log_bin_probabilities(n_qubits: int, n_bins: int) -> torch.Tensor:
+    """
+    ``ln q_i`` for the bins of :func:`haar_fidelity_bin_probabilities`, finite
+    at any width: ``q_i = S(a) − S(b)`` with ``S(F) = (1 − F)^(N−1)``, so
+    ``ln q_i = ln S(a) + ln(1 − S(b)/S(a))``.
     """
     if n_qubits < 1 or n_bins < 1:
         raise ValueError(f"n_qubits and n_bins must be ≥ 1; got {n_qubits}, {n_bins}.")
     edges = torch.linspace(0.0, 1.0, n_bins + 1, dtype=torch.float64)
-    survival = (1.0 - edges) ** (2**n_qubits - 1)  # P(F ≥ edge)
-    return survival[:-1] - survival[1:]
+    log_survival = (2**n_qubits - 1) * torch.log1p(-edges)  # ln P(F ≥ edge); -inf at 1
+    return log_survival[:-1] + torch.log1p(-torch.exp(log_survival[1:] - log_survival[:-1]))
 
 
 def expressibility_from_fidelities(
@@ -179,9 +191,9 @@ def expressibility_from_fidelities(
     # F = 1 belongs to the last bin, not to a bin past the end.
     index = (f.clamp(0.0, 1.0) * n_bins).long().clamp(max=n_bins - 1)
     p = torch.bincount(index, minlength=n_bins).to(torch.float64) / f.numel()
-    q = haar_fidelity_bin_probabilities(n_qubits, n_bins)
+    log_q = _haar_log_bin_probabilities(n_qubits, n_bins)
     occupied = p > 0
-    return float((p[occupied] * torch.log(p[occupied] / q[occupied])).sum())
+    return float((p[occupied] * (torch.log(p[occupied]) - log_q[occupied])).sum())
 
 
 def meyer_wallach(states: torch.Tensor, n_qubits: int) -> torch.Tensor:
@@ -215,7 +227,7 @@ def _sample_states(
     encoder = _resolve_layer(layer, caller)
     qlayer, n_qubits = encoder.qlayer, encoder.n_qubits
     shapes = {name: tuple(p.shape) for name, p in qlayer.qnode_weights.items()}
-    width = int(getattr(layer, "n_features", n_qubits))
+    width = encoder.n_features
     if isinstance(inputs, str):
         if inputs != "random":
             raise ValueError(f"inputs must be 'random' or a tensor; got {inputs!r}.")

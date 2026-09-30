@@ -71,7 +71,7 @@ class TestHaarBins:
 
 
 class TestExpressibilityFormula:
-    @pytest.mark.parametrize("n_qubits, n_bins", [(2, 75), (3, 20)])
+    @pytest.mark.parametrize("n_qubits, n_bins", [(2, 75), (3, 20), (8, 75), (10, 75)])
     def test_a_constant_state_scores_the_maximum(self, n_qubits: int, n_bins: int) -> None:
         value = expressibility_from_fidelities(torch.ones(100), n_qubits, n_bins)
         assert value == pytest.approx((2**n_qubits - 1) * math.log(n_bins), rel=1e-12)
@@ -141,11 +141,12 @@ class TestMeyerWallach:
 
 
 class _CustomLayer(nn.Module):
-    """A minimal encoding layer (the contract of #215) around ``circuit``."""
+    """A minimal EncodingLayer (qlayer, n_qubits, n_features, prepare_inputs) around ``circuit``."""
 
     def __init__(self, circuit: Any, n_qubits: int, weight_shape: tuple[int, ...]) -> None:
         super().__init__()
         self.n_qubits = n_qubits
+        self.n_features = n_qubits
         qnode = qml.QNode(circuit, qml.device("default.qubit", wires=n_qubits), interface="torch")
         self.qlayer = qml.qnn.TorchLayer(qnode, {"weights": weight_shape})
 
@@ -246,7 +247,7 @@ class TestEncoders:
             torch.testing.assert_close(v, before[k], rtol=0, atol=0)
 
         gen = torch.Generator().manual_seed(4)
-        width = getattr(layer, "n_features", 3)
+        width = layer.n_features
         x = (torch.rand(2, width, generator=gen, dtype=torch.float64) * 2 - 1) * math.pi
         with torch.no_grad():
             for p in layer.qlayer.qnode_weights.values():

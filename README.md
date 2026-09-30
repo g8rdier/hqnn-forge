@@ -425,6 +425,9 @@ BibTeX or APA.
 - Berezniuk et al. (2020) — *A scale-dependent notion of effective dimension*
 - Schuld et al. (2020) — *Circuit-centric quantum classifiers*
 - Sim et al. (2019) — *Expressibility and entangling capability of parameterized quantum circuits for hybrid quantum-classical algorithms*
+- Meyer & Wallach (2002) — *Global entanglement in multiparticle systems*
+- Brennen (2003) — *An observable measure of entanglement for pure states of multi-qubit systems*
+- Scott (2004) — *Multipartite entanglement, quantum-error-correcting codes, and entangling power of quantum evolutions*
 - Jones & Gacon (2020) — *Efficient calculation of gradients in classical simulations of variational quantum algorithms*
 - Kandala et al. (2017) — *Hardware-efficient variational quantum eigensolver for small molecules and quantum magnets*
 - Havlíček et al. (2019) — *Supervised learning with quantum-enhanced feature spaces*
