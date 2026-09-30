@@ -225,7 +225,7 @@ class QuantumTrunk(nn.Module):
         # ── Classical encoder ─────────────────────────────────────────────
         if classical_encoder is not None:
             self.classical_encoder = custom_encoder(
-                classical_encoder, n_input_features, n_qubits, encoder_activation
+                classical_encoder, n_input_features, n_qubits, encoder_activation, width
             )
         elif use_classical_encoder:
             self.classical_encoder = nn.Sequential(

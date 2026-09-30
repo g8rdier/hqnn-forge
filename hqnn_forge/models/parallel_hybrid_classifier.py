@@ -221,7 +221,8 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
         n_qubits)``, trained together with the quantum layer: a small MLP,
         or a CNN or sequence model that reshapes the flat
         ``(batch, n_input_features)`` input itself.  It must return
-        ``(batch, n_qubits)``, which is checked here with one forward pass.
+        ``(batch, n_qubits)`` (``(batch, 2**n_qubits)`` with
+        ``encoding_type="amplitude"``), which is checked here with one forward pass.
         The model owns the angle range: it applies ``encoder_activation`` and
         the factor π on top of the module, exactly as for the built-in
         encoder, so the module should output unbounded features and not end
