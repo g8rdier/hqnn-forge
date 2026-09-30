@@ -32,6 +32,7 @@ argmax labels with the multiclass version of the same metric
 from __future__ import annotations
 
 import copy
+import itertools
 import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -40,7 +41,7 @@ import torch
 import torch.nn as nn
 
 from hqnn_forge.evaluation import METRICS, MULTICLASS_METRICS, find_optimal_threshold
-from hqnn_forge.utils.modes import eval_mode
+from hqnn_forge.utils.modes import _modes, _restore, eval_mode, train_mode
 
 LossFn = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
 
@@ -147,7 +148,8 @@ def train_model(
     ----------
     model:
         Any module mapping ``(batch, n_features)`` to logits of shape
-        ``(batch,)`` or ``(batch, 1)``.
+        ``(batch,)`` or ``(batch, 1)`` (binary), or ``(batch, n_classes)``
+        (multiclass).
     loss_fn:
         ``loss_fn(logits, targets) -> scalar``, e.g. ``FocalLoss()`` or
         ``nn.BCEWithLogitsLoss()``.  Targets are passed as float.  Mean
@@ -165,7 +167,12 @@ def train_model(
     max_epochs:
         Upper bound on the number of epochs.  Default: 100.
     batch_size:
-        Mini-batch size.  The last batch may be smaller.  Default: 256.
+        Mini-batch size.  The last batch may be smaller, but for
+        ``batch_size > 1`` never a single sample unless the training set is
+        one: a remainder of one is merged into the batch before it, which then
+        holds ``batch_size + 1``, because batch norm in train mode fails on one
+        sample.  With ``batch_size=1`` every batch is one sample, as asked.
+        Default: 256.
     monitor:
         ``"mcc"`` (default), ``"f1"``, ``"balanced_accuracy"`` or ``"val_loss"``.
     patience:
@@ -186,9 +193,14 @@ def train_model(
 
     Notes
     -----
-    Validation runs in eval mode through ``eval_mode``, so dropout is off and
-    every submodule's mode is restored afterwards.  The model is left in train
-    mode on return, as it was during training.
+    Training runs under :func:`~hqnn_forge.utils.modes.train_mode`: a
+    submodule the caller put in eval mode -- a frozen batch-norm layer, say --
+    stays in eval mode, with its statistics untouched, unless the whole model
+    arrived in eval mode, which is then trained in train mode throughout.
+    Validation runs in eval mode through ``eval_mode``.  Every epoch starts
+    from the modes training began with, so an ``on_epoch_end`` callback that
+    puts the model in eval mode does not carry over into the next epoch.  On
+    return every submodule has the mode it had on entry.
     """
     if monitor != "val_loss" and monitor not in METRICS:
         raise ValueError(
@@ -229,82 +241,93 @@ def train_model(
     epochs_without_improvement = 0
     n = X_train.shape[0]
 
-    for epoch in range(1, max_epochs + 1):
-        # ── train ────────────────────────────────────────────────────────
-        model.train()
-        perm = torch.randperm(n, generator=generator)
-        total, seen = 0.0, 0
-        for start in range(0, n, batch_size):
-            idx = perm[start : start + batch_size]
-            optimizer.zero_grad()
-            loss = loss_fn(_logits(model, X_train[idx]), y_train[idx])
-            loss.backward()
-            optimizer.step()
-            total += loss.item() * idx.numel()
-            seen += idx.numel()
-        record = EpochRecord(epoch=epoch, train_loss=total / seen)
+    # Batch boundaries; a trailing batch of one sample is merged into the one
+    # before it, unless every batch is meant to be one (see batch_size above).
+    bounds = [*range(0, n, batch_size), n]
+    if batch_size > 1 and len(bounds) > 2 and bounds[-1] - bounds[-2] == 1:
+        del bounds[-2]
 
-        # ── validate ─────────────────────────────────────────────────────
-        if val is not None:
-            x_v, y_v = val
-            with torch.no_grad(), eval_mode(model):
-                val_logits = _logits(model, x_v)
-                val_loss = float(loss_fn(val_logits, _target(val_logits, y_v)))
-            if lower_is_better:
-                value, threshold = val_loss, None
-            elif val_logits.ndim == 2:
-                # Multiclass: no threshold to search; score the argmax labels.
-                if torch.any(torch.isnan(val_logits)):
-                    value, threshold = math.nan, None
+    # The caller's per-submodule modes, not model.train(), which recurses and
+    # would unfreeze a submodule the caller put in eval mode (#174).
+    with train_mode(model):
+        # Validation restores its own modes, but a callback need not, so every
+        # epoch starts from these, as the per-epoch model.train() used to.
+        epoch_modes = _modes(model)
+        for epoch in range(1, max_epochs + 1):
+            _restore(epoch_modes)
+            # ── train ────────────────────────────────────────────────────────
+            perm = torch.randperm(n, generator=generator)
+            total, seen = 0.0, 0
+            for start, stop in itertools.pairwise(bounds):
+                idx = perm[start:stop]
+                optimizer.zero_grad()
+                loss = loss_fn(_logits(model, X_train[idx]), y_train[idx])
+                loss.backward()
+                optimizer.step()
+                total += loss.item() * idx.numel()
+                seen += idx.numel()
+            record = EpochRecord(epoch=epoch, train_loss=total / seen)
+
+            # ── validate ─────────────────────────────────────────────────────
+            if val is not None:
+                x_v, y_v = val
+                with torch.no_grad(), eval_mode(model):
+                    val_logits = _logits(model, x_v)
+                    val_loss = float(loss_fn(val_logits, _target(val_logits, y_v)))
+                if lower_is_better:
+                    value, threshold = val_loss, None
+                elif val_logits.ndim == 2:
+                    # Multiclass: no threshold to search; score the argmax labels.
+                    if torch.any(torch.isnan(val_logits)):
+                        value, threshold = math.nan, None
+                    else:
+                        value = MULTICLASS_METRICS[monitor](y_v.long(), val_logits.argmax(dim=-1))
+                        threshold = None
                 else:
-                    value = MULTICLASS_METRICS[monitor](y_v.long(), val_logits.argmax(dim=-1))
-                    threshold = None
-            else:
-                val_prob = torch.sigmoid(val_logits)
-                if torch.any(torch.isnan(val_prob)):
-                    # find_optimal_threshold rejects NaN probabilities rather
-                    # than label them negative.  Diverging must not take the
-                    # history and the best-epoch snapshot down with it, so
-                    # score the epoch NaN, as the val_loss path already does:
-                    # it never improves, and patience ends the run.
-                    value, threshold = math.nan, None
+                    val_prob = torch.sigmoid(val_logits)
+                    if torch.any(torch.isnan(val_prob)):
+                        # find_optimal_threshold rejects NaN probabilities rather
+                        # than label them negative.  Diverging must not take the
+                        # history and the best-epoch snapshot down with it, so
+                        # score the epoch NaN, as the val_loss path already does:
+                        # it never improves, and patience ends the run.
+                        value, threshold = math.nan, None
+                    else:
+                        search = find_optimal_threshold(y_v.long(), val_prob, metric=monitor)
+                        value, threshold = search.score, search.threshold
+                record = EpochRecord(
+                    epoch=epoch,
+                    train_loss=record.train_loss,
+                    val_loss=val_loss,
+                    val_score=None if lower_is_better else value,
+                    val_threshold=threshold,
+                )
+
+                if history.best_value is None or math.isnan(history.best_value):
+                    improved = not math.isnan(value)
+                elif lower_is_better:
+                    improved = value < history.best_value - min_delta
                 else:
-                    search = find_optimal_threshold(y_v.long(), val_prob, metric=monitor)
-                    value, threshold = search.score, search.threshold
-            record = EpochRecord(
-                epoch=epoch,
-                train_loss=record.train_loss,
-                val_loss=val_loss,
-                val_score=None if lower_is_better else value,
-                val_threshold=threshold,
-            )
+                    improved = value > history.best_value + min_delta
 
-            if history.best_value is None or math.isnan(history.best_value):
-                improved = not math.isnan(value)
-            elif lower_is_better:
-                improved = value < history.best_value - min_delta
-            else:
-                improved = value > history.best_value + min_delta
+                if improved:
+                    history.best_epoch, history.best_value = epoch, value
+                    history.best_threshold = threshold
+                    epochs_without_improvement = 0
+                    if restore_best:
+                        best_state = copy.deepcopy(model.state_dict())
+                else:
+                    epochs_without_improvement += 1
 
-            if improved:
-                history.best_epoch, history.best_value = epoch, value
-                history.best_threshold = threshold
-                epochs_without_improvement = 0
-                if restore_best:
-                    best_state = copy.deepcopy(model.state_dict())
-            else:
-                epochs_without_improvement += 1
+            history.epochs.append(record)
+            if on_epoch_end is not None:
+                on_epoch_end(record)
 
-        history.epochs.append(record)
-        if on_epoch_end is not None:
-            on_epoch_end(record)
+            if has_val and patience is not None and epochs_without_improvement >= patience:
+                history.stopped_early = epoch < max_epochs
+                break
 
-        if has_val and patience is not None and epochs_without_improvement >= patience:
-            history.stopped_early = epoch < max_epochs
-            break
-
-    if restore_best and best_state is not None and history.best_epoch != history.n_epochs:
-        model.load_state_dict(best_state)
-        history.restored_best = True
-    model.train()
+        if restore_best and best_state is not None and history.best_epoch != history.n_epochs:
+            model.load_state_dict(best_state)
+            history.restored_best = True
     return history

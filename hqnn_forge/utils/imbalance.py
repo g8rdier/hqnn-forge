@@ -92,8 +92,7 @@ class FocalLoss(nn.Module):
             raise ValueError(f"alpha must be in (0, 1); got {alpha}.")
         if gamma < 0.0:
             raise ValueError(f"gamma must be ≥ 0; got {gamma}.")
-        if reduction not in ("mean", "sum", "none"):
-            raise ValueError(f"reduction must be 'mean', 'sum', or 'none'; got {reduction!r}.")
+        _check_reduction(reduction)
 
         self.alpha = alpha
         self.gamma = gamma
@@ -231,6 +230,12 @@ def compute_class_weights(
     return torch.tensor([w_neg, w_pos], dtype=torch.float32)
 
 
+def _check_reduction(reduction: str) -> None:
+    """Refuse a *reduction* other than ``"mean"``, ``"sum"`` or ``"none"``."""
+    if reduction not in ("mean", "sum", "none"):
+        raise ValueError(f"reduction must be 'mean', 'sum', or 'none'; got {reduction!r}.")
+
+
 def weighted_bce_loss(
     logits: torch.Tensor,
     targets: torch.Tensor,
@@ -257,6 +262,11 @@ def weighted_bce_loss(
     torch.Tensor
         Weighted loss, scalar or per-sample depending on *reduction*.
 
+    Raises
+    ------
+    ValueError
+        If *reduction* is not one of the three values above.
+
     Examples
     --------
     >>> import torch
@@ -267,6 +277,7 @@ def weighted_bce_loss(
     >>> weighted_bce_loss(pred, y, cw)
     tensor(0.4081)
     """
+    _check_reduction(reduction)
     logits = logits.view(-1)
     targets = targets.view(-1).float()
 

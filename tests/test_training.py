@@ -446,7 +446,7 @@ class TestValidation:
 
 
 class TestModes:
-    def test_validation_runs_without_dropout_and_restores_train_mode(
+    def test_validation_runs_without_dropout_and_restores_entry_modes(
         self, data: tuple[torch.Tensor, ...]
     ) -> None:
         X, y, Xv, yv = data
@@ -468,6 +468,164 @@ class TestModes:
         # With lr=0 and dropout off in validation, every epoch sees the same val loss
         assert len({r.val_loss for r in records}) == 1
         assert all(m.training for m in model.modules())
+
+    def test_a_frozen_batchnorm_stays_frozen(self, data: tuple[torch.Tensor, ...]) -> None:
+        """#174: the caller froze the statistics; training must not move them."""
+        X, y, Xv, yv = data
+        torch.manual_seed(0)
+        model = nn.Sequential(nn.Linear(N_FEATURES, 8), nn.BatchNorm1d(8), nn.Linear(8, 1))
+        model[1].eval()
+        mean, var = model[1].running_mean.clone(), model[1].running_var.clone()
+        weight = model[0].weight.clone()
+        train_model(
+            model,
+            nn.BCEWithLogitsLoss(),
+            torch.optim.SGD(model.parameters(), lr=0.1),
+            X,
+            y,
+            Xv,
+            yv,
+            max_epochs=2,
+            batch_size=32,
+            patience=None,
+        )
+        assert model.training and not model[1].training
+        assert torch.equal(model[1].running_mean, mean)
+        assert torch.equal(model[1].running_var, var)
+        assert not torch.equal(model[0].weight, weight), "the rest of the model did train"
+
+    def test_a_frozen_body_under_an_eval_root_stays_frozen(
+        self, data: tuple[torch.Tensor, ...]
+    ) -> None:
+        """model.eval() then the head back to train: only the head may train."""
+        X, y, _, _ = data
+        torch.manual_seed(0)
+        model = nn.Sequential(nn.Linear(N_FEATURES, 8), nn.BatchNorm1d(8), nn.Linear(8, 1))
+        model.eval()
+        model[2].train()
+        mean, var = model[1].running_mean.clone(), model[1].running_var.clone()
+        train_model(
+            model,
+            nn.BCEWithLogitsLoss(),
+            torch.optim.SGD(model.parameters(), lr=0.1),
+            X,
+            y,
+            max_epochs=2,
+            batch_size=32,
+        )
+        assert torch.equal(model[1].running_mean, mean)
+        assert torch.equal(model[1].running_var, var)
+        assert [m.training for m in model] == [False, False, True]
+
+    def test_every_epoch_trains_in_the_entry_modes_after_a_callback_calls_eval(
+        self, data: tuple[torch.Tensor, ...]
+    ) -> None:
+        """A callback evaluating the model must not leave later epochs in eval mode."""
+        X, y, Xv, yv = data
+        torch.manual_seed(0)
+        model = nn.Sequential(
+            nn.Linear(N_FEATURES, 8), nn.BatchNorm1d(8), nn.Dropout(0.5), nn.Linear(8, 1)
+        )
+        model[1].eval()
+        seen: dict[int, set[tuple[bool, bool]]] = {}
+        epoch = [1]
+
+        def record(_: nn.Module, args: tuple[torch.Tensor, ...]) -> None:
+            if torch.is_grad_enabled():  # training batches only, not validation
+                seen.setdefault(epoch[0], set()).add((model[1].training, model[2].training))
+
+        def on_epoch_end(_: EpochRecord) -> None:
+            model.eval()
+            epoch[0] += 1
+
+        model.register_forward_pre_hook(record)
+        train_model(
+            model,
+            nn.BCEWithLogitsLoss(),
+            torch.optim.SGD(model.parameters(), lr=0.1),
+            X,
+            y,
+            Xv,
+            yv,
+            max_epochs=3,
+            batch_size=64,
+            patience=None,
+            on_epoch_end=on_epoch_end,
+        )
+        # Batch norm frozen, dropout active, in every epoch
+        assert seen == {1: {(False, True)}, 2: {(False, True)}, 3: {(False, True)}}
+        assert model.training and not model[1].training and model[2].training
+
+    def test_an_eval_model_trains_in_train_mode_and_is_returned_in_eval(
+        self, data: tuple[torch.Tensor, ...]
+    ) -> None:
+        """A model fresh from load_checkpoint is in eval mode; dropout must still act."""
+        X, y, _, _ = data
+        model = nn.Sequential(nn.Linear(N_FEATURES, 8), nn.Dropout(0.5), nn.Linear(8, 1)).eval()
+        seen: list[bool] = []
+        model[1].register_forward_pre_hook(lambda m, _: seen.append(m.training))
+        train_model(
+            model,
+            nn.BCEWithLogitsLoss(),
+            torch.optim.SGD(model.parameters(), lr=0.1),
+            X,
+            y,
+            max_epochs=1,
+            batch_size=64,
+        )
+        assert seen and all(seen)
+        assert not any(m.training for m in model.modules())
+
+
+class TestBatching:
+    """#174: a trailing batch of one sample is merged into the batch before it."""
+
+    @staticmethod
+    def _batch_sizes(n: int, batch_size: int) -> list[int]:
+        X, y = _separable(n, 0)
+        model = _logreg()
+        sizes: list[int] = []
+        model.register_forward_pre_hook(lambda _, args: sizes.append(args[0].shape[0]))
+        train_model(
+            model,
+            nn.BCEWithLogitsLoss(),
+            torch.optim.SGD(model.parameters(), lr=0.1),
+            X,
+            y,
+            max_epochs=1,
+            batch_size=batch_size,
+        )
+        return sizes
+
+    @pytest.mark.parametrize(
+        ("n", "batch_size", "expected"),
+        [
+            (201, 200, [201]),
+            (401, 200, [200, 201]),
+            (400, 200, [200, 200]),
+            (402, 200, [200, 200, 2]),
+            (199, 200, [199]),
+            (1, 5, [1]),
+            (5, 1, [1, 1, 1, 1, 1]),
+        ],
+    )
+    def test_batch_boundaries(self, n: int, batch_size: int, expected: list[int]) -> None:
+        assert self._batch_sizes(n, batch_size) == expected
+
+    def test_batchnorm_model_survives_a_remainder_of_one(self) -> None:
+        X, y = _separable(201, 0)
+        torch.manual_seed(0)
+        model = nn.Sequential(nn.Linear(N_FEATURES, 8), nn.BatchNorm1d(8), nn.Linear(8, 1))
+        history = train_model(
+            model,
+            nn.BCEWithLogitsLoss(),
+            torch.optim.SGD(model.parameters(), lr=0.1),
+            X,
+            y,
+            max_epochs=2,
+            batch_size=200,
+        )
+        assert history.n_epochs == 2
 
 
 class TestHybridClassifier:
