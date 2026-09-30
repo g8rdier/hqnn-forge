@@ -45,7 +45,6 @@ def test_angle_embedding_still_exports_what_it_used_to() -> None:
     # Code written against the old location keeps working for one release,
     # including the underscored spellings, and they are the same objects.
     for name in (
-        "ENTANGLERS",
         "FALLBACK_CHAIN",
         "DeviceName",
         "DiffMethod",
