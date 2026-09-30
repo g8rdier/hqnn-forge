@@ -9,7 +9,7 @@ parameters the layer really has.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 
@@ -18,7 +18,7 @@ from hqnn_forge.encoding.angle_embedding import Entangler, variational_weight_sh
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 
 CPU: dict[str, Any] = {"device_name": "default.qubit", "diff_method": "backprop"}
-ENTANGLERS: list[Entangler] = ["ring", "strongly_entangling"]
+ENTANGLERS: list[Entangler] = list(get_args(Entangler))
 
 
 def _layers(entangler: Entangler) -> list[Any]:
@@ -59,4 +59,4 @@ def test_dim_zero_is_the_layer_index() -> None:
 
 def test_unknown_entangler() -> None:
     with pytest.raises(ValueError, match="entangler must be"):
-        variational_weight_shape("brickwork", 3, 2)  # type: ignore[arg-type]
+        variational_weight_shape("ladder", 3, 2)  # type: ignore[arg-type]

@@ -178,16 +178,16 @@ def variational_weight_shape(
     The one place an encoder's variational weight shape is defined: every
     encoding layer registers its ``weights`` with this shape.  Dim 0 is always
     the layer index, which :func:`~hqnn_forge.initializers.block_local_init_`
-    and the diagnostics' ``n_layers`` fallback rely on.  Both blocks so far
-    apply one ``Rot(φ, θ, ω)`` per qubit per layer: ``(n_layers, n_qubits, 3)``.
+    and the diagnostics' ``n_layers`` fallback rely on.  Every block so far
+    (``"ring"``, ``"strongly_entangling"``, ``"brickwork"``) applies one
+    ``Rot(φ, θ, ω)`` per qubit per layer: ``(n_layers, n_qubits, 3)``.
 
     Raises
     ------
     ValueError
         For an unknown ``entangler``.
     """
-    if entangler not in ("ring", "strongly_entangling"):
-        raise ValueError(f"entangler must be 'ring' or 'strongly_entangling'; got {entangler!r}.")
+    _check_entangler(entangler)
     return (n_layers, n_qubits, 3)
 
 
