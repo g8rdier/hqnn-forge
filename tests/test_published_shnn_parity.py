@@ -23,17 +23,16 @@ Checked structurally (fast, no training):
   that differ (head width, embedding axis, entangler order and range, depth,
   encoder range) are pinned so a change to them shows up here.
 
-Not checked, and why: the published MCC (0.5758 ± 0.0371) and MCC/kParam
+Not checked here: the published MCC (0.5758 ± 0.0371) and MCC/kParam
 (4.720) come from 5-fold CV on the 284,807-row Kaggle dataset with SMOTE and
-100 epochs; reproducing them needs the dataset (not redistributable) and hours
-of simulation, so they are out of scope for the test suite.  With the
-structure now identical, a full run of ``published_shnn()`` on that data is
-the remaining check of the reported numbers.
+100 epochs.  That run is ``tests/test_published_shnn_reproduction.py``, opt-in
+because it needs the dataset (not redistributable) and days of simulation.
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 
 import pennylane as qml
 import pytest
@@ -81,10 +80,6 @@ def _logical_tape(circuit: qml.QNode, **weights: torch.Tensor) -> qml.tape.Quant
     tape = qml.workflow.construct_tape(circuit, level="top")(torch.zeros(N_QUBITS), **weights)
     (decomposed,), _ = qml.transforms.decompose(tape, gate_set=LOGICAL_GATE_SET)
     return decomposed
-
-
-def _cnot_pairs(tape: qml.tape.QuantumScript) -> list[tuple[int, int]]:
-    return [tuple(op.wires.tolist()) for op in tape.operations if op.name == "CNOT"]
 
 
 def _first_entangler_gate(tape: qml.tape.QuantumScript) -> str:
@@ -185,12 +180,12 @@ class TestPublishedConfigurationParity:
         assert summary.gate_counts["RY"] == 8 and "RX" not in summary.gate_counts
 
     def test_cnot_pairs_and_gate_order_are_identical(
-        self, published: tuple, configured: tuple
+        self, published: tuple, configured: tuple, cnot_pairs: Callable
     ) -> None:
         _, _, ref_tape = published
         model, _ = configured
         our_tape = _our_tape(model)
-        assert _cnot_pairs(our_tape) == _cnot_pairs(ref_tape)
+        assert cnot_pairs(our_tape) == cnot_pairs(ref_tape)
         assert _first_entangler_gate(our_tape) == _first_entangler_gate(ref_tape) == "Rot"
 
     def test_same_logits_with_the_same_weights(self, published: tuple, configured: tuple) -> None:
@@ -263,15 +258,15 @@ class TestDefaultConfigurationIsAVariant:
         assert ref.gate_counts.get("RY") == 8 and "RX" not in ref.gate_counts
         assert summary.gate_counts.get("RX") == 8 and "RY" not in summary.gate_counts
 
-    def test_entangler_range(self, published: tuple, ours: tuple) -> None:
+    def test_entangler_range(self, published: tuple, ours: tuple, cnot_pairs: Callable) -> None:
         _, ref, ref_tape = published
         _, summary, our_tape = ours
         ring = [(i, (i + 1) % N_QUBITS) for i in range(N_QUBITS)]
         ring2 = [(i, (i + 2) % N_QUBITS) for i in range(N_QUBITS)]
         # StronglyEntanglingLayers uses range l mod (n-1) + 1: range 1, then range 2.
-        assert _cnot_pairs(ref_tape) == ring + ring2
+        assert cnot_pairs(ref_tape) == ring + ring2
         # Ours is a range-1 ring in every layer.
-        assert _cnot_pairs(our_tape) == ring + ring
+        assert cnot_pairs(our_tape) == ring + ring
         # The range, not the gate order, is what costs the depth: a range-2 ring on
         # 8 qubits splits into two independent 4-cycles, while a range-1 ring
         # serialises around all 8.  Swapping Rot and CNOT leaves both numbers alone.
