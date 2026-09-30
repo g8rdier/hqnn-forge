@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `entangler="brickwork"`: nearest-neighbour CNOT pairs without wrap-around, so each ⟨Z_i⟩
   readout keeps a local light cone at shallow depth; at 2 layers its total gradient variance
   stays flat from 4 to 8 qubits where the ring's falls 4.6x
+- `entangler="hardware_efficient"`: a nearest-neighbour `CZ` ladder then `RY` on every qubit
+  (Kandala et al. 2017), backed by `hqnn_forge.circuits.hardware_efficient_layer`, in every
+  encoder but amplitude and in the classifiers. Its weights have shape `(n_layers, n_qubits)`,
+  not `(n_layers, n_qubits, 3)`: code that assumes a trailing Euler-angle axis should read the
+  shape from `variational_weight_shape`. The default `"ring"` block now runs through
+  `hqnn_forge.circuits.strongly_entangling_layer`, gate for gate as before
 - `AmplitudeEncodingLayer`: amplitude embedding of up to `2**n_qubits` features per sample,
   with zero-padding and L2 normalisation in `forward`, ahead of the same entangling ansatz;
   gradients with respect to the inputs are only supported under `backprop`

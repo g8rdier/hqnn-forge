@@ -217,7 +217,7 @@ class QuantumTrunk(nn.Module):
     # ------------------------------------------------------------------
     def _initialise_quantum_weights(self) -> None:
         """Draw the circuit weights with ``init_strategy`` (the models' classical init is their own)."""
-        weights = self.quantum_layer.qlayer.weights  # (n_layers, n_qubits, 3)
+        weights = self.quantum_layer.qlayer.weights  # dim 0: layer (variational_weight_shape)
         if self.init_strategy == "block_local":
             block_local_init_(weights.data, n_qubits=self.n_qubits)
         elif self.init_strategy == "normal":

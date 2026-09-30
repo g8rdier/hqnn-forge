@@ -381,8 +381,10 @@ def _make_angle_embedding_circuit(
     where
 
     * ``inputs``  — shape ``(n_qubits,)`` — the pre-processed feature vector.
-    * ``weights`` — shape ``(n_layers, n_qubits, 3)`` — rotation angles per
-                    layer, qubit, and Euler angle (φ, θ, ω) for ``qml.Rot``.
+    * ``weights`` — shape :func:`variational_weight_shape`: ``(n_layers,
+                    n_qubits, 3)``, the ``qml.Rot`` angles (φ, θ, ω) per layer
+                    and qubit, or ``(n_layers, n_qubits)``, the ``RY`` angles,
+                    for ``entangler="hardware_efficient"``.
 
     Called inside a QNode it records one ``qml.expval(PauliZ)`` measurement per
     readout wire; the QNode turns them into the expectation values.
@@ -456,7 +458,8 @@ def _make_angle_embedding_circuit(
        qubits and 2 layers (the last-layer ``Rot`` off wire 0, wire 0's ω,
        and layer 0's ``Rot`` on wires 2 and 3), 17 by autograd.  The weight
        tensor keeps its ``(n_layers, n_qubits, 3)`` shape for every
-       entangler.
+       ``Rot`` entangler; ``"hardware_efficient"`` has one ``RY`` angle per
+       qubit, shape ``(n_layers, n_qubits)``.
 
     4. **Measurement**:
        Returns ``[qml.expval(qml.PauliZ(i)) for i in range(n_qubits)]``.
@@ -668,6 +671,9 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
     | ``weights``| ``(n_layers, n_qubits, 3)``       |
     +-----------+------------------------------------+
 
+    ``(n_layers, n_qubits)`` for ``entangler="hardware_efficient"``; see
+    :func:`variational_weight_shape`.
+
     **Important**: Call ``hqnn_forge.initializers.restricted_normal_init_``
     on ``layer.qlayer.weights`` immediately after construction to obtain
     small-angle initial values (see :mod:`hqnn_forge.initializers` for what
@@ -785,10 +791,11 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
         )
 
         # Declare the trainable weight tensor shape for TorchLayer ─────────
-        # Shape: (n_layers, n_qubits, 3)
+        # Shape: variational_weight_shape(entangler, ...)
         #   dim-0: layer index ℓ ∈ {0, …, n_layers-1}
         #   dim-1: qubit  index i ∈ {0, …, n_qubits-1}
-        #   dim-2: Euler angles (φ, θ, ω) for qml.Rot
+        #   dim-2: Euler angles (φ, θ, ω) for qml.Rot; absent for
+        #          "hardware_efficient", whose RY takes one angle
         weight_shapes: dict[str, tuple[int, ...]] = {
             "weights": variational_weight_shape(entangler, n_qubits, n_layers),
         }
