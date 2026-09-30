@@ -71,7 +71,9 @@ BinStrategy = Literal["uniform", "quantile"]
 
 def _pair(y_true: object, prob: object) -> tuple[torch.Tensor, torch.Tensor]:
     y = torch.as_tensor(y_true).reshape(-1).to(torch.float64)
-    p = torch.as_tensor(prob).reshape(-1).to(torch.float64)
+    # contiguous: a column of a 2-D array (predict_proba(X)[:, 1]) is a strided
+    # view, which torch.searchsorted in the binning copies with a warning.
+    p = torch.as_tensor(prob).reshape(-1).to(torch.float64).contiguous()
     if y.shape != p.shape:
         raise ValueError(f"y_true and prob differ in length: {y.numel()} vs {p.numel()}.")
     if y.numel() == 0:

@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `calibration="temperature"` or `"platt"` on `HybridClassifierEstimator`: fitted on the
+  validation split, applied in `predict_proba`, with the threshold mapped through it so
+  `predict` is unchanged; stored as `calibrator_` (#359)
 - Project scaffold and packaging setup
 - PCANormalizer (pure-NumPy) for quantum angle encoding
 - Small-angle restricted-variance initialiser (the σ formulas are this library's own
