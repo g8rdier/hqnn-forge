@@ -9,7 +9,8 @@ one tape per sample before the gradient transform sees it
 compares, for each encoder, forward and forward+backward time of
 
 * ``split``           -- lightning.qubit / adjoint, one tape per sample (the library default);
-* ``native``          -- lightning.qubit / adjoint on the broadcast tape, no split;
+* ``native``          -- lightning.qubit / adjoint on the broadcast tape, no library split
+                         (the device splits it itself in its preprocessing);
 * ``split+batch_obs`` -- the split, on a lightning device built with ``batch_obs=True``;
 * ``backprop``        -- default.qubit / backprop, which vectorises the batch;
 
@@ -33,9 +34,11 @@ torch 2.14), angle layer, 2 layers, forward+backward:
                               14     1.42 s   +22 MB      1.62 s  +1182 MB
                               16    10.1  s   +35 MB      9.8  s  +3161 MB
 
-Timings vary by some tens of percent between runs.  Native broadcasting is
-correct on lightning's adjoint path in this PennyLane version but is not
-faster than the split, so the split stays.  backprop is the fast path for
+Timings are single runs and vary by some tens of percent between runs.
+Native broadcasting is correct on lightning's adjoint path in this PennyLane
+version but is not faster than the split: lightning.qubit's own preprocessing
+applies ``broadcast_expand``, so ``native`` is the same per-sample split done
+on the device, and the split stays.  backprop is the fast path for
 batches of small circuits (for a single sample lightning is faster), and loses
 on memory from about 14 qubits.
 """

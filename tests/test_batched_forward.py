@@ -200,10 +200,11 @@ class TestInputGradients:
 @pytest.mark.skipif(not _lightning_available(), reason="pennylane-lightning not installed")
 @pytest.mark.parametrize("layer_cls", LAYER_CLASSES)
 def test_lightning_runs_broadcast_tapes_correctly(layer_cls: type) -> None:
-    # #312: the split into one tape per sample stays on lightning's adjoint
-    # path for speed, not correctness -- broadcast tapes give the same outputs
-    # and gradients there (PennyLane 0.45).  If this starts failing, the split
-    # is load-bearing again and expand_batch_dimension's docstring is wrong.
+    # #312: handing lightning's adjoint path the broadcast tape unsplit gives
+    # the same outputs and gradients as the split (PennyLane 0.45; lightning's
+    # own preprocessing splits it per sample).  If this starts failing, the
+    # split is load-bearing for correctness again and expand_batch_dimension's
+    # docstring is wrong.
     import pennylane as qml
 
     split = _build(layer_cls, "lightning.qubit", "adjoint")
