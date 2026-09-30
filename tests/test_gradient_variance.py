@@ -449,13 +449,26 @@ class TestSeveralTensors:
 class TestDefaultDevice:
     @pytest.mark.requires_lightning
     @pytest.mark.parametrize("layer_cls", [QuantumEncodingLayer, IQPEncodingLayer])
-    def test_estimates_on_the_library_default_device(self, layer_cls: type) -> None:
-        """Every other test pins default.qubit/backprop; the default is lightning/adjoint."""
+    def test_matches_default_qubit_on_the_library_default_device(self, layer_cls: type) -> None:
+        """
+        Every other test pins default.qubit/backprop; the default is
+        lightning/adjoint.  The same draws on both must give the same
+        per-parameter variances, so wrong adjoint gradients or draws that are
+        not reproduced on lightning fail here (they agree to about 3e-8).
+        """
+        torch.manual_seed(0)
         layer = layer_cls(n_qubits=3, n_layers=2)
+        qnode = layer.qlayer.qnode
+        assert (qnode.device.name, qnode.diff_method) == ("lightning.qubit", "adjoint")
+        reference = layer_cls(n_qubits=3, n_layers=2, **CPU)
+        reference.load_state_dict(layer.state_dict())
         before = layer.qlayer.weights.detach().clone()
-        result = gradient_variance(layer, n_samples=5, generator=_gen())
+
+        result = gradient_variance(layer, n_samples=5, generator=_gen(1))
+        expected = gradient_variance(reference, n_samples=5, generator=_gen(1))
+
         assert result.total_variance > 0.0
-        assert result.per_parameter.shape == before.shape
+        torch.testing.assert_close(result.per_parameter, expected.per_parameter, rtol=0, atol=1e-6)
         torch.testing.assert_close(layer.qlayer.weights.detach(), before, rtol=0, atol=0)
 
 
