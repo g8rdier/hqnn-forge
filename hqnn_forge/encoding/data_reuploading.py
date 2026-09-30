@@ -34,7 +34,7 @@ Design Rationale
 
   Step 2 is exactly one layer of the angle encoder, so with ``n_layers=1``
   this layer is :class:`~hqnn_forge.encoding.QuantumEncodingLayer` gate for
-  gate, for either ``entangler``.  The measurement is ⟨Z_i⟩ on the readout
+  gate, for every ``entangler``.  The measurement is ⟨Z_i⟩ on the readout
   wires (:func:`~hqnn_forge.encoding.angle_embedding.measure_z`), as in the
   other encoders.
 
@@ -343,7 +343,7 @@ class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
         first upload, a global phase, unscaled.  Default: ``False``, so the
         parameter count matches the other encoders.
     entangler:
-        ``"ring"`` (default), ``"strongly_entangling"`` or
+        ``"ring"`` (default), ``"strongly_entangling"``, ``"brickwork"`` or
         ``"hardware_efficient"``; see
         :func:`~hqnn_forge.encoding.angle_embedding.apply_variational_layers`.
     readout:
@@ -373,7 +373,7 @@ class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
     >>> from hqnn_forge.encoding import DataReuploadingLayer
     >>> from hqnn_forge.initializers import restricted_normal_init_
     >>> layer = DataReuploadingLayer(n_qubits=4, n_layers=3)
-    >>> restricted_normal_init_(layer.qlayer.weights, n_qubits=4, n_layers=3)
+    >>> _ = restricted_normal_init_(layer.qlayer.weights, n_qubits=4, n_layers=3)
     >>> layer(torch.rand(2, 4)).shape
     torch.Size([2, 4])
     """
