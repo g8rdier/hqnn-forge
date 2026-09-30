@@ -102,6 +102,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `compare_to_control` and `holm_correction`, NumPy-only
 - `examples/does_the_quantum_layer_help.py`: a step-by-step hybrid-versus-control comparison on
   one's own data, with a plain-words verdict from the paired Wilcoxon test
+- A rendered API reference (mkdocs-material + mkdocstrings, one page per public module), built
+  with `mkdocs build --strict` on every PR so a broken cross-reference or an undocumented export
+  fails CI, and deployed to GitHub Pages from `main` once Pages is enabled; a `docs` extra
+  installs the tools
 
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from
