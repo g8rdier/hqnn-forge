@@ -33,8 +33,12 @@ LAYERS = [
         ),
         id="angle-strongly-first",
     ),
+    pytest.param(
+        lambda: QuantumEncodingLayer(n_qubits=5, n_layers=2, entangler="brickwork", **CPU),
+        id="angle-brickwork",
+    ),
     pytest.param(lambda: IQPEncodingLayer(n_qubits=4, n_layers=2, n_repeats=2, **CPU), id="iqp"),
-    # No AmplitudeEncodingLayer: on main, circuit_summary feeds every layer an
+    # No AmplitudeEncodingLayer: circuit_summary feeds every layer an
     # n_qubits-wide zero input, which the amplitude layer rejects (#218, fixed
     # by #279).
     pytest.param(
@@ -77,8 +81,8 @@ def test_the_summary_is_internally_consistent(build: Any) -> None:
 
 
 def test_depth_by_hand() -> None:
-    # H on 0 | CNOT 0-1 | RZ on 1, RX on 2 in parallel with the CNOT | CZ 1-2:
-    # layers H(0),RX(2) -> CNOT(0,1) -> RZ(1) -> CZ(1,2): depth 4.
+    # Layers H(0),RX(2) -> CNOT(0,1) -> RZ(1) -> CZ(1,2) -> Toffoli(0,1,2):
+    # RX(2) runs alongside H(0), and the Toffoli waits for the CZ, so depth 5.
     ops = [
         qml.Hadamard(0),
         qml.RX(0.1, 2),
