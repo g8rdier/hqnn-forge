@@ -216,9 +216,15 @@ class IQPEncodingLayer(TrainingNoiseMixin, nn.Module):
         return self._run_circuit(x)
 
     def extra_repr(self) -> str:
+        options = ""
+        if self.entangler != "ring":
+            options += f", entangler={self.entangler!r}"
+        if self.readout != "all":
+            options += f", readout={self.readout!r}"
+        options += self._noise_repr()
         return (
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "
             f"n_repeats={self.n_repeats}, "
-            f"n_params={sum(p.numel() for p in self.parameters())}{self._noise_repr()}"
+            f"n_params={sum(p.numel() for p in self.parameters())}{options}"
         )
