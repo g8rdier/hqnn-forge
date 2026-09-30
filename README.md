@@ -424,3 +424,7 @@ and versioning policy this project follows.
 - Kerby (2014) — *The simple difference formula: an approach to teaching nonparametric correlation*
 - Efron (1987) — *Better Bootstrap Confidence Intervals*
 - Bergholm et al. (2022) — *PennyLane: Automatic differentiation of hybrid quantum-classical computations*
+- Platt (1999) — *Probabilistic outputs for support vector machines and comparisons to regularized likelihood methods*
+- Naeini, Cooper & Hauskrecht (2015) — *Obtaining well calibrated probabilities using Bayesian binning*
+- Guo, Pleiss, Sun & Weinberger (2017) — *On calibration of modern neural networks*
+- Mukhoti et al. (2020) — *Calibrating deep neural networks using focal loss*
