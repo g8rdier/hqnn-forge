@@ -259,8 +259,9 @@ Options shared by both models:
 - `init_strategy="restricted"` (one σ for the whole circuit), `"block_local"` (the same σ in
   the first layer, narrowing by up to √2 towards the last) or `"normal"` (plain
   `N(0, init_std²)`, `init_std=0.1` by default); see `hqnn_forge.initializers`.
-- `embedding_rotation="X"` (default), `"Y"` or `"Z"`: the Pauli axis of the angle embedding
-  (angle encoding only).
+- `embedding_rotation="X"` (default) or `"Y"`: the Pauli axis of the angle embedding
+  (angle encoding only). `"Z"` raises: a single `RZ` embedding on `|0⟩` is a global phase,
+  so the quantum layer would ignore its inputs.
 - `entangler="ring"` (default: CNOT ring then per-qubit `Rot`), `"strongly_entangling"`
   (`qml.StronglyEntanglingLayers`: `Rot` first, then a CNOT ring whose range grows with the
   layer index) or `"brickwork"` (nearest-neighbour CNOT pairs without wrap-around, so each
@@ -273,7 +274,10 @@ Options shared by both models:
 - `published_shnn()` on either class builds the configuration published in the thesis and in
   `hqnn-fraud-detection-benchmark`: 8 qubits, 2 layers, RY embedding, strongly-entangling
   ansatz, ⟨Z_0⟩ readout, sigmoid encoder, `N(0, 0.1²)` init — 122 trainable parameters for the
-  serial model. Keyword arguments override it.
+  serial model, of which **102 are live**: with the ⟨Z_0⟩ readout, 20 quantum weights can never
+  move the output. They are kept, so the published model and its checkpoints stay as published,
+  and both counts are reported; parameter-efficiency figures use the total unless stated
+  (4.72 MCC/kParam published, 5.65 over the live 102). Keyword arguments override it.
 - `use_classical_encoder=False` to feed features already scaled into (-π, π), for example from
   `PCANormalizer(scale_to_pi=True)`, straight into the circuit. `n_input_features` must then
   equal `n_qubits`.
@@ -284,12 +288,16 @@ Options shared by both models:
 
 `hqnn_forge.utils.classical_baseline(model)` builds the classical model a hybrid result should
 be compared with: an untrained `ClassicalBaseline` MLP, to be trained from scratch on the same
-data. Its trainable parameter count is matched to `model.count_parameters()`, which counts every
-rotation angle as one parameter, the same convention as the MCC/kParam figures, so the two
-models are compared at the same parameter budget. The serial model's control is one hidden
-layer in place of encoder, circuit and head; the parallel model's is its classical branch plus a
-head, widened to the matching width. The published SHNN's 122 parameters get a 121-parameter
-control. A seeded hybrid (`init_seed`) gets a control seeded with the same seed.
+data. Its trainable parameter count is matched to the hybrid's **live** count,
+`model.count_parameters()` minus the circuit weights that can never move the output
+(`circuit_summary(model).n_inert_params`), with every other rotation angle counted as one
+parameter, so the two models are compared at the same usable parameter budget. The serial
+model's control is one hidden layer in place of encoder, circuit and head; the parallel model's
+is its classical branch plus a head, widened to the matching width. The published SHNN's 122
+parameters, 102 of them live, get a 101-parameter control; matched on the total it would get
+121. The structural inert count is a lower bound (16 of the 20 here), so the control is never
+smaller than an exact live match would make it. Efficiency figures (MCC/kParam) still use the
+total. A seeded hybrid (`init_seed`) gets a control seeded with the same seed.
 Switching a trained model's circuit off with `disable_quantum_layer` measures something
 else, how much that model depends on the circuit.
 
@@ -359,7 +367,8 @@ hooks below still need uv.
 
 The `dev` extra brings `ruff`, `mypy`, `vermin` and `pytest`. `uvx pre-commit install` registers the hooks
 in `.pre-commit-config.yaml`, which run `ruff check --fix` and `ruff format` on every commit with
-the settings from `pyproject.toml`. The hooks call ruff through `uv run`, so they need
+the settings from `pyproject.toml`, and refuse a commit that adds a file over 1000 KB (a dataset,
+a checkpoint). CI applies the same size limit to every tracked file. The hooks call ruff through `uv run`, so they need
 [uv](https://docs.astral.sh/uv/getting-started/installation/) on the `PATH` and use the ruff
 version pinned in `uv.lock`, the same one CI uses. To run them over the whole tree at any time:
 
@@ -389,6 +398,14 @@ and versioning policy this project follows.
 
 ---
 
+## Citing
+
+If you use hqnn-forge in research, please cite it. [`CITATION.cff`](CITATION.cff) holds the
+citation metadata, and GitHub's **Cite this repository** button in the sidebar turns it into
+BibTeX or APA.
+
+---
+
 ## References
 
 - Cerezo et al. (2021) — *Cost function dependent barren plateaus in shallow parametrized quantum circuits*
@@ -404,13 +421,23 @@ and versioning policy this project follows.
 - Havlíček et al. (2019) — *Supervised learning with quantum-enhanced feature spaces*
 - Schuld & Killoran (2019) — *Quantum machine learning in feature Hilbert spaces*
 - Hubregtsen et al. (2022) — *Training quantum embedding kernels on near-term quantum computers*
+- Higham (1988) — *Computing a nearest symmetric positive semidefinite matrix*
 - Pérez-Salinas et al. (2020) — *Data re-uploading for a universal quantum classifier*
 - Schuld, Sweke & Meyer (2021) — *Effect of data encoding on the expressive power of variational quantum-machine-learning models*
 - Möttönen et al. (2005) — *Transformation of quantum states using uniformly controlled rotations*
 - Schuld & Petruccione (2018) — *Supervised Learning with Quantum Computers*
 - Lin et al. (2017) — *Focal Loss for Dense Object Detection*
 - King & Zeng (2001) — *Logistic Regression in Rare Events Data*
+- Hubregtsen et al. (2022) — *Training Quantum Embedding Kernels on Near-Term Quantum Computers*
+- Cortes, Mohri & Rostamizadeh (2012) — *Algorithms for Learning Kernels Based on Centered Alignment*
 - Chawla et al. (2002) — *SMOTE: Synthetic Minority Over-sampling Technique*
 - Wilcoxon (1945) — *Individual comparisons by ranking methods*
 - Kerby (2014) — *The simple difference formula: an approach to teaching nonparametric correlation*
+- Efron (1987) — *Better bootstrap confidence intervals*
+- Efron & Tibshirani (1993) — *An Introduction to the Bootstrap*
+- Demšar (2006) — *Statistical Comparisons of Classifiers over Multiple Data Sets*
+- Friedman (1937) — *The Use of Ranks to Avoid the Assumption of Normality Implicit in the Analysis of Variance*
+- Iman & Davenport (1980) — *Approximations of the Critical Region of the Friedman Statistic*
+- Holm (1979) — *A Simple Sequentially Rejective Multiple Test Procedure*
+- Nemenyi (1963) — *Distribution-Free Multiple Comparisons*
 - Bergholm et al. (2022) — *PennyLane: Automatic differentiation of hybrid quantum-classical computations*

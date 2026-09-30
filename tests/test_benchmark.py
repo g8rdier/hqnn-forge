@@ -340,3 +340,114 @@ class TestInputsAndOutput:
             assert tuple(float(s) for s in row["fold_mcc"].split(";")) == record["fold_mcc"]
             assert float(row["mcc_mean"]) == record["mcc_mean"]
             assert row["model"] == record["model"]
+
+
+# ---------------------------------------------------------------------------
+# Several initialisation seeds per fold (#206)
+# ---------------------------------------------------------------------------
+
+
+class TestSeveralSeeds:
+    def test_same_seeds_same_scores(self) -> None:
+        a = _run({"a": _data()}, n_seeds=3)
+        b = _run({"a": _data()}, n_seeds=3)
+        assert [f.mcc for f in a.folds] == [f.mcc for f in b.folds]
+        assert [f.init_seed for f in a.folds] == [f.init_seed for f in b.folds]
+
+    def test_distinct_seeds_give_distinct_initial_weights(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: list[tuple[int, torch.Tensor]] = []
+        controls: list[torch.Tensor] = []
+        real_baseline = benchmark.classical_baseline
+
+        def baseline(model: nn.Module) -> Any:
+            control = real_baseline(model)
+            controls.append(
+                torch.cat([p.detach().flatten().clone() for p in control.parameters()])
+            )
+            return control
+
+        monkeypatch.setattr(benchmark, "classical_baseline", baseline)
+
+        def build(n_input_features: int) -> nn.Module:
+            model = _hybrid(n_input_features)
+            assert isinstance(model, HybridBinaryClassifier)
+            weights = model.quantum_layer.qlayer.weights
+            assert isinstance(weights, torch.Tensor)
+            seen.append((torch.initial_seed(), weights.detach().clone()))
+            return model
+
+        result = run_benchmark(
+            {"a": _data()},
+            build,
+            n_splits=2,
+            max_epochs=1,
+            n_seeds=3,
+            smote_kwargs={"k_neighbors": 3},
+        )
+        # Per fold: 3 hybrid builds, then 3 for the control, the same seeds.
+        assert [s for s, _ in seen] == [f.init_seed for f in result.folds]
+        for fold in range(2):
+            hybrid = seen[6 * fold : 6 * fold + 3]
+            control = seen[6 * fold + 3 : 6 * fold + 6]
+            assert len({s for s, _ in hybrid}) == 3
+            assert [s for s, _ in hybrid] == [s for s, _ in control]
+            for i in range(3):
+                for j in range(i + 1, 3):
+                    assert not torch.equal(hybrid[i][1], hybrid[j][1])
+                    control_i, control_j = controls[3 * fold + i], controls[3 * fold + j]
+                    assert not torch.equal(control_i, control_j)
+        assert len(controls) == 6
+        assert [f.seed_index for f in result.folds[:6]] == [0, 1, 2, 0, 1, 2]
+
+    def test_a_seeded_builder_is_refused(self) -> None:
+        # A model's own init_seed overrides the runner's: every repeat would
+        # start from the same weights and report a spread of zero.
+        def build(n_input_features: int) -> nn.Module:
+            return HybridBinaryClassifier(
+                n_input_features,
+                2,
+                1,
+                device_name="default.qubit",
+                init_strategy="normal",
+                init_seed=7,
+            )
+
+        with pytest.raises(ValueError, match="init_seed=None"):
+            run_benchmark({"a": _data()}, build, n_splits=2, max_epochs=1, n_seeds=2)
+        # One seed per fold is unaffected.
+        run_benchmark(
+            {"a": _data()}, build, n_splits=2, max_epochs=1, smote_kwargs={"k_neighbors": 3}
+        )
+
+    def test_one_seed_is_the_default_run(self) -> None:
+        default, explicit = _run({"a": _data()}), _run({"a": _data()}, n_seeds=1)
+        strip = lambda r: {k: v for k, v in r.items() if k != "train_seconds"}
+        assert [strip(r) for r in default.records] == [strip(r) for r in explicit.records]
+        assert default.records[0]["mcc_seed_std"] is None
+
+    def test_fold_scores_are_seed_means_and_the_test_pairs_folds(self) -> None:
+        result = _run({"a": _data()}, n_seeds=3)
+        assert len(result.folds) == N_SPLITS * 2 * 3
+        for record in result.records:
+            per_fold = [
+                [f.mcc for f in result.folds if f.model == record["model"] and f.fold == k]
+                for k in range(N_SPLITS)
+            ]
+            assert all(len(scores) == 3 for scores in per_fold)
+            assert record["fold_mcc"] == pytest.approx(tuple(np.mean(s) for s in per_fold))
+            assert record["mcc_seed_std"] == pytest.approx(
+                float(np.mean([np.std(s, ddof=1) for s in per_fold]))
+            )
+            assert record["n_seeds"] == 3
+        hybrid, control = result.records
+        try:
+            p = wilcoxon_signed_rank(hybrid["fold_mcc"], control["fold_mcc"]).p_value
+        except ValueError:
+            p = math.nan
+        assert (math.isnan(p) and math.isnan(hybrid["wilcoxon_p"])) or hybrid["wilcoxon_p"] == p
+
+    def test_rejected(self) -> None:
+        with pytest.raises(ValueError, match="n_seeds must be >= 1"):
+            _run({"a": _data()}, n_seeds=0)

@@ -120,6 +120,7 @@ def to_record(result: BenchmarkResult) -> dict[str, Any]:
             "inner_seed": f.inner_seed,
             "smote_seed": f.smote_seed,
             "init_seed": f.init_seed,
+            "seed_index": f.seed_index,
             "batch_seed": f.batch_seed,
             "device": f.device,
             "threshold": f.threshold,
@@ -142,6 +143,7 @@ def to_record(result: BenchmarkResult) -> dict[str, Any]:
                         "dataset": f.dataset,
                         "model": f.model,
                         "fold": f.fold,
+                        "seed_index": f.seed_index,
                         "split_seed": f.split_seed,
                         "inner_seed": f.inner_seed,
                         "smote_seed": f.smote_seed,
@@ -311,6 +313,7 @@ def rerun_benchmark(
         patience=settings["patience"],
         random_state=settings["random_state"],
         smote_kwargs=settings["smote_kwargs"],
+        n_seeds=settings.get("n_seeds", 1),
     )
     rebuilt = _plain(result.models)
     if rebuilt != recorded_models:

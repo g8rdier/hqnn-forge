@@ -69,6 +69,9 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--qubits", type=int, default=4)
     parser.add_argument("--layers", type=int, default=2)
+    parser.add_argument(
+        "--seeds", type=int, default=1, help="initialisation seeds per fold (fold score = mean)"
+    )
     parser.add_argument("--csv", help="also write the table to this file")
     parser.add_argument(
         "--record", help="write an experiment record (JSON) for reproducing the run here"
@@ -84,7 +87,12 @@ def main() -> None:
         return HybridBinaryClassifier(n_input_features, args.qubits, args.layers)
 
     result = run_benchmark(
-        datasets, hybrid, n_splits=args.folds, max_epochs=args.epochs, record_path=args.record
+        datasets,
+        hybrid,
+        n_splits=args.folds,
+        max_epochs=args.epochs,
+        record_path=args.record,
+        n_seeds=args.seeds,
     )
 
     print(f"{'dataset':<12} {'model':<8} {'params':>6} {'MCC':>14} {'MCC/kP':>7} {'train s':>8}")
