@@ -62,9 +62,16 @@ two until ``M(M-1)/2`` overtakes ``E · M · (2P + 1)``, around
 and at every prediction whatever ``M`` is, the kernel costs more.
 
 On a state-vector simulator the picture is different: ``M`` state vectors of
-size ``2^n`` and one ``M × M`` Gram product, which is what this module does.
-There the limit is memory for the ``M × M`` matrix (see the Notes of
-:func:`quantum_kernel_matrix`), not circuit evaluations.
+size ``2^n`` and one ``M × M`` Gram product, which is what
+:func:`quantum_kernel_matrix` does.  There the limit is memory for the
+``M × M`` matrix (see its Notes), not circuit evaluations.
+
+:func:`overlap_kernel_matrix` estimates the kernel the way hardware has to,
+one compute-uncompute circuit ``U(x)† U(y)`` per entry, reading the
+probability of the all-zeros outcome, with ``shots`` samples per circuit and
+on any device.  That makes the ``M(M-1)/2`` cost and the effect of shot noise
+(and, on a noisy device, of noise) on the SVM measurable rather than
+described.
 
 References
 ----------
@@ -76,6 +83,8 @@ References
   quantum computers", PRA 106, 042431.
 * Cortes, Mohri & Rostamizadeh (2012) "Algorithms for learning kernels based
   on centered alignment", JMLR 13, 795–828.
+* Higham (1988) "Computing a nearest symmetric positive semidefinite matrix",
+  Linear Algebra and its Applications 103, 103–118.
 """
 
 from __future__ import annotations
@@ -92,6 +101,8 @@ __all__ = [
     "encoded_states",
     "kernel_from_states",
     "kernel_target_alignment",
+    "nearest_psd",
+    "overlap_kernel_matrix",
     "quantum_kernel_matrix",
     "train_kernel_alignment",
 ]
@@ -513,3 +524,134 @@ def train_kernel_alignment(
         (-alignment).backward()
         optimiser.step()
     return history
+
+
+# ---------------------------------------------------------------------------
+# Overlap-circuit estimate
+# ---------------------------------------------------------------------------
+
+
+def _operations(
+    prepared: torch.Tensor, qlayer: qml.qnn.TorchLayer
+) -> list[list[qml.operation.Operator]]:
+    """The layer's circuit (operations only, level 0) for each prepared input row."""
+    weights = {name: p.detach().to(torch.float64) for name, p in qlayer.qnode_weights.items()}
+    return [
+        list(qml.workflow.construct_tape(qlayer.qnode, level=0)(row, **weights).operations)
+        for row in prepared
+    ]
+
+
+def _overlap_tape(
+    ops_x: list[qml.operation.Operator],
+    ops_y: list[qml.operation.Operator],
+    n_qubits: int,
+    shots: int | None,
+) -> qml.tape.QuantumScript:
+    """``U(x)† U(y)|0⟩`` with ``P(0…0)`` = ``|⟨Φ(x)|Φ(y)⟩|²`` as its first probability."""
+    ops = [*ops_y, *(qml.adjoint(op) for op in reversed(ops_x))]
+    return qml.tape.QuantumScript(ops, [qml.probs(wires=range(n_qubits))], shots=shots)
+
+
+def overlap_kernel_matrix(
+    X: torch.Tensor,
+    layer: nn.Module,
+    Y: torch.Tensor | None = None,
+    *,
+    shots: int | None = None,
+    seed: int | None = None,
+    device: qml.devices.Device | None = None,
+    project_psd: bool = False,
+) -> torch.Tensor:
+    """
+    Kernel estimated entry by entry from the compute-uncompute circuit.
+
+    Each entry is the probability of measuring all zeros after
+    ``U(x_i)† U(y_j)|0…0⟩``, which equals ``|⟨Φ(x_i)|Φ(y_j)⟩|²``; ``U`` is the
+    layer's own circuit, replayed exactly as :func:`quantum_kernel_matrix`
+    replays it.  This is how a device without state-vector access estimates
+    the kernel.
+
+    For the square matrix only the ``M(M-1)/2`` pairs above the diagonal are
+    circuits; the diagonal is set to 1 and the lower triangle mirrored.  The
+    rectangular matrix against ``Y`` takes one circuit per entry.
+
+    Parameters
+    ----------
+    X, layer, Y:
+        As for :func:`quantum_kernel_matrix`.
+    shots:
+        Samples per circuit.  ``None`` (default) gives the exact probability,
+        which agrees with :func:`quantum_kernel_matrix` to rounding; with
+        shots each entry is a binomial estimate with standard error
+        ``sqrt(k(1-k)/shots)``.
+    seed:
+        Seed of the sampling on the default device; ignored with ``device``.
+    device:
+        A PennyLane device to run the circuits on, e.g. a noisy simulator.
+        Default: ``default.qubit``.
+    project_psd:
+        With finite shots or a noisy device the estimate need not be positive
+        semi-definite, which ``SVC(kernel="precomputed")`` assumes.  ``True``
+        projects the square matrix onto the nearest PSD matrix
+        (:func:`nearest_psd`) before returning it.
+
+    Returns
+    -------
+    torch.Tensor
+        ``float64``, shape ``(n_x, n_y)`` or ``(n_x, n_x)``.
+
+    Raises
+    ------
+    TypeError, ValueError, RuntimeError
+        As :func:`quantum_kernel_matrix`; also ``ValueError`` for
+        ``shots < 1`` or ``project_psd`` with ``Y``.
+    """
+    if shots is not None and shots < 1:
+        raise ValueError(f"shots must be a positive integer or None; got {shots}.")
+    if project_psd and Y is not None:
+        raise ValueError("project_psd applies to the square matrix only; pass Y=None.")
+    qlayer, n_qubits, prepare = _resolve_layer(layer, "overlap_kernel_matrix")
+    prepared_x = _prepare(X, prepare, "X")
+    prepared_y = None if Y is None else _prepare(Y, prepare, "Y")
+    ops_x = _operations(prepared_x, qlayer)
+    ops_y = ops_x if prepared_y is None else _operations(prepared_y, qlayer)
+
+    if prepared_y is None:
+        pairs = [(i, j) for i in range(len(ops_x)) for j in range(i + 1, len(ops_x))]
+    else:
+        pairs = [(i, j) for i in range(len(ops_x)) for j in range(len(ops_y))]
+    kernel = torch.zeros(len(ops_x), len(ops_y), dtype=torch.float64)
+    if pairs:
+        tapes = [_overlap_tape(ops_x[i], ops_y[j], n_qubits, shots) for i, j in pairs]
+        run_on = (
+            device
+            if device is not None
+            else qml.device("default.qubit", wires=n_qubits, seed=seed)
+        )
+        results = qml.execute(tapes, run_on, diff_method=None)
+        for (i, j), probs in zip(pairs, results):
+            kernel[i, j] = float(torch.as_tensor(probs).reshape(-1)[0])
+    if prepared_y is None:
+        kernel = kernel + kernel.T
+        kernel.fill_diagonal_(1.0)
+        if project_psd:
+            kernel = nearest_psd(kernel)
+    return kernel
+
+
+def nearest_psd(K: torch.Tensor) -> torch.Tensor:
+    """
+    The positive semi-definite matrix nearest to symmetric ``K`` in the
+    Frobenius norm: ``K``'s eigendecomposition with negative eigenvalues set to
+    zero (Higham 1988).
+
+    The diagonal is not restored to 1 afterwards, so entries can move
+    slightly; the projection changes nothing when ``K`` is already PSD.
+    """
+    if K.ndim != 2 or K.shape[0] != K.shape[1]:
+        raise ValueError(f"K must be a square matrix; got shape {tuple(K.shape)}.")
+    symmetric = 0.5 * (K + K.T).to(torch.float64)
+    eigenvalues, eigenvectors = torch.linalg.eigh(symmetric)
+    projected = (eigenvectors * eigenvalues.clamp(min=0.0)) @ eigenvectors.T
+    return 0.5 * (projected + projected.T)

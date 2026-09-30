@@ -68,6 +68,14 @@ jobs:
           exit 1
         fi
 
+    # The floor is repeated by hand in pyproject.toml and in this file (ruff's
+    # target-version, the classifiers, vermin's -t and each job's lowest
+    # python-version), and in the local vermin commands in README.md and
+    # CONTRIBUTING.md; each tool only sees its own copy, so a missed one would
+    # fail nothing. The script compares them all with requires-python.
+    - name: Check every copy of the Python floor
+      run: uv run --frozen python .github/scripts/check_python_floor.py
+
     # Neither ruff nor mypy checks stdlib API usage against the 3.11 floor:
     # ruff's target-version covers syntax only, and mypy has to target 3.12
     # because the numpy stubs use PEP 695 syntax. vermin fails on a call such
