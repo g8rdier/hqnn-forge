@@ -450,3 +450,7 @@ BibTeX or APA.
 - Holm (1979) — *A Simple Sequentially Rejective Multiple Test Procedure*
 - Nemenyi (1963) — *Distribution-Free Multiple Comparisons*
 - Bergholm et al. (2022) — *PennyLane: Automatic differentiation of hybrid quantum-classical computations*
+- Platt (1999) — *Probabilistic outputs for support vector machines and comparisons to regularized likelihood methods*
+- Naeini, Cooper & Hauskrecht (2015) — *Obtaining well calibrated probabilities using Bayesian binning*
+- Guo, Pleiss, Sun & Weinberger (2017) — *On calibration of modern neural networks*
+- Mukhoti et al. (2020) — *Calibrating deep neural networks using focal loss*
