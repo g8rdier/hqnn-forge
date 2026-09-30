@@ -441,6 +441,9 @@ def _inert_slots(tape: qml.tape.QuantumScript) -> list[tuple[Any, bool]]:
         if op.name == "GlobalPhase":
             # Commutes with everything, so no wire's support changes.  Not
             # counted: under state() the phase does reach the measurement.
+            # Still a live slot, so count_inert_weights does not take an entry
+            # that feeds only a GlobalPhase for one that feeds nothing.
+            slots.extend((value, False) for value in op.data if qml.math.requires_grad(value))
             continue
         trainable = [value for value in op.data if qml.math.requires_grad(value)]
         if all(support[w] == _NONE for w in wires):

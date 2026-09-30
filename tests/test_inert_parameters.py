@@ -601,6 +601,19 @@ class TestPerWeightEntry:
             count_inert_weights(tape, [w, frozen]) == 1
         )  # v[1] feeds nothing; frozen not counted
 
+    def test_entry_feeding_only_a_global_phase_is_live(self) -> None:
+        # count_inert_parameters does not count a GlobalPhase slot (it reaches
+        # state()), so its entry must not read as feeding nothing.
+        w = torch.tensor([0.3, 0.5], dtype=torch.float64, requires_grad=True)
+
+        def circuit() -> None:
+            qml.RX(w[0], wires=0)
+            qml.GlobalPhase(w[1], wires=0)
+
+        tape = _tape(circuit, [qml.state()])
+        assert count_inert_parameters(tape) == 0
+        assert count_inert_weights(tape, [w]) == 0
+
     def test_counted_entries_have_zero_gradient(self) -> None:
         w = torch.tensor([0.3, 0.7, 1.1], dtype=torch.float64, requires_grad=True)
 
