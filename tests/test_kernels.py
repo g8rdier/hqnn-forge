@@ -32,7 +32,13 @@ from hqnn_forge.encoding import (
     QuantumEncodingLayer,
 )
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
-from hqnn_forge.kernels import encoded_states, kernel_from_states, quantum_kernel_matrix
+from hqnn_forge.kernels import (
+    encoded_states,
+    kernel_from_states,
+    kernel_target_alignment,
+    quantum_kernel_matrix,
+    train_kernel_alignment,
+)
 
 N_QUBITS = 3
 M = 7  # samples
@@ -547,3 +553,303 @@ class TestUsage:
         monkeypatch.setattr(kernels, "_simulate", counting)
         quantum_kernel_matrix(_angles(3, seed=0), _angle_layer(), Y=_angles(4, seed=1))
         assert calls == [1]
+
+
+# ---------------------------------------------------------------------------
+# Trainable kernel: kernel-target alignment (#214)
+# ---------------------------------------------------------------------------
+
+
+def _reuploading(scaling: bool = True, n_layers: int = 3) -> DataReuploadingLayer:
+    torch.manual_seed(0)
+    layer = DataReuploadingLayer(
+        n_qubits=N_QUBITS,
+        n_layers=n_layers,
+        trainable_input_scaling=scaling,
+        device_name="default.qubit",
+        diff_method="backprop",
+    )
+    return layer.to(torch.float64)
+
+
+def _toy_task(n: int = 12) -> tuple[torch.Tensor, torch.Tensor]:
+    """Two classes that differ in the sign of feature 0 only."""
+    g = torch.Generator().manual_seed(5)
+    X = torch.rand(n, N_QUBITS, generator=g, dtype=torch.float64) * 2 - 1
+    y = (X[:, 0] > 0).to(torch.float64)
+    y[0], y[1] = 1.0, 0.0
+    return X, y
+
+
+class TestKernelTargetAlignment:
+    def test_ideal_kernel_has_alignment_one(self) -> None:
+        y = torch.tensor([1.0, -1, -1, 1, -1])
+        assert float(kernel_target_alignment(torch.outer(y, y), y)) == pytest.approx(1.0)
+        assert float(kernel_target_alignment(-torch.outer(y, y), y)) == pytest.approx(-1.0)
+
+    def test_label_encodings_agree_and_centring_ignores_offsets(self) -> None:
+        K = quantum_kernel_matrix(_angles(M), _angle_layer())
+        y01 = torch.tensor([1, 0, 0, 1, 1, 0, 0])
+        a = kernel_target_alignment(K, y01)
+        assert float(a) == pytest.approx(float(kernel_target_alignment(K, 2 * y01 - 1)))
+        # Centred alignment does not see a constant added to every entry.
+        assert float(kernel_target_alignment(K + 3.0, y01)) == pytest.approx(float(a))
+
+    @pytest.mark.parametrize(
+        ("K", "y", "match"),
+        [
+            (torch.eye(3), torch.tensor([0, 1]), "3 labels"),
+            (torch.eye(3), torch.tensor([1, 1, 1]), "both classes"),
+            (torch.eye(3), torch.tensor([0, 1, 2]), "both classes"),
+            (torch.ones(2, 3), torch.tensor([0, 1]), "square"),
+        ],
+    )
+    def test_rejected(self, K: torch.Tensor, y: torch.Tensor, match: str) -> None:
+        with pytest.raises(ValueError, match=match):
+            kernel_target_alignment(K, y)
+
+
+class TestDifferentiableKernel:
+    def test_values_equal_the_detached_path(self) -> None:
+        layer = _reuploading()
+        X = _angles(M)
+        torch.testing.assert_close(
+            quantum_kernel_matrix(X, layer, differentiable=True).detach(),
+            quantum_kernel_matrix(X, layer),
+            rtol=0,
+            atol=1e-12,
+        )
+        assert not quantum_kernel_matrix(X, layer).requires_grad
+
+    def test_alignment_gradient_matches_finite_differences(self) -> None:
+        layer = _reuploading()
+        X, y = _toy_task(8)
+
+        def alignment() -> torch.Tensor:
+            return kernel_target_alignment(quantum_kernel_matrix(X, layer, differentiable=True), y)
+
+        alignment().backward()
+        eps = 1e-6
+        for name, param in layer.named_parameters():
+            assert param.grad is not None, name
+            flat, grad = param.data.view(-1), param.grad.view(-1)
+            for i in (0, flat.numel() // 2, flat.numel() - 1):
+                old = float(flat[i])
+                with torch.no_grad():
+                    flat[i] = old + eps
+                    up = float(alignment())
+                    flat[i] = old - eps
+                    down = float(alignment())
+                    flat[i] = old
+                assert float(grad[i]) == pytest.approx((up - down) / (2 * eps), abs=1e-7), (
+                    name,
+                    i,
+                )
+
+    @pytest.mark.parametrize("build", _layers("angle", "iqp", "amplitude"))
+    def test_single_upload_ansatz_cancels(self, build) -> None:
+        layer = build().to(torch.float64)
+        X = _inputs_for(layer)
+        y = torch.tensor([1, 0, 1, 0, 0, 1, 0])
+        kernel_target_alignment(quantum_kernel_matrix(X, layer, differentiable=True), y).backward()
+        for name, param in layer.named_parameters():
+            assert param.grad is not None and param.grad.abs().max() < 1e-10, name
+
+    def test_only_the_last_reuploading_block_cancels(self) -> None:
+        layer = _reuploading(scaling=False)
+        X, y = _toy_task(8)
+        kernel_target_alignment(quantum_kernel_matrix(X, layer, differentiable=True), y).backward()
+        grad = layer.qlayer.weights.grad
+        assert grad is not None
+        assert grad[-1].abs().max() < 1e-10
+        assert grad[:-1].abs().max() > 1e-4
+
+
+class TestTrainKernelAlignment:
+    def test_alignment_increases(self) -> None:
+        layer = _reuploading()
+        X, y = _toy_task(12)
+        before = float(kernel_target_alignment(quantum_kernel_matrix(X, layer), y))
+        history = train_kernel_alignment(layer, X, y, steps=15, lr=0.1)
+        after = float(kernel_target_alignment(quantum_kernel_matrix(X, layer), y))
+        assert len(history) == 15 and history[0] == pytest.approx(before)
+        assert after > before + 0.05, (before, after)
+
+    def test_subsets_keep_both_classes(self) -> None:
+        # 2 positives out of 12: an unstratified subset of 4 would often hold
+        # none, and the alignment would refuse it.
+        layer = _reuploading()
+        X, _ = _toy_task(12)
+        y = torch.zeros(12, dtype=torch.float64)
+        y[:2] = 1.0
+        history = train_kernel_alignment(
+            layer, X, y, steps=10, subset_size=4, generator=torch.Generator().manual_seed(0)
+        )
+        assert len(history) == 10
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [({"steps": 0}, "steps must be >= 1"), ({"subset_size": 1}, "subset_size must lie")],
+    )
+    def test_rejected(self, kwargs: dict, match: str) -> None:
+        X, y = _toy_task(6)
+        with pytest.raises(ValueError, match=match):
+            train_kernel_alignment(_reuploading(), X, y, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Overlap-circuit estimate (#213)
+# ---------------------------------------------------------------------------
+
+
+def _count_executions(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Record how many tapes each qml.execute call inside kernels runs."""
+    counts: list[int] = []
+    real = kernels.qml.execute
+
+    def counting(tapes, *args, **kwargs):  # type: ignore[no-untyped-def]
+        counts.append(len(tapes))
+        return real(tapes, *args, **kwargs)
+
+    monkeypatch.setattr(kernels.qml, "execute", counting)
+    return counts
+
+
+class TestOverlapKernel:
+    @pytest.mark.parametrize("build", ALL_LAYERS)
+    def test_exact_probabilities_agree_with_the_state_vector_kernel(self, build) -> None:
+        layer = build()
+        X = _inputs_for(layer)
+        exact = quantum_kernel_matrix(X, layer)
+        estimate = kernels.overlap_kernel_matrix(X, layer)
+        torch.testing.assert_close(estimate, exact, rtol=0, atol=1e-10)
+        torch.testing.assert_close(estimate.diagonal(), torch.ones(M, dtype=torch.float64))
+        assert torch.equal(estimate, estimate.T)
+
+    @pytest.mark.parametrize("build", _layers("angle", "amplitude"))
+    def test_rectangular_agrees_too(self, build) -> None:
+        layer = build()
+        X = _inputs_for(layer)
+        Y = X[:3] * 0.5 + 0.1
+        torch.testing.assert_close(
+            kernels.overlap_kernel_matrix(X, layer, Y),
+            quantum_kernel_matrix(X, layer, Y),
+            rtol=0,
+            atol=1e-10,
+        )
+
+    def test_circuit_count(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        counts = _count_executions(monkeypatch)
+        layer = _angle_layer()
+        kernels.overlap_kernel_matrix(_angles(M), layer)
+        kernels.overlap_kernel_matrix(_angles(M), layer, _angles(4, seed=1))
+        assert counts == [M * (M - 1) // 2, M * 4]
+
+    def test_finite_shots_are_binomial_estimates(self) -> None:
+        layer = _angle_layer()
+        X = _angles(M)
+        exact = quantum_kernel_matrix(X, layer)
+        shots = 4000
+        estimate = kernels.overlap_kernel_matrix(X, layer, shots=shots, seed=11)
+        upper = torch.triu(torch.ones(M, M, dtype=torch.bool), 1)
+        k = exact[upper]
+        se = torch.sqrt(k * (1 - k) / shots).clamp(min=1.0 / shots)
+        z = (estimate[upper] - k).abs() / se
+        assert z.max() < 5.0, z.max()
+        # Estimates move with the shot noise: not the exact values, and on the
+        # grid of multiples of 1/shots.
+        assert not torch.allclose(estimate[upper], k, atol=1e-6)
+        torch.testing.assert_close(
+            estimate[upper] * shots, (estimate[upper] * shots).round(), rtol=0, atol=1e-6
+        )
+
+    def test_seeded_sampling_is_reproducible(self) -> None:
+        layer = _angle_layer()
+        X = _angles(4)
+        a = kernels.overlap_kernel_matrix(X, layer, shots=100, seed=3)
+        b = kernels.overlap_kernel_matrix(X, layer, shots=100, seed=3)
+        c = kernels.overlap_kernel_matrix(X, layer, shots=100, seed=4)
+        assert torch.equal(a, b) and not torch.equal(a, c)
+
+    def test_projection_to_psd(self) -> None:
+        layer = _angle_layer()
+        X = _angles(10)
+        rough = kernels.overlap_kernel_matrix(X, layer, shots=5, seed=0)
+        assert torch.linalg.eigvalsh(rough).min() < -1e-6  # 5 shots: not PSD
+        projected = kernels.overlap_kernel_matrix(X, layer, shots=5, seed=0, project_psd=True)
+        assert torch.linalg.eigvalsh(projected).min() > -1e-12
+        assert torch.equal(projected, projected.T)
+        # The nearest PSD matrix: no worse than the rough matrix's own PSD part
+        # from any other eigenvalue treatment, e.g. shifting the spectrum up.
+        shift = rough - torch.linalg.eigvalsh(rough).min() * torch.eye(10, dtype=torch.float64)
+        assert torch.linalg.norm(projected - rough) <= torch.linalg.norm(shift - rough)
+
+    def test_nearest_psd_worked_example(self) -> None:
+        # Eigenvalues 3 and -1; dropping -1 leaves 3·vvᵀ with v = (1, 1)/√2.
+        K = torch.tensor([[1.0, 2.0], [2.0, 1.0]], dtype=torch.float64)
+        torch.testing.assert_close(
+            kernels.nearest_psd(K), torch.full((2, 2), 1.5, dtype=torch.float64)
+        )
+        psd = quantum_kernel_matrix(_angles(5), _angle_layer())
+        torch.testing.assert_close(kernels.nearest_psd(psd), psd, rtol=0, atol=1e-12)
+
+    def test_user_device(self) -> None:
+        layer = _angle_layer()
+        X = _angles(4)
+        on_device = kernels.overlap_kernel_matrix(
+            X, layer, device=qml.device("default.qubit", wires=N_QUBITS)
+        )
+        torch.testing.assert_close(on_device, quantum_kernel_matrix(X, layer), rtol=0, atol=1e-10)
+
+    def test_single_sample(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        counts = _count_executions(monkeypatch)
+        K = kernels.overlap_kernel_matrix(_angles(1), _angle_layer())
+        assert K.tolist() == [[1.0]] and counts == []
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"shots": 0}, "shots must be a positive integer"),
+            ({"project_psd": True, "Y": "same"}, "square matrix only"),
+        ],
+    )
+    def test_rejected_arguments(self, kwargs: dict, match: str) -> None:
+        X = _angles(3)
+        if kwargs.get("Y") == "same":
+            kwargs = {**kwargs, "Y": X}
+        with pytest.raises(ValueError, match=match):
+            kernels.overlap_kernel_matrix(X, _angle_layer(), **kwargs)
+
+    def test_transformed_qnode_is_refused(self) -> None:
+        from hqnn_forge.noise import apply_depolarizing_noise
+
+        layer = _angle_layer()
+        with apply_depolarizing_noise(layer, 0.1):
+            with pytest.raises(RuntimeError, match="apply_depolarizing_noise"):
+                kernels.overlap_kernel_matrix(_angles(3), layer)
+
+
+class TestConstantKernelIsRefused:
+    """
+    A single RZ embedding would map every input to one state, so its kernel
+    would be all ones and a precomputed-kernel SVM a constant classifier
+    (#212).  The layer is refused at construction instead.
+    """
+
+    def test_rotation_z_layer_cannot_be_built(self) -> None:
+        with pytest.raises(ValueError, match="global phase"):
+            QuantumEncodingLayer(
+                n_qubits=N_QUBITS, n_layers=1, rotation="Z", device_name="default.qubit"
+            )
+
+    def test_accepted_axes_give_a_kernel_that_depends_on_the_data(self) -> None:
+        for rotation in ("X", "Y"):
+            layer = QuantumEncodingLayer(
+                n_qubits=N_QUBITS,
+                n_layers=1,
+                rotation=rotation,  # type: ignore[arg-type]
+                device_name="default.qubit",
+            )
+            K = quantum_kernel_matrix(_angles(M), layer)
+            off_diagonal = K[~torch.eye(M, dtype=torch.bool)]
+            assert off_diagonal.max() < 1 - 1e-6, rotation

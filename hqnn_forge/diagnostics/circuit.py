@@ -165,29 +165,99 @@ class CircuitSummary:
 # ---------------------------------------------------------------------------
 
 
-def _written_tape(
-    qlayer: qml.qnn.TorchLayer, n_qubits: int, inputs: torch.Tensor | None = None
-) -> qml.tape.QuantumScript:
+def input_width(layer: nn.Module) -> int:
+    """
+    Number of features ``layer`` takes per sample: ``n_features`` where the
+    layer has one (the amplitude encoder, up to ``2**n_qubits``), else one
+    per qubit.
+    """
+    width = getattr(layer, "n_features", None)
+    if isinstance(width, int):
+        return width
+    n_qubits = getattr(layer, "n_qubits", None)
+    if not isinstance(n_qubits, int):
+        raise TypeError(f"{type(layer).__name__} has neither n_features nor n_qubits.")
+    return n_qubits
+
+
+def _prepare(layer: nn.Module, x: torch.Tensor) -> torch.Tensor:
+    """
+    ``layer.prepare_inputs(x)``, the classical step ``forward`` runs before the QNode.
+
+    A layer without one gets ``x`` unchanged: the diagnostics accept any
+    module with a ``qlayer`` and an integer ``n_qubits``, and such a layer
+    feeds its QNode its raw inputs.
+    """
+    prepare = getattr(layer, "prepare_inputs", None)
+    if not callable(prepare):
+        return x
+    out = prepare(x)
+    assert isinstance(out, torch.Tensor)
+    return out
+
+
+def sample_input(layer: nn.Module) -> torch.Tensor:
+    """
+    One raw input for drawing and counting the layer's circuit.
+
+    Zeros where the layer's ``prepare_inputs`` accepts them: the angle-type
+    embeddings run the same gates for every input, so only the printed angles
+    depend on it.
+
+    Amplitude embedding has no state for the zero vector, and the gates of
+    its Möttönen state preparation *do* depend on the input: PennyLane leaves
+    out a block of rotations when all its angles are zero.  A uniform or
+    all-positive vector has no phases and so shows no ``RZ`` at all, and
+    other sign patterns drop some ``RZ`` blocks.  It gets
+    ``[-1, 2, 3, …, n_features]`` instead: distinct magnitudes and one
+    negative entry make every block non-zero, so the counts are the most any
+    input needs: ``2**n - 1`` ``RY`` and ``2**n - 1`` ``RZ`` rotations when
+    ``n_features == 2**n``.  With fewer features the zero padding leaves out
+    the ``RY`` rotations that act only on padded amplitudes (for ``n = 3``,
+    6 with 4 features, 4 with 2), since no input can make those non-zero.
+    """
+    width = input_width(layer)
+    zeros = torch.zeros(1, width, dtype=torch.float64)
+    try:
+        _prepare(layer, zeros)
+    except ValueError:
+        full = torch.arange(1, width + 1, dtype=torch.float64)
+        full[0] = -1.0
+        return full
+    return zeros[0]
+
+
+def _written_tape(layer: nn.Module, inputs: torch.Tensor | None = None) -> qml.tape.QuantumScript:
     """
     The tape the layer executes for one sample, as written.
+
+    ``inputs`` is one raw sample of the layer's input width (default:
+    :func:`sample_input`); it goes through the layer's ``prepare_inputs``
+    first, as ``forward`` does, so the raw QNode receives what it would in
+    training -- for the amplitude encoder, a padded and normalised state.
 
     The weight tensors keep their ``requires_grad`` flag, so the gate
     parameters that come from trainable weights can be told apart from the
     (non-trainable) inputs by :func:`count_inert_parameters`.
     """
-    if inputs is None:
-        inputs = torch.zeros(n_qubits, dtype=torch.float64)
+    qlayer = getattr(layer, "qlayer", None)
+    if not isinstance(qlayer, qml.qnn.TorchLayer):
+        raise TypeError(f"{type(layer).__name__} has no qlayer TorchLayer.")
+    raw = sample_input(layer) if inputs is None else torch.as_tensor(inputs, dtype=torch.float64)
+    if raw.ndim != 1 or raw.shape[0] != input_width(layer):
+        raise ValueError(
+            f"inputs must be one sample of shape ({input_width(layer)},); got {tuple(raw.shape)}."
+        )
+    inputs = _prepare(layer, raw[None, :])[0]
     weights = dict(qlayer.qnode_weights.items())
     # level="top": the circuit as written, before the QNode's own transforms
     # (batch expansion) and before the device rewrites gates it cannot run.
     return qml.workflow.construct_tape(qlayer.qnode, level="top")(inputs, **weights)
 
 
-def _logical_tape(
-    qlayer: qml.qnn.TorchLayer, n_qubits: int, inputs: torch.Tensor | None = None
-) -> qml.tape.QuantumScript:
+def _logical_tape(layer: nn.Module, inputs: torch.Tensor | None = None) -> qml.tape.QuantumScript:
     """The tape the layer executes for one sample, decomposed by _decompose_logical."""
-    return _decompose_logical(_written_tape(qlayer, n_qubits, inputs))
+    return _decompose_logical(_written_tape(layer, inputs))
 
 
 def _decompose_logical(tape: qml.tape.QuantumScript) -> qml.tape.QuantumScript:
@@ -409,7 +479,7 @@ def circuit_summary(target: nn.Module) -> CircuitSummary:
       ...
     """
     layer, qlayer, n_qubits = resolve_encoding_layer(target, "circuit_summary")
-    written = _written_tape(qlayer, n_qubits)
+    written = _written_tape(layer)
     tape = _decompose_logical(written)
     resources = tape.specs["resources"]
     qnode = qlayer.qnode
@@ -445,9 +515,12 @@ def draw_circuit(target: nn.Module, inputs: torch.Tensor | None = None, decimals
     target:
         Same as for :func:`circuit_summary`.
     inputs:
-        The one sample to draw the embedding angles for, shape ``(n_qubits,)``.
-        Default: zeros, which draws every embedding rotation as ``RX(0.00)``.
-        Pass a real sample to see the feature map it produces.
+        The one raw sample to draw the embedding for, shape
+        ``(n_features,)`` -- one value per qubit, except for the amplitude
+        encoder.  It goes through the layer's ``prepare_inputs`` as in
+        ``forward``.  Default: :func:`sample_input`, zeros where the layer
+        accepts them (every embedding rotation drawn as ``RX(0.00)``).  Pass
+        a real sample to see the feature map it produces.
     decimals:
         Digits shown for gate parameters.  Default: 2.
 
@@ -456,6 +529,6 @@ def draw_circuit(target: nn.Module, inputs: torch.Tensor | None = None, decimals
     Only the printed angles depend on ``inputs``; the gates and the wiring do
     not, which is why :func:`circuit_summary` does not take one.
     """
-    _, qlayer, n_qubits = resolve_encoding_layer(target, "draw_circuit")
-    tape = _logical_tape(qlayer, n_qubits, inputs)
+    layer, _, _ = resolve_encoding_layer(target, "draw_circuit")
+    tape = _logical_tape(layer, inputs)
     return qml.drawer.tape_text(tape, decimals=decimals)

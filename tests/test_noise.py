@@ -23,16 +23,6 @@ Layer = QuantumEncodingLayer | IQPEncodingLayer
 Model = HybridBinaryClassifier | ParallelHybridClassifier
 
 
-def _lightning_available() -> bool:
-    try:
-        import pennylane as qml
-
-        qml.device("lightning.qubit", wires=1)
-        return True
-    except Exception:  # noqa: BLE001 - any failure means "not installed"
-        return False
-
-
 # The noisy QNode is rebuilt on default.mixed with backprop, which drops the
 # broadcast_expand wrapper the other differentiation methods need. These are the
 # configurations where that rebuild actually changes something, including the
@@ -43,9 +33,7 @@ NON_BACKPROP_CONFIGS = [
         "lightning.qubit",
         "adjoint",
         id="lightning.qubit/adjoint",
-        marks=pytest.mark.skipif(
-            not _lightning_available(), reason="pennylane-lightning not installed"
-        ),
+        marks=pytest.mark.requires_lightning,
     ),
 ]
 

@@ -13,7 +13,6 @@ import math
 import warnings
 from typing import Any, TypedDict
 
-import pennylane as qml
 import pytest
 import torch
 
@@ -42,19 +41,6 @@ Layer = QuantumEncodingLayer | IQPEncodingLayer
 Model = HybridBinaryClassifier | ParallelHybridClassifier
 LAYERS: list[type[Layer]] = [QuantumEncodingLayer, IQPEncodingLayer]
 MODELS: list[type[Model]] = [HybridBinaryClassifier, ParallelHybridClassifier]
-
-
-def _lightning_available() -> bool:
-    try:
-        qml.device("lightning.qubit", wires=1)
-    except Exception:  # noqa: BLE001 - any failure means "not installed"
-        return False
-    return True
-
-
-requires_lightning = pytest.mark.skipif(
-    not _lightning_available(), reason="pennylane-lightning not installed"
-)
 
 
 def _layer(cls: type[Layer] = QuantumEncodingLayer, **kwargs: Any) -> Layer:
@@ -205,7 +191,7 @@ class TestTrainingNoise:
         assert "noise_position='end'" in end
         assert "noise_level" not in _layer(cls).extra_repr()
 
-    @requires_lightning
+    @pytest.mark.requires_lightning
     @pytest.mark.parametrize("cls", LAYERS)
     def test_default_lightning_adjoint_layer_damps_output_and_gradient(
         self, cls: type[Layer], x: torch.Tensor
