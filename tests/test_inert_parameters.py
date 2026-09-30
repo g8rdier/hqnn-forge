@@ -18,9 +18,9 @@ import pennylane as qml
 import pytest
 import torch
 
-from hqnn_forge.diagnostics import circuit_summary, count_inert_parameters
-from hqnn_forge.diagnostics.circuit import _logical_tape
-from hqnn_forge.encoding import QuantumEncodingLayer
+from hqnn_forge.diagnostics import circuit_summary, count_inert_parameters, count_inert_weights
+from hqnn_forge.diagnostics.circuit import _logical_tape, _written_tape
+from hqnn_forge.encoding import DataReuploadingLayer, QuantumEncodingLayer
 from hqnn_forge.encoding.angle_embedding import DeviceName, DiffMethod, Entangler, Readout
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
@@ -539,3 +539,109 @@ class TestSoundnessOnRandomCircuits:
             checked += 1
             counted += inert
         assert checked > 350 and counted > 50  # the check has teeth
+
+
+# ---------------------------------------------------------------------------
+# Counting per weight entry (#235)
+# ---------------------------------------------------------------------------
+
+
+def _entry_tape(ops: Callable[[torch.Tensor], None], w: torch.Tensor) -> qml.tape.QuantumScript:
+    def circuit() -> None:
+        qml.RY(0.4, wires=0)
+        ops(w)
+
+    return _tape(circuit, [qml.expval(qml.PauliZ(0))])
+
+
+class TestPerWeightEntry:
+    def test_entry_shared_by_an_inert_and_a_live_slot_is_live(self) -> None:
+        w = torch.tensor([0.3], requires_grad=True)
+
+        def ops(v: torch.Tensor) -> None:
+            qml.RX(v[0], wires=0)  # live
+            qml.RZ(v[0], wires=0)  # inert: trailing RZ before a Z readout
+
+        tape = _entry_tape(ops, w)
+        assert count_inert_parameters(tape) == 1  # one inert slot
+        assert count_inert_weights(tape, [w]) == 0  # but the entry moves the output
+
+    def test_angle_from_two_entries_makes_both_inert(self) -> None:
+        w = torch.tensor([0.3, 0.7], requires_grad=True)
+
+        def ops(v: torch.Tensor) -> None:
+            qml.RZ(v[0] * v[1], wires=0)
+
+        tape = _entry_tape(ops, w)
+        assert count_inert_parameters(tape) == 1
+        assert count_inert_weights(tape, [w]) == 2
+
+    def test_entry_in_two_inert_slots_counts_once(self) -> None:
+        w = torch.tensor([0.3, 0.9], requires_grad=True)
+
+        def ops(v: torch.Tensor) -> None:
+            qml.RX(v[1], wires=0)
+            qml.RZ(v[0], wires=0)
+            qml.PhaseShift(v[0], wires=0)
+
+        tape = _entry_tape(ops, w)
+        assert count_inert_parameters(tape) == 2  # slots: more than the one dead entry
+        assert count_inert_weights(tape, [w]) == 1  # so n_trainable - inert >= 0 again
+
+    def test_unused_and_frozen_entries(self) -> None:
+        w = torch.tensor([0.3, 0.5], requires_grad=True)
+        frozen = torch.tensor([0.1])
+
+        def ops(v: torch.Tensor) -> None:
+            qml.RX(v[0], wires=0)
+            qml.RX(frozen[0], wires=0)
+
+        tape = _entry_tape(ops, w)
+        assert (
+            count_inert_weights(tape, [w, frozen]) == 1
+        )  # v[1] feeds nothing; frozen not counted
+
+    def test_counted_entries_have_zero_gradient(self) -> None:
+        w = torch.tensor([0.3, 0.7, 1.1], dtype=torch.float64, requires_grad=True)
+
+        def ops(v: torch.Tensor) -> None:
+            qml.RX(v[2], wires=0)
+            qml.RZ(v[0] * v[1], wires=0)
+
+        assert count_inert_weights(_entry_tape(ops, w), [w]) == 2
+
+        @qml.qnode(qml.device("default.qubit", wires=1), interface="torch")
+        def circuit(v: torch.Tensor) -> Any:
+            qml.RY(0.4, wires=0)
+            ops(v)
+            return qml.expval(qml.PauliZ(0))
+
+        circuit(w).backward()
+        assert w.grad is not None
+        assert abs(float(w.grad[0])) < 1e-12 and abs(float(w.grad[1])) < 1e-12
+        assert abs(float(w.grad[2])) > 1e-3
+
+    @pytest.mark.parametrize(
+        "build",
+        [
+            lambda: QuantumEncodingLayer(n_qubits=4, n_layers=2, **CPU),
+            lambda: QuantumEncodingLayer(
+                n_qubits=4, n_layers=2, entangler="strongly_entangling", readout="first", **CPU
+            ),
+            lambda: IQPEncodingLayer(n_qubits=4, n_layers=2, **CPU),
+            lambda: DataReuploadingLayer(
+                n_qubits=3, n_layers=3, trainable_input_scaling=True, **CPU
+            ),
+        ],
+        ids=["ring", "strongly-first", "iqp", "reuploading-scaled"],
+    )
+    def test_built_in_layers_count_the_same_either_way(self, build: Callable[[], Any]) -> None:
+        # Each weight entry feeds exactly one slot in the library's layers.
+        layer = build()
+        x = torch.rand(layer.n_qubits, dtype=torch.float64) + 0.5
+        tape = _written_tape(layer, x)
+        weights = list(layer.qlayer.qnode_weights.values())
+        assert count_inert_weights(tape, weights) == count_inert_parameters(tape)
+        summary = circuit_summary(layer)
+        assert summary.n_inert_params == count_inert_parameters(tape)
+        assert summary.n_effective_params >= 0

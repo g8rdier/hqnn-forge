@@ -10,6 +10,7 @@ CircuitSummary           Frozen record: qubits, depth, gate counts, trainable pa
 circuit_summary          Build a CircuitSummary from an encoding layer or a hybrid classifier.
 draw_circuit             Text drawing of the same circuit, for logs and notebooks.
 count_inert_parameters   Trainable gate parameters that can never reach a measurement.
+count_inert_weights      The same counted per weight entry, as circuit_summary reports it.
 LOGICAL_GATE_SET         Gate names circuits are decomposed to before counting; circuit_summary
                          also decomposes a MultiRZ on more than two wires.
 gradient_variance        Variance of the cost gradient over random weight draws.
@@ -29,6 +30,7 @@ from hqnn_forge.diagnostics.circuit import (
     CircuitSummary,
     circuit_summary,
     count_inert_parameters,
+    count_inert_weights,
     draw_circuit,
 )
 from hqnn_forge.diagnostics.fisher import (
@@ -54,6 +56,7 @@ __all__: list[str] = [
     "GradientVarianceResult",
     "circuit_summary",
     "count_inert_parameters",
+    "count_inert_weights",
     "draw_circuit",
     "effective_dimension",
     "effective_dimension_from_spectra",
