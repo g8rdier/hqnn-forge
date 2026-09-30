@@ -14,7 +14,8 @@ name: Upstream PennyLane
 #
 # A failure never blocks a PR.  On the schedule or a manual run it opens one
 # tracking issue per source, or comments on the open one; the run on a PR that
-# edits this file only proves the workflow itself works.
+# edits this file only proves the workflow itself works, so there a test
+# failure is logged but leaves the check green.
 
 on:
   schedule:
@@ -92,7 +93,11 @@ jobs:
     # As in tests.yml, a skip not marked may_skip fails.  The lightning tests
     # skip whenever lightning.qubit cannot be created, so without this a
     # lightning build that breaks against PennyLane would pass as skips.
+    # On a PR that edits this file, a test failure is upstream's, not the PR's:
+    # it shows on the step but leaves the check green, so the job never fails a
+    # PR (#320).  The install steps above still fail the check if they break.
     - name: Run pytest
+      continue-on-error: ${{ github.event_name == 'pull_request' }}
       env:
         HQNN_FORGE_FAIL_ON_SKIP: "1"
       run: |
