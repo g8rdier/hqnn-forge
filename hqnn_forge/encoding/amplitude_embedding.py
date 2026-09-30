@@ -40,8 +40,8 @@ Design Rationale
   - Up to 0.45 the input gradient is **NaN** for an exactly-zero amplitude,
     and in float32 already for one below about 1e-4 of its partner.
   - From 0.46 small amplitudes differentiate correctly, but an exactly-zero
-    amplitude gives a **finite but wrong** gradient (off by 0.1 to 0.8 in
-    absolute terms on a three-qubit circuit) for ``parameter-shift``,
+    amplitude gives a **finite but wrong** gradient (off by order one, about
+    1.0 on the three-qubit circuit the test pins) for ``parameter-shift``,
     ``finite-diff`` and lightning's ``adjoint`` alike.  Zero padding puts
     such an amplitude into every sample, and a silently wrong gradient is
     worse than a NaN one.
