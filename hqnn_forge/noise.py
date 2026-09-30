@@ -94,27 +94,11 @@ import pennylane as qml
 import torch
 from torch import nn
 
+from hqnn_forge._resolve import resolve_encoding_layer
+
 Position = Literal["all", "end"]
 NoiseMethod = Literal["density", "trajectories"]
 MAX_P = 0.75
-
-
-def _resolve_qlayer(
-    target: nn.Module, caller: str = "apply_depolarizing_noise"
-) -> tuple[qml.qnn.TorchLayer, int]:
-    layer = getattr(target, "quantum_layer", target)
-    qlayer = getattr(layer, "qlayer", None)
-    n_qubits = getattr(layer, "n_qubits", None)
-    if (
-        not isinstance(layer, nn.Module)
-        or not isinstance(qlayer, qml.qnn.TorchLayer)
-        or not isinstance(n_qubits, int)
-    ):
-        raise TypeError(
-            f"{caller} expects an encoding layer or a hybrid classifier "
-            f"with a quantum_layer attribute; got {type(target).__name__}."
-        )
-    return qlayer, n_qubits
 
 
 def validate_noise(
@@ -412,7 +396,7 @@ def apply_depolarizing_noise(
     fine-tune under noise.
     """
     validate_noise(p, position)
-    qlayer, n_qubits = _resolve_qlayer(model)
+    _, qlayer, n_qubits = resolve_encoding_layer(model, "apply_depolarizing_noise")
     # Two separate markers.  _hqnn_noise_depth counts open blocks of any p and
     # is what tells run_with_training_noise to skip a layer's train-mode
     # channel.  _hqnn_noise_original is set only while a p > 0 block has
@@ -547,7 +531,7 @@ def apply_shots(model: nn.Module, shots: int | None) -> Iterator[nn.Module]:
     from hqnn_forge.encoding._common import expand_batch_dimension, validate_shots
 
     validate_shots(shots, "parameter-shift")
-    qlayer, _ = _resolve_qlayer(model, "apply_shots")
+    _, qlayer, _ = resolve_encoding_layer(model, "apply_shots")
     if getattr(qlayer, "_hqnn_shots_original", None) is not None:
         raise RuntimeError("apply_shots cannot be nested on the same layer.")
     if getattr(qlayer, "_hqnn_noise_original", None) is not None:
