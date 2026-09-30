@@ -46,6 +46,7 @@ try:
     from sklearn.base import BaseEstimator, ClassifierMixin
     from sklearn.calibration import CalibratedClassifierCV
     from sklearn.svm import SVC
+    from sklearn.utils.metaestimators import available_if
     from sklearn.utils.multiclass import unique_labels
     from sklearn.utils.validation import check_is_fitted, validate_data
 except ImportError as exc:  # pragma: no cover - exercised only without scikit-learn
@@ -380,8 +381,8 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
     compute the kernel between new samples and the training set -- rows new,
     columns training, the orientation ``SVC`` needs -- from the training
     states cached at ``fit``, so only the new samples are simulated.  So the
-    estimator works in ``cross_val_score``, ``GridSearchCV``, ``Pipeline`` and
-    ``hqnn_forge.benchmark.run_benchmark`` like any other.
+    estimator works in ``cross_val_score``, ``GridSearchCV`` and ``Pipeline``
+    like any other.
 
     Parameters
     ----------
@@ -418,7 +419,8 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
     batch_size:
         Samples simulated at a time, to bound memory.  Default: all.
     random_state:
-        Seeds the layer's initialisation, the alignment subsets and ``SVC``.
+        Seeds the layer's initialisation, the alignment subsets and ``SVC``,
+        from private streams: the caller's global torch RNG is left untouched.
 
     Attributes
     ----------
@@ -527,8 +529,9 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
         X_arr, y_arr = validate_data(self, X, y, dtype=np.float64)
         classes = unique_labels(y_arr)
         if classes.size < 2:
+            # "1 class" is the wording scikit-learn's conformance checks match on.
             raise ValueError(
-                f"QuantumKernelClassifier needs at least two classes; got {classes.size}."
+                f"QuantumKernelClassifier needs at least two classes; got {classes.size} class."
             )
         if self.align_steps < 0:
             raise ValueError(f"align_steps must be >= 0; got {self.align_steps}.")
@@ -536,18 +539,22 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
             raise ValueError(
                 f"kernel-target alignment is defined for two classes; got {classes.size}."
             )
-        if self.random_state is not None:
-            torch.manual_seed(self.random_state)
-        layer = self._build_layer(X_arr.shape[1])
-        X_t = torch.from_numpy(X_arr)
+        if X_arr.shape[1] < 2 and self.encoding != "amplitude":
+            raise ValueError(
+                f"encoding={self.encoding!r} needs at least two qubits, one per feature; "
+                f"got n_features = {X_arr.shape[1]}.  Use encoding='amplitude'."
+            )
+        # A NumPy integer, as scikit-learn tools pass, is taken as the int it is.
+        # The layer is initialised inside seeded_rng, so a seeded fit leaves the
+        # caller's global torch RNG exactly where it was (#175).
+        seed = as_seed(self.random_state, "random_state")
+        with seeded_rng(seed):
+            layer = self._build_layer(X_arr.shape[1])
+        X_t = torch.tensor(X_arr)
         history: list[float] = []
         if self.align_steps:
             labels = torch.from_numpy(np.searchsorted(classes, y_arr))
-            generator = (
-                torch.Generator().manual_seed(self.random_state)
-                if self.random_state is not None
-                else None
-            )
+            generator = torch.Generator().manual_seed(seed) if seed is not None else None
             history = kernels.train_kernel_alignment(
                 layer,
                 X_t,
@@ -566,7 +573,7 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
                 kernel="precomputed",
                 C=self.C,
                 class_weight=self.class_weight,
-                random_state=self.random_state,
+                random_state=seed,
             )
 
         svc = svm().fit(K, y_arr)
@@ -592,19 +599,50 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
     def _test_kernel(self, X: npt.ArrayLike) -> np.ndarray:
         check_is_fitted(self, "svc_")
         X_arr = validate_data(self, X, dtype=np.float64, reset=False)
-        return self._kernel(self._encode(torch.from_numpy(X_arr)), self._train_encoded)
+        return self._kernel(self._encode(torch.tensor(X_arr)), self._train_encoded)
 
+    # The kernel is computed before svc_ is touched, so an unfitted estimator
+    # raises NotFittedError (from check_is_fitted), not AttributeError.
     def decision_function(self, X: npt.ArrayLike) -> npt.NDArray[np.float64]:
         """``SVC.decision_function`` on the kernel between ``X`` and the training set."""
-        return self.svc_.decision_function(self._test_kernel(X))  # type: ignore[no-any-return]
+        K = self._test_kernel(X)
+        return self.svc_.decision_function(K)  # type: ignore[no-any-return]
 
     def predict(self, X: npt.ArrayLike) -> npt.NDArray[Any]:
         """Labels from ``classes_``."""
-        return self.svc_.predict(self._test_kernel(X))  # type: ignore[no-any-return]
+        K = self._test_kernel(X)
+        return self.svc_.predict(K)  # type: ignore[no-any-return]
 
+    @available_if(lambda self: self.probability)
     def predict_proba(self, X: npt.ArrayLike) -> npt.NDArray[np.float64]:
-        """Platt-scaled probabilities; needs ``probability=True``."""
-        if not self.probability:
-            raise AttributeError("predict_proba needs probability=True.")
+        """Platt-scaled probabilities; only present with ``probability=True``, as in ``SVC``."""
         K = self._test_kernel(X)
         return self.calibrator_.predict_proba(K)  # type: ignore[no-any-return,union-attr]
+
+    # ------------------------------------------------------------------
+    # Pickling: layer_ holds a PennyLane QNode built around a local function,
+    # which pickle cannot serialise.  It is stored as its weights and rebuilt
+    # from the estimator's own parameters on load.
+    def __getstate__(self) -> dict[str, Any]:
+        state = dict(super().__getstate__())
+        layer = state.pop("layer_", None)
+        if layer is not None:
+            state["_layer_state"] = layer.state_dict()
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        state = dict(state)
+        saved = state.pop("_layer_state", None)
+        super().__setstate__(state)
+        if saved is not None:
+            # Construction draws initial weights that load_state_dict then
+            # overwrites; fork the RNG so unpickling leaves the caller's alone.
+            with torch.random.fork_rng(devices=[]):
+                layer = self._build_layer(self.n_features_in_)
+            layer.load_state_dict(saved)
+            self.layer_ = layer
+
+    def __sklearn_tags__(self) -> Any:
+        tags = super().__sklearn_tags__()
+        tags.non_deterministic = self.random_state is None
+        return tags

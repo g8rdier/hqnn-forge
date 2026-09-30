@@ -6,6 +6,8 @@ QuantumKernelClassifier, the QSVM as a scikit-learn estimator (#317).
 
 from __future__ import annotations
 
+import pickle
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -13,10 +15,12 @@ import pytest
 import torch
 
 pytest.importorskip("sklearn")
+from sklearn.exceptions import NotFittedError
 from sklearn.model_selection import GridSearchCV, cross_val_score
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
+from sklearn.utils.estimator_checks import estimator_checks_generator
 
 from hqnn_forge.kernels import quantum_kernel_matrix
 from hqnn_forge.sklearn import QuantumKernelClassifier
@@ -78,8 +82,10 @@ def test_three_classes_and_string_labels() -> None:
 
 def test_predict_proba_needs_probability() -> None:
     X, y = _data()
-    with pytest.raises(AttributeError, match="probability=True"):
-        QuantumKernelClassifier().fit(X, y).predict_proba(X)
+    est = QuantumKernelClassifier().fit(X, y)
+    assert not hasattr(est, "predict_proba")  # as SVC(probability=False)
+    with pytest.raises(AttributeError, match="predict_proba"):
+        est.predict_proba(X)
 
 
 class TestAlignment:
@@ -170,3 +176,62 @@ def test_probabilities_equal_a_hand_built_calibrated_svc() -> None:
         SVC(kernel="precomputed", random_state=0), method="sigmoid", ensemble=False, cv=5
     ).fit(K_train, y)
     np.testing.assert_allclose(est.predict_proba(Xt), manual.predict_proba(K_test), atol=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# scikit-learn conventions: conformance, pickling, the caller's RNG
+# ---------------------------------------------------------------------------
+
+#: Checks scikit-learn skips itself when an optional package is absent.
+MAY_SKIP_CHECKS = {"check_classifier_data_not_an_array", "check_array_api_input"}
+
+
+def _conformance_params() -> list[Any]:
+    params = []
+    for probability in (False, True):
+        est = QuantumKernelClassifier(probability=probability, random_state=0)
+        for estimator, check in estimator_checks_generator(est):
+            name = getattr(check, "func", check).__name__
+            marks = [pytest.mark.may_skip] if name in MAY_SKIP_CHECKS else []
+            params.append(
+                pytest.param(estimator, check, marks=marks, id=f"probability={probability}-{name}")
+            )
+    return params
+
+
+@pytest.mark.parametrize(("estimator", "check"), _conformance_params())
+def test_scikit_learn_conformance(
+    estimator: QuantumKernelClassifier, check: Callable[[QuantumKernelClassifier], None]
+) -> None:
+    check(estimator)
+
+
+def test_unfitted_raises_not_fitted() -> None:
+    X, _ = _data()
+    est = QuantumKernelClassifier(probability=True)
+    for method in (est.predict, est.decision_function, est.predict_proba):
+        with pytest.raises(NotFittedError):
+            method(X)
+
+
+@pytest.mark.parametrize("params", [{}, {"encoding": "reuploading", "noise_level": 0.1}])
+def test_pickle_round_trip_predicts_the_same(params: dict[str, Any]) -> None:
+    X, y = _data()
+    Xt, _ = _data(10, seed=5)
+    est = QuantumKernelClassifier(**params, probability=True, random_state=0).fit(X, y)
+    torch.manual_seed(123)
+    state = torch.random.get_rng_state()
+    loaded = pickle.loads(pickle.dumps(est))
+    assert torch.equal(torch.random.get_rng_state(), state)  # unpickling leaves the RNG alone
+    assert hasattr(est, "layer_")  # pickling does not strip the original
+    np.testing.assert_array_equal(loaded.decision_function(Xt), est.decision_function(Xt))
+    np.testing.assert_array_equal(loaded.predict_proba(Xt), est.predict_proba(Xt))
+
+
+def test_seeded_fit_leaves_the_global_rng_alone() -> None:
+    X, y = _data()
+    torch.manual_seed(7)
+    state = torch.random.get_rng_state()
+    seed: Any = np.int64(3)  # scikit-learn tools pass NumPy integers
+    QuantumKernelClassifier(encoding="reuploading", align_steps=2, random_state=seed).fit(X, y)
+    assert torch.equal(torch.random.get_rng_state(), state)
