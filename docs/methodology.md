@@ -47,9 +47,10 @@ would measure a model trained *with* the circuit, not what a classical model ach
   that can never reach the measurement: the published SHNN's 122 get a 121-parameter control.
   `circuit_summary(...).n_inert_params` counts the structurally inert ones (16 of the
   published SHNN's 122; by gradient, 102 of them are live, #234). #293 changes the match to
-  the live count, `count_parameters() - circuit_summary(model).n_inert_params`, which gives
-  the published SHNN a 101-parameter control; efficiency figures keep the total. Update this
-  bullet when it merges.
+  the structurally live count, `count_parameters() - circuit_summary(model).n_inert_params`
+  (106 for the published SHNN, halfway between widths 10 and 11, so the tie rule gives a
+  101-parameter control); efficiency figures keep the total. Update this bullet when it
+  merges.
 
 ## Data handling
 
@@ -62,12 +63,14 @@ same data:
 2. **Validation split.** The training part is split once more, stratified, and one
    `validation_folds`-th is held out for early stopping and threshold tuning. It holds real
    rows only.
-3. **Oversampling.** SMOTE (Chawla et al. 2002; `oversample_fold`) runs on the remaining
-   training rows only, after scaling, since its neighbour search measures distances. No
-   synthetic row is derived from a validation or test row.
+3. **Oversampling.** With `oversample=True` (the default), SMOTE (Chawla et al. 2002;
+   `oversample_fold`) runs on the remaining training rows only, after scaling, since its
+   neighbour search measures distances. No synthetic row is derived from a validation or test
+   row.
 4. **Training.** The same loss, optimiser, learning rate, batch size, epoch budget, early
    stopping, batch order and initialisation seed for both models.
-5. **Test rows** are used for one thing: the final score.
+5. **Test rows** are used only to score the trained models: the final score, and with
+   `noise_levels` the hybrid's score under each noise level (see Noise).
 
 `hqnn_forge.data` loaders return data as published, without scaling; their docstrings state any
 cleaning (for example, dropped leakage columns or rows with missing values) and the resulting
