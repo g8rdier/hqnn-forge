@@ -72,6 +72,14 @@ jobs:
           exit 1
         fi
 
+    # The floor is repeated by hand in pyproject.toml and in this file (ruff's
+    # target-version, the classifiers, vermin's -t and each job's lowest
+    # python-version), and in the local vermin commands in README.md and
+    # CONTRIBUTING.md; each tool only sees its own copy, so a missed one would
+    # fail nothing. The script compares them all with requires-python.
+    - name: Check every copy of the Python floor
+      run: uv run --frozen python .github/scripts/check_python_floor.py
+
     # Neither ruff nor mypy checks stdlib API usage against the 3.11 floor:
     # ruff's target-version covers syntax only, and mypy has to target 3.12
     # because the numpy stubs use PEP 695 syntax. vermin fails on a call such
@@ -123,6 +131,11 @@ jobs:
       run: |
         pytest tests/ -v
 
+    # The >>> examples in the package's docstrings, which drift silently
+    # otherwise. Run in every job so they hold at the floors and the lock too.
+    - name: Run doctests
+      run: pytest --doctest-modules hqnn_forge -v
+
   # The matrix above installs the latest versions satisfying the open ">=" floors,
   # which is the early warning that an upstream release broke us. This job installs
   # the exact resolution recorded in uv.lock instead, so a Dependabot lockfile bump
@@ -157,13 +170,17 @@ jobs:
         HQNN_FORGE_FAIL_ON_SKIP: "1"
       run: uv run --frozen pytest tests/ -v
 
+    - name: Run doctests
+      run: uv run --frozen pytest --doctest-modules hqnn_forge -v
+
   # The two matrices above never install the declared floors: test resolves to
   # the newest versions the ">=" constraints allow and test-locked to whatever
   # uv.lock pins, so a floor in pyproject.toml is otherwise only tested by
   # coincidence, and a lockfile bump can silently leave it untested. This job
   # installs every direct runtime dependency at exactly its floor (transitive
-  # ones resolve normally) on 3.11, the requires-python floor, so every floor
-  # is exercised on every PR and has to be raised when it stops working.
+  # ones resolve normally) on 3.11, the requires-python floor, and on each
+  # interpreter that has floors of its own, so every floor is exercised on
+  # every PR and has to be raised when it stops working.
   #
   # Only the runtime deps and the lightning and sklearn extras are resolved
   # lowest. The dev tools are declared without floors, and lowest-direct would
@@ -173,6 +190,12 @@ jobs:
   # extra, which leaves the runtime pins untouched.
   test-lowest:
     runs-on: ubuntu-latest
+    # One leg per set of floors: pyproject.toml gives torch, numpy and
+    # scikit-learn a higher floor on 3.13 and on 3.14, where the older
+    # releases have no wheels. 3.12 shares the 3.11 floors.
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.13", "3.14"]
 
     steps:
     - uses: actions/checkout@v7
@@ -180,10 +203,11 @@ jobs:
     - name: Install uv
       uses: astral-sh/setup-uv@v10.1.0
       with:
-        python-version: "3.11"
+        python-version: ${{ matrix.python-version }}
         enable-cache: true
-        # Without a suffix this job shares the test-locked 3.11 cache key and
-        # the two would restore each other's (differently resolved) cache
+        # Without a suffix this job shares the test-locked cache key of the
+        # same interpreter and the two would restore each other's
+        # (differently resolved) cache
         cache-suffix: lowest-direct
 
     - name: Install the declared floors
@@ -206,3 +230,6 @@ jobs:
       env:
         HQNN_FORGE_FAIL_ON_SKIP: "1"
       run: uv run --no-sync pytest tests/ -v --ignore=tests/test_evaluation_plots.py
+
+    - name: Run doctests
+      run: uv run --no-sync pytest --doctest-modules hqnn_forge -v

@@ -317,7 +317,7 @@ class TestReadoutFeatures:
             ("brickwork", "Y", 1, [[0, 1], [0, 1, 2, 3], [0, 1, 2, 3], [2, 3, 4], [2, 3, 4]]),
             ("brickwork", "X", 2, [[0, 1], [0, 1, 2, 3], [0, 1, 2, 3], _ALL, _ALL]),
             ("brickwork", "Y", 2, [[0, 1, 2, 3], _ALL, _ALL, _ALL, _ALL]),
-            ("ring", "Z", 2, [[]] * 5),
+            # "Z" sees nothing at any depth and is refused; see TestRotationZIsRefused
         ],
     )
     def test_features_each_readout_sees(
@@ -384,6 +384,58 @@ class TestReadout:
             measurements = measure_z(3, "all")
         assert len(measurements) == 3 and len(q.queue) == 3
         assert [m.wires.tolist() for m in measurements] == [[0], [1], [2]]
+
+
+class TestRotationZIsRefused:
+    """
+    One RZ embedding on |0…0⟩ is a global phase, so the layer would return
+    the same outputs for every input (#212).
+    """
+
+    def test_layer_and_qnode_builder_refuse_it(self) -> None:
+        with pytest.raises(ValueError, match="global phase"):
+            QuantumEncodingLayer(n_qubits=N_QUBITS, n_layers=2, rotation="Z", **CPU)
+        with pytest.raises(ValueError, match='rotation="Z" would make the layer ignore'):
+            build_encoding_qnode(n_qubits=N_QUBITS, n_layers=2, rotation="Z", **CPU)
+
+    @pytest.mark.parametrize("cls", [HybridBinaryClassifier, ParallelHybridClassifier])
+    def test_classifiers_refuse_it(self, cls: type) -> None:
+        with pytest.raises(ValueError, match="global phase"):
+            _classifier(cls, embedding_rotation="Z")
+
+    def test_why_it_is_refused(self) -> None:
+        # The circuit the layer would have run, built by hand: the outputs do
+        # not move with the inputs and the input gradients vanish.
+        dev = qml.device("default.qubit", wires=N_QUBITS)
+        torch.manual_seed(0)
+        weights = torch.randn(3, N_QUBITS, 3, dtype=torch.float64)
+
+        @qml.qnode(dev, interface="torch")
+        def circuit(x: torch.Tensor) -> list:
+            qml.AngleEmbedding(x, wires=range(N_QUBITS), rotation="Z")
+            apply_variational_layers(weights, N_QUBITS, 3)
+            return measure_z(N_QUBITS)
+
+        x = (torch.rand(N_QUBITS, dtype=torch.float64) * 2 - 1) * math.pi
+        x.requires_grad_(True)
+        out = torch.stack(circuit(x))
+        (grad,) = torch.autograd.grad(out.sum(), x)
+        other = torch.stack(circuit(-x.detach()))
+        torch.testing.assert_close(out.detach(), other, rtol=0, atol=1e-12)
+        assert grad.abs().max() < 1e-12
+
+    @pytest.mark.parametrize("rotation", ["X", "Y"])
+    def test_the_accepted_axes_depend_on_the_input(self, rotation: str) -> None:
+        layer = QuantumEncodingLayer(
+            n_qubits=N_QUBITS,
+            n_layers=2,
+            rotation=rotation,  # type: ignore[arg-type]
+            **CPU,
+        )
+        x = _angles()
+        x.requires_grad_(True)
+        (grad,) = torch.autograd.grad(layer(x).sum(), x)
+        assert grad.abs().max() > 1e-3
 
 
 class TestRotationPassThrough:

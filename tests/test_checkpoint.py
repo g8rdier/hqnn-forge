@@ -288,6 +288,17 @@ class TestFailures:
         with pytest.raises(ValueError, match=r"missing \['encoding_type'\]"):
             load_checkpoint(_save_payload(payload, tmp_path / "partial.pt"))
 
+    def test_value_no_longer_accepted_is_refused(self, saved: tuple, tmp_path: Path) -> None:
+        # A checkpoint written with embedding_rotation="Z" held a constant
+        # quantum layer (#212).  The constructor now refuses the value, and a
+        # load goes through the constructor, so the file is refused with the
+        # same explanation rather than rebuilt as some other circuit.
+        _, path = saved
+        payload = torch.load(path, weights_only=True)
+        payload["config"]["embedding_rotation"] = "Z"
+        with pytest.raises(ValueError, match="global phase"):
+            load_checkpoint(_save_payload(payload, tmp_path / "z.pt"))
+
     def test_unexpected_constructor_field(self, saved: tuple, tmp_path: Path) -> None:
         _, path = saved
         payload = torch.load(path, weights_only=True)
@@ -615,6 +626,7 @@ CONSTRUCTOR_ARGS = {
         "noise_level",
         "noise_position",
         "init_seed",
+        "classical_encoder",
     },
     ParallelHybridClassifier: {
         "n_input_features",
@@ -635,6 +647,7 @@ CONSTRUCTOR_ARGS = {
         "noise_level",
         "noise_position",
         "init_seed",
+        "classical_encoder",
     },
     MulticlassHybridClassifier: {
         "n_input_features",
