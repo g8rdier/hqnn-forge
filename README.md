@@ -428,3 +428,4 @@ and versioning policy this project follows.
 - Naeini, Cooper & Hauskrecht (2015) — *Obtaining well calibrated probabilities using Bayesian binning*
 - Guo, Pleiss, Sun & Weinberger (2017) — *On calibration of modern neural networks*
 - Mukhoti et al. (2020) — *Calibrating deep neural networks using focal loss*
+- Kull et al. (2019) — *Beyond temperature scaling: obtaining well-calibrated multi-class probabilities with Dirichlet calibration*
