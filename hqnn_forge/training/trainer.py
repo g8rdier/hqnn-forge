@@ -30,6 +30,7 @@ import itertools
 import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import cast
 
 import torch
 import torch.nn as nn
@@ -147,7 +148,9 @@ def train_model(
         Optimiser already bound to the parameters to train.  A gradient-free
         one (``optimizer.gradient_free``, e.g.
         :class:`~hqnn_forge.training.SPSA`) gets ``step(closure)`` with a
-        closure that evaluates the batch loss, and no ``backward`` pass.
+        closure that returns the batch loss tensor, and no ``backward`` pass
+        of its own (SPSA's ``gradient_optimizer`` backpropagates that loss to
+        the classical head only).
     X_train, y_train:
         Training split.
     X_val, y_val:
@@ -249,13 +252,17 @@ def train_model(
                 idx = perm[start:stop]
                 if getattr(optimizer, "gradient_free", False):
                     # SPSA and the like evaluate the loss themselves, twice, with
-                    # no backward pass (see hqnn_forge.training.spsa).
+                    # no backward pass of their own (see hqnn_forge.training.spsa).
+                    # The tensor, not a float: SPSA's gradient_optimizer
+                    # backpropagates it to the classical head.
                     def closure(
                         x_b: torch.Tensor = X_train[idx], y_b: torch.Tensor = y_train[idx]
-                    ) -> float:
-                        return float(loss_fn(_logits(model, x_b), y_b))
+                    ) -> torch.Tensor:
+                        return loss_fn(_logits(model, x_b), y_b)
 
-                    batch_loss = float(optimizer.step(closure))
+                    # torch types the closure as returning float, but its own
+                    # optimisers (LBFGS) take one returning the loss tensor.
+                    batch_loss = float(optimizer.step(cast("Callable[[], float]", closure)))
                 else:
                     optimizer.zero_grad()
                     loss = loss_fn(_logits(model, X_train[idx]), y_train[idx])
