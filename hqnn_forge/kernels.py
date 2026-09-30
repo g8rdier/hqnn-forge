@@ -42,7 +42,27 @@ Only the circuit as written is replayed.  A transform on the layer's QNode
 (noise, compilation) would be dropped by the replay, so any transform other
 than the ``broadcast_expand`` the encoders add for non-backprop
 differentiation makes these functions raise rather than return the kernel
-of a different circuit.
+of a different circuit.  For noise, pass ``noise_level`` instead (below).
+
+Under depolarising noise
+------------------------
+With ``noise_level = p > 0`` the circuit is replayed on ``default.mixed``
+with ``DepolarizingChannel(p)`` inserted exactly as
+:mod:`hqnn_forge.noise` inserts it for the models (the same construction,
+at ``noise_position``), and each input is encoded into a density matrix
+``ρ(x)``.  The fidelity ``|⟨Φ(x)|Φ(y)⟩|²`` then generalises to the
+Hilbert–Schmidt kernel ``k(x, y) = Tr[ρ(x) ρ(y)]``: still symmetric and
+positive semi-definite (a Gram matrix of the vectorised ``ρ``), and equal to
+the fidelity kernel for pure states.  Its diagonal is the purity
+``Tr[ρ(x)²] < 1``, which falls as ``p`` grows; that is the measurable effect
+of the noise, and the matrix is deliberately not renormalised to hide it.
+
+This is not what :func:`overlap_kernel_matrix` estimates on a noisy device:
+there the noise acts on the whole compute-uncompute circuit ``U(x)† U(y)``,
+the estimate is ``⟨0|N(U(x)†U(y)|0⟩⟨0|U(y)†U(x))|0⟩`` for the device's noise
+``N``, which is neither ``Tr[ρ(x)ρ(y)]`` nor necessarily symmetric.
+Mixed-state simulation needs ``4^n`` entries per sample instead of ``2^n``,
+and ``default.mixed`` stops at 23 wires.
 
 Scaling: O(M²) against the VQC
 ------------------------------
@@ -97,9 +117,12 @@ import torch
 from torch import nn
 
 from hqnn_forge._resolve import resolve_encoding_layer
+from hqnn_forge.noise import Position, _noisy_qnode, validate_noise
 
 __all__ = [
+    "encoded_density_matrices",
     "encoded_states",
+    "kernel_from_density_matrices",
     "kernel_from_states",
     "kernel_target_alignment",
     "nearest_psd",
@@ -141,7 +164,8 @@ def _resolve_layer(layer: nn.Module, caller: str) -> tuple[qml.qnn.TorchLayer, i
         raise RuntimeError(
             f"quantum_kernel_matrix computes the untransformed state-vector kernel, but "
             f"the layer's QNode carries {unknown}, which the replay would drop.  Inside "
-            f"apply_depolarizing_noise, call it outside the block."
+            f"apply_depolarizing_noise, call it outside the block, and pass noise_level= "
+            f"for the kernel under the same depolarising noise."
         )
     return qlayer, n_qubits, prepare
 
@@ -358,6 +382,8 @@ def quantum_kernel_matrix(
     *,
     differentiable: bool = False,
     batch_size: int | None = None,
+    noise_level: float = 0.0,
+    noise_position: Position = "all",
 ) -> torch.Tensor:
     """
     Pairwise state-fidelity kernel ``K[i, j] = |⟨Φ(x_i)|Φ(y_j)⟩|²``.
@@ -383,6 +409,12 @@ def quantum_kernel_matrix(
         As for :func:`encoded_states`: the states of ``X`` and ``Y`` are
         simulated this many rows at a time.  Both sets are validated before
         the first batch.
+    noise_level, noise_position:
+        With ``noise_level > 0``, the Hilbert–Schmidt kernel
+        ``Tr[ρ(x_i) ρ(y_j)]`` of the states under depolarising noise (see the
+        module docstring and :func:`encoded_density_matrices`); its diagonal
+        is the purity, below 1.  ``0`` (default) is the noiseless kernel,
+        computed from state vectors as before.
 
     Returns
     -------
@@ -437,9 +469,22 @@ def quantum_kernel_matrix(
     are rounding.
     """
     _check_batch_size(batch_size)
+    validate_noise(
+        noise_level, noise_position, p_name="noise_level", position_name="noise_position"
+    )
     qlayer, n_qubits, prepare = _resolve_layer(layer, "quantum_kernel_matrix")
     # Validate both input sets before simulating either.
     prepared_x = _prepare(X, prepare, "X")
+    if noise_level > 0.0:
+        prepared_y = None if Y is None else _prepare(Y, prepare, "Y")
+        both = prepared_x if prepared_y is None else torch.cat([prepared_x, prepared_y])
+        rho = _simulate_density(
+            both, qlayer, n_qubits, noise_level, noise_position, differentiable, batch_size
+        )
+        if prepared_y is None:
+            return kernel_from_density_matrices(rho)
+        n_x = prepared_x.shape[0]
+        return kernel_from_density_matrices(rho[:n_x], rho[n_x:])
     if Y is None:
         return kernel_from_states(
             _simulate(prepared_x, qlayer, n_qubits, differentiable, batch_size)
@@ -711,3 +756,147 @@ def nearest_psd(K: torch.Tensor) -> torch.Tensor:
     eigenvalues, eigenvectors = torch.linalg.eigh(symmetric)
     projected = (eigenvectors * eigenvalues.clamp(min=0.0)) @ eigenvectors.T
     return 0.5 * (projected + projected.T)
+
+
+# ---------------------------------------------------------------------------
+# Density matrices under depolarising noise (#221)
+# ---------------------------------------------------------------------------
+
+
+def _simulate_density(
+    prepared: torch.Tensor,
+    qlayer: qml.qnn.TorchLayer,
+    n_qubits: int,
+    noise_level: float,
+    noise_position: Position,
+    differentiable: bool = False,
+    batch_size: int | None = None,
+) -> torch.Tensor:
+    """
+    Density matrices of the layer's circuit with depolarising channels inserted.
+
+    ``batch_size`` works as in :func:`_simulate`: batches are written into
+    one preallocated output rather than joined with ``torch.cat``.
+    """
+    n_rows = prepared.shape[0]
+    dim = 2**n_qubits
+    if batch_size is not None and batch_size < n_rows:
+        rho = torch.empty(n_rows, dim, dim, dtype=torch.complex128)
+        for start in range(0, n_rows, batch_size):
+            stop = start + batch_size
+            rho[start:stop] = _simulate_density(
+                prepared[start:stop], qlayer, n_qubits, noise_level, noise_position, differentiable
+            )
+        return rho
+    weights = {
+        name: (p if differentiable else p.detach()).to(torch.float64)
+        for name, p in qlayer.qnode_weights.items()
+    }
+    # The noisy QNode the models use (hqnn_forge.noise), taken at the "user"
+    # level so its inserted channels are on the tape; p = 0 inserts none, as
+    # apply_depolarizing_noise leaves the circuit untouched at p = 0.
+    if noise_level > 0.0:
+        qnode = _noisy_qnode(qlayer.qnode, n_qubits, noise_level, noise_position)
+        tape = qml.workflow.construct_tape(qnode, level="user")(prepared, **weights)
+    else:
+        tape = qml.workflow.construct_tape(qlayer.qnode, level=0)(prepared, **weights)
+    tape = tape.copy(measurements=[qml.density_matrix(wires=range(n_qubits))])
+    device = qml.device("default.mixed", wires=n_qubits)
+    (result,) = qml.execute([tape], device, diff_method="backprop" if differentiable else None)
+    return torch.as_tensor(result).to(torch.complex128).reshape(n_rows, dim, dim)
+
+
+def encoded_density_matrices(
+    X: torch.Tensor,
+    layer: nn.Module,
+    *,
+    noise_level: float = 0.0,
+    noise_position: Position = "all",
+    differentiable: bool = False,
+    batch_size: int | None = None,
+) -> torch.Tensor:
+    """
+    Density matrices ``ρ(x_i)`` the layer prepares under depolarising noise.
+
+    The circuit is replayed as by :func:`encoded_states`, on ``default.mixed``
+    with ``DepolarizingChannel(noise_level)`` inserted at ``noise_position``
+    as :mod:`hqnn_forge.noise` does for the models; see "Under depolarising
+    noise" in the module docstring.
+
+    Parameters
+    ----------
+    X, layer, differentiable, batch_size:
+        As for :func:`encoded_states`.
+    noise_level:
+        Depolarising probability per channel, in ``[0, 0.75]``.  ``0``
+        inserts no channel, so the result is ``|Φ⟩⟨Φ|`` for the noiseless
+        states.
+    noise_position:
+        ``"all"`` (after every gate) or ``"end"`` (before measurement), as in
+        :func:`hqnn_forge.noise.apply_depolarizing_noise`.
+
+    Returns
+    -------
+    torch.Tensor
+        ``complex128`` of shape ``(n_samples, 2**n_qubits, 2**n_qubits)``,
+        each Hermitian with unit trace.
+
+    Raises
+    ------
+    TypeError, ValueError, RuntimeError
+        As :func:`encoded_states`; also ``ValueError`` for a ``noise_level``
+        or ``noise_position`` out of range.
+    """
+    validate_noise(
+        noise_level, noise_position, p_name="noise_level", position_name="noise_position"
+    )
+    _check_batch_size(batch_size)
+    qlayer, n_qubits, prepare = _resolve_layer(layer, "encoded_density_matrices")
+    return _simulate_density(
+        _prepare(X, prepare, "X"),
+        qlayer,
+        n_qubits,
+        noise_level,
+        noise_position,
+        differentiable,
+        batch_size,
+    )
+
+
+def kernel_from_density_matrices(
+    rho_x: torch.Tensor, rho_y: torch.Tensor | None = None
+) -> torch.Tensor:
+    """
+    Hilbert–Schmidt kernel ``K[i, j] = Tr[ρ_i σ_j]`` from density matrices.
+
+    ``Tr[ρσ] = Σ_ab ρ_ab conj(σ_ab)`` for Hermitian matrices, so ``K`` is the
+    real Gram matrix of the vectorised matrices: symmetric and positive
+    semi-definite.  The square matrix is made exactly symmetric; its
+    diagonal holds the purities, not ones.
+
+    Parameters
+    ----------
+    rho_x:
+        Shape ``(n_x, d, d)``, as returned by :func:`encoded_density_matrices`.
+    rho_y:
+        Optional second set, shape ``(n_y, d, d)``.  ``None``: the square
+        matrix of ``rho_x`` with itself.
+    """
+    symmetric = rho_y is None
+    rho_y = rho_x if rho_y is None else rho_y
+    if (
+        rho_x.ndim != 3
+        or rho_y.ndim != 3
+        or rho_x.shape[1] != rho_x.shape[2]
+        or rho_x.shape[1:] != rho_y.shape[1:]
+    ):
+        raise ValueError(
+            f"rho_x and rho_y must be stacks of equal square matrices; got "
+            f"{tuple(rho_x.shape)} and {tuple(rho_y.shape)}."
+        )
+    vx = rho_x.to(torch.complex128).reshape(rho_x.shape[0], -1)
+    vy = vx if symmetric else rho_y.to(torch.complex128).reshape(rho_y.shape[0], -1)
+    kernel = (vx @ vy.conj().T).real
+    if symmetric:
+        kernel = torch.triu(kernel) + torch.triu(kernel, 1).T
+    return kernel
