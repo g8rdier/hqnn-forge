@@ -290,8 +290,10 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         X_arr, y_arr = validate_data(self, X, y, dtype=np.float32)
         classes = unique_labels(y_arr)
         if classes.size < 2:
+            # "1 class" is one of the phrasings scikit-learn's conformance
+            # checks (check_fit2d_1sample) match on.
             raise ValueError(
-                f"HybridClassifierEstimator needs at least two classes; got {classes.size}: "
+                f"HybridClassifierEstimator needs at least two classes; got 1 class: "
                 f"{classes.tolist()}."
             )
         if self.strategy not in ("softmax", "one_vs_rest"):

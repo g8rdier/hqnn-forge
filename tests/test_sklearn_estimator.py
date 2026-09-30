@@ -308,9 +308,11 @@ MAY_SKIP_CHECKS: dict[str, str] = {
 
 def _conformance_estimator() -> HybridClassifierEstimator:
     # check_classifiers_train requires training accuracy > 0.83 on its own
-    # toy problem; 2 epochs fall short, 30 pass with margin at this seed.
+    # toy problems, binary and (with the multiclass tag) 3-class blobs; 2
+    # epochs fall short, 30 pass with margin at this seed.  Two qubits reach
+    # only 0.77 on the 3-class problem (0.82 at 60 epochs); three reach 0.91.
     return HybridClassifierEstimator(
-        n_qubits=2,
+        n_qubits=3,
         n_layers=1,
         device_name="default.qubit",
         diff_method="backprop",
