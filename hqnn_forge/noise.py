@@ -406,6 +406,17 @@ def apply_depolarizing_noise(
     if p > 0.0 and getattr(qlayer, "_hqnn_noise_original", None) is not None:
         raise RuntimeError("apply_depolarizing_noise cannot be nested on the same layer.")
     original = qlayer.qnode
+    # The noisy QNode simulates the exact channel on default.mixed, so a
+    # sampled layer (built with shots, or inside apply_shots) would silently
+    # return exact values here -- the reason density training noise refuses
+    # shots too.
+    shots = getattr(getattr(original, "shots", None), "total_shots", None)
+    if p > 0.0 and shots is not None:
+        raise RuntimeError(
+            f"apply_depolarizing_noise simulates the exact channel and would ignore the "
+            f"layer's shots={shots}; evaluate the noise without shots, or the shots "
+            f"without the noise block."
+        )
     # Build the replacement before touching the layer. default.mixed refuses
     # more than 23 wires, and a failure here has to leave the layer as it was:
     # arming the guard first would leave it armed with no block to disarm it,
