@@ -30,7 +30,9 @@ For :class:`DataReuploadingLayer` the blocks ``weights[0]`` to
 ``weights[-2]`` sit between uploads and do shape the kernel; they are then
 part of the kernel's definition (a "trainable kernel" in the sense of
 Hubregtsen et al. 2022), and the matrix is that of the layer as currently
-parametrised.  The last block, ``weights[-1]``, comes after the last upload
+parametrised.  :func:`train_kernel_alignment` chooses them for the task, by
+maximising :func:`kernel_target_alignment` through the differentiable path
+(``differentiable=True``).  The last block, ``weights[-1]``, comes after the last upload
 and cancels as the single-upload ansatz does, so with ``n_layers=1`` the
 kernel does not depend on ``weights`` at all.  A trainable
 ``input_scaling`` multiplies the features inside every scaled upload and
@@ -60,9 +62,16 @@ two until ``M(M-1)/2`` overtakes ``E · M · (2P + 1)``, around
 and at every prediction whatever ``M`` is, the kernel costs more.
 
 On a state-vector simulator the picture is different: ``M`` state vectors of
-size ``2^n`` and one ``M × M`` Gram product, which is what this module does.
-There the limit is memory for the ``M × M`` matrix (see the Notes of
-:func:`quantum_kernel_matrix`), not circuit evaluations.
+size ``2^n`` and one ``M × M`` Gram product, which is what
+:func:`quantum_kernel_matrix` does.  There the limit is memory for the
+``M × M`` matrix (see its Notes), not circuit evaluations.
+
+:func:`overlap_kernel_matrix` estimates the kernel the way hardware has to,
+one compute-uncompute circuit ``U(x)† U(y)`` per entry, reading the
+probability of the all-zeros outcome, with ``shots`` samples per circuit and
+on any device.  That makes the ``M(M-1)/2`` cost and the effect of shot noise
+(and, on a noisy device, of noise) on the SVM measurable rather than
+described.
 
 References
 ----------
@@ -72,6 +81,10 @@ References
   spaces", PRL 122, 040504.
 * Hubregtsen et al. (2022) "Training quantum embedding kernels on near-term
   quantum computers", PRA 106, 042431.
+* Cortes, Mohri & Rostamizadeh (2012) "Algorithms for learning kernels based
+  on centered alignment", JMLR 13, 795–828.
+* Higham (1988) "Computing a nearest symmetric positive semidefinite matrix",
+  Linear Algebra and its Applications 103, 103–118.
 """
 
 from __future__ import annotations
@@ -82,27 +95,36 @@ import pennylane as qml
 import torch
 from torch import nn
 
-__all__ = ["encoded_states", "kernel_from_states", "quantum_kernel_matrix"]
+from hqnn_forge._resolve import resolve_encoding_layer
+
+__all__ = [
+    "encoded_states",
+    "kernel_from_states",
+    "kernel_target_alignment",
+    "nearest_psd",
+    "overlap_kernel_matrix",
+    "quantum_kernel_matrix",
+    "train_kernel_alignment",
+]
 
 
 PrepareInputs = Callable[[torch.Tensor], torch.Tensor]
 
 
-def _resolve_layer(layer: nn.Module) -> tuple[qml.qnn.TorchLayer, int, PrepareInputs]:
-    """``(qlayer, n_qubits, prepare_inputs)`` of an encoding layer, or raise ``TypeError``."""
-    qlayer = getattr(layer, "qlayer", None)
-    n_qubits = getattr(layer, "n_qubits", None)
+def _resolve_layer(layer: nn.Module, caller: str) -> tuple[qml.qnn.TorchLayer, int, PrepareInputs]:
+    """
+    ``(qlayer, n_qubits, prepare_inputs)`` of an encoding layer, or raise.
+
+    A hybrid classifier is refused, not unwrapped: the kernel is defined by the
+    encoder alone, and the classifier's classical encoder would sit between
+    ``X`` and the feature map (see ``resolve_encoding_layer``).
+    """
+    _, qlayer, n_qubits = resolve_encoding_layer(layer, caller, allow_model=False)
     prepare = getattr(layer, "prepare_inputs", None)
-    if (
-        not isinstance(qlayer, qml.qnn.TorchLayer)
-        or not isinstance(n_qubits, int)
-        or not callable(prepare)
-    ):
+    if not callable(prepare):
         raise TypeError(
-            f"quantum_kernel_matrix expects an encoding layer with a qlayer TorchLayer, "
-            f"an integer n_qubits and a prepare_inputs method (QuantumEncodingLayer, "
-            f"IQPEncodingLayer, AmplitudeEncodingLayer, DataReuploadingLayer); "
-            f"got {type(layer).__name__}."
+            f"{caller} expects an encoding layer with a prepare_inputs method, which "
+            f"{type(layer).__name__} does not have."
         )
     # The level=0 tape drops every transform on the QNode and the replay runs
     # on default.qubit, so a transformed circuit (apply_depolarizing_noise's
@@ -136,23 +158,38 @@ def _prepare(X: torch.Tensor, prepare: PrepareInputs, name: str) -> torch.Tensor
     return prepare(X.detach().to(torch.float64))
 
 
-def _simulate(prepared: torch.Tensor, qlayer: qml.qnn.TorchLayer, n_qubits: int) -> torch.Tensor:
-    """State vectors for inputs that have already been through ``_prepare``."""
+def _simulate(
+    prepared: torch.Tensor,
+    qlayer: qml.qnn.TorchLayer,
+    n_qubits: int,
+    differentiable: bool = False,
+) -> torch.Tensor:
+    """
+    State vectors for inputs that have already been through ``_prepare``.
+
+    With ``differentiable`` the layer's weights are not detached and the
+    replay runs under backprop, so the states carry gradients to them.
+    """
     # One tape for the whole batch from the layer's own QNode (level=0: the
     # circuit as written, before any batching or gradient transform), with the
     # measurements swapped for the state and run on a state-vector device,
     # which executes the broadcast tape as one vectorised pass.  The layer's
     # weights are used as they are, detached.
-    weights = {name: p.detach().to(torch.float64) for name, p in qlayer.qnode_weights.items()}
+    weights = {
+        name: (p if differentiable else p.detach()).to(torch.float64)
+        for name, p in qlayer.qnode_weights.items()
+    }
     tape = qml.workflow.construct_tape(qlayer.qnode, level=0)(prepared, **weights)
     tape = tape.copy(measurements=[qml.state()])
     device = qml.device("default.qubit", wires=n_qubits)
-    (result,) = qml.execute([tape], device, diff_method=None)
+    (result,) = qml.execute([tape], device, diff_method="backprop" if differentiable else None)
     states = torch.as_tensor(result).to(torch.complex128)
     return states.reshape(prepared.shape[0], 2**n_qubits)
 
 
-def encoded_states(X: torch.Tensor, layer: nn.Module) -> torch.Tensor:
+def encoded_states(
+    X: torch.Tensor, layer: nn.Module, *, differentiable: bool = False
+) -> torch.Tensor:
     """
     State vectors ``|Φ(x_i)⟩`` the layer prepares for each row of ``X``.
 
@@ -171,6 +208,10 @@ def encoded_states(X: torch.Tensor, layer: nn.Module) -> torch.Tensor:
         Inputs, shape ``(n_samples, n_features)``.
     layer:
         An encoding layer.
+    differentiable:
+        Keep the graph to the layer's trainable parameters (its weights and
+        any ``input_scaling``), simulating under backprop, so a loss on the
+        states or the kernel can train them.  Default: ``False``, detached.
 
     Returns
     -------
@@ -192,8 +233,8 @@ def encoded_states(X: torch.Tensor, layer: nn.Module) -> torch.Tensor:
         :func:`hqnn_forge.noise.apply_depolarizing_noise`: the replay would
         drop it, so it refuses rather than return the untransformed states.
     """
-    qlayer, n_qubits, prepare = _resolve_layer(layer)
-    return _simulate(_prepare(X, prepare, "X"), qlayer, n_qubits)
+    qlayer, n_qubits, prepare = _resolve_layer(layer, "encoded_states")
+    return _simulate(_prepare(X, prepare, "X"), qlayer, n_qubits, differentiable)
 
 
 def kernel_from_states(
@@ -221,9 +262,25 @@ def kernel_from_states(
 
     Examples
     --------
+    Simulate each set once and build the train and test kernels from the
+    same training states:
+
+    >>> import torch
+    >>> from sklearn.svm import SVC
+    >>> from hqnn_forge.encoding import QuantumEncodingLayer
+    >>> from hqnn_forge.kernels import encoded_states, kernel_from_states
+    >>> layer = QuantumEncodingLayer(n_qubits=4, n_layers=1, device_name="default.qubit")
+    >>> g = torch.Generator().manual_seed(0)
+    >>> X_train, X_test = torch.rand(10, 4, generator=g), torch.rand(3, 4, generator=g)
+    >>> y_train = [0, 1] * 5
     >>> S_train = encoded_states(X_train, layer)
-    >>> svm = SVC(kernel="precomputed").fit(kernel_from_states(S_train).numpy(), y_train)
+    >>> K_train = kernel_from_states(S_train)
+    >>> bool(torch.allclose(K_train.diagonal(), torch.ones(10, dtype=torch.float64)))
+    True
+    >>> svm = SVC(kernel="precomputed").fit(K_train.numpy(), y_train)
     >>> K_test = kernel_from_states(encoded_states(X_test, layer), S_train)
+    >>> K_test.shape
+    torch.Size([3, 10])
     >>> y_pred = svm.predict(K_test.numpy())
     """
     symmetric = states_y is None
@@ -258,6 +315,8 @@ def quantum_kernel_matrix(
     X: torch.Tensor,
     layer: nn.Module,
     Y: torch.Tensor | None = None,
+    *,
+    differentiable: bool = False,
 ) -> torch.Tensor:
     """
     Pairwise state-fidelity kernel ``K[i, j] = |⟨Φ(x_i)|Φ(y_j)⟩|²``.
@@ -276,6 +335,9 @@ def quantum_kernel_matrix(
         matrix an SVM needs at prediction time; to avoid simulating the
         training set again on every call, keep its :func:`encoded_states`
         and use :func:`kernel_from_states` instead.
+    differentiable:
+        As for :func:`encoded_states`: the matrix carries gradients to the
+        layer's trainable parameters.
 
     Returns
     -------
@@ -293,11 +355,17 @@ def quantum_kernel_matrix(
 
     Examples
     --------
+    >>> import torch
     >>> from sklearn.svm import SVC
     >>> from hqnn_forge.encoding import QuantumEncodingLayer
     >>> from hqnn_forge.kernels import quantum_kernel_matrix
     >>> layer = QuantumEncodingLayer(n_qubits=4, n_layers=1, device_name="default.qubit")
+    >>> g = torch.Generator().manual_seed(0)
+    >>> X_train, X_test = torch.rand(10, 4, generator=g), torch.rand(3, 4, generator=g)
+    >>> y_train = [0, 1] * 5
     >>> K_train = quantum_kernel_matrix(X_train, layer)
+    >>> K_train.shape, K_train.dtype
+    (torch.Size([10, 10]), torch.float64)
     >>> svm = SVC(kernel="precomputed").fit(K_train.numpy(), y_train)
     >>> K_test = quantum_kernel_matrix(X_test, layer, Y=X_train)
     >>> y_pred = svm.predict(K_test.numpy())
@@ -317,13 +385,273 @@ def quantum_kernel_matrix(
     positive semi-definite itself; small negative eigenvalues of order 1e-15
     are rounding.
     """
-    qlayer, n_qubits, prepare = _resolve_layer(layer)
+    qlayer, n_qubits, prepare = _resolve_layer(layer, "quantum_kernel_matrix")
     # Validate both input sets before simulating either.
     prepared_x = _prepare(X, prepare, "X")
     if Y is None:
-        return kernel_from_states(_simulate(prepared_x, qlayer, n_qubits))
+        return kernel_from_states(_simulate(prepared_x, qlayer, n_qubits, differentiable))
     prepared_y = _prepare(Y, prepare, "Y")
     # One replay for both sets: same circuit and weights, one tape and device.
-    states = _simulate(torch.cat([prepared_x, prepared_y]), qlayer, n_qubits)
+    states = _simulate(torch.cat([prepared_x, prepared_y]), qlayer, n_qubits, differentiable)
     n_x = prepared_x.shape[0]
     return kernel_from_states(states[:n_x], states[n_x:])
+
+
+# ---------------------------------------------------------------------------
+# Kernel-target alignment
+# ---------------------------------------------------------------------------
+
+
+def kernel_target_alignment(K: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    """
+    Centred kernel-target alignment of ``K`` with labels ``y`` (Cortes et al.
+    2012): the cosine between the centred kernel ``HKH`` and the centred ideal
+    kernel ``H yyᵀ H``, ``H = I - 11ᵀ/M``, in the Frobenius inner product.
+
+    It lies in [-1, 1] and is 1 when the kernel separates the classes exactly
+    as the labels do.  Centring removes what every entry shares, so the
+    alignment is not inflated by class imbalance or by a kernel that is large
+    everywhere.
+
+    Parameters
+    ----------
+    K:
+        Square kernel matrix; differentiable if it comes from the
+        ``differentiable=True`` path.
+    y:
+        Binary labels, ``{0, 1}`` or ``{-1, +1}``, with both classes present.
+
+    Returns
+    -------
+    torch.Tensor
+        0-d ``float64`` tensor.
+    """
+    if K.ndim != 2 or K.shape[0] != K.shape[1]:
+        raise ValueError(f"K must be a square matrix; got shape {tuple(K.shape)}.")
+    labels = torch.as_tensor(y).reshape(-1).to(torch.float64)
+    if labels.numel() != K.shape[0]:
+        raise ValueError(f"y must have {K.shape[0]} labels; got {labels.numel()}.")
+    values = set(labels.unique().tolist())
+    if values == {0.0, 1.0}:
+        labels = 2.0 * labels - 1.0
+    elif values != {-1.0, 1.0}:
+        raise ValueError(f"y must hold both classes as 0/1 or -1/+1; got values {sorted(values)}.")
+    m = K.shape[0]
+    centring = torch.eye(m, dtype=torch.float64) - torch.full((m, m), 1.0 / m, dtype=torch.float64)
+    Kc = centring @ K.to(torch.float64) @ centring
+    Yc = centring @ torch.outer(labels, labels) @ centring
+    norm = torch.linalg.norm(Kc) * torch.linalg.norm(Yc)
+    if norm == 0:
+        return torch.zeros((), dtype=torch.float64)
+    return (Kc * Yc).sum() / norm
+
+
+def train_kernel_alignment(
+    layer: nn.Module,
+    X: torch.Tensor,
+    y: torch.Tensor,
+    *,
+    steps: int = 50,
+    lr: float = 0.05,
+    subset_size: int | None = None,
+    generator: torch.Generator | None = None,
+) -> list[float]:
+    """
+    Train ``layer``'s parameters to maximise the kernel-target alignment on
+    ``(X, y)``, in place; then fit ``SVC(kernel="precomputed")`` on
+    ``quantum_kernel_matrix(X, layer)``.
+
+    Every step computes the differentiable kernel on ``X`` (or, with
+    ``subset_size``, on a random stratified subset, as Hubregtsen et al. 2022
+    do to keep a step at ``subset_size²`` entries instead of ``M²``) and takes
+    one Adam step on ``-alignment``.
+
+    Only the weights that sit *between* uploads and the ``input_scaling`` of a
+    :class:`DataReuploadingLayer` change the kernel.  For the single-upload
+    encoders the ansatz cancels in the kernel, so their gradient is zero and
+    this does nothing useful: see the module docstring.
+
+    Parameters
+    ----------
+    layer:
+        An encoding layer; all its trainable parameters are optimised.
+    X, y:
+        Training inputs and binary labels.
+    steps, lr:
+        Adam steps and learning rate.
+    subset_size:
+        Samples per step, drawn per class in proportion; ``None`` uses all.
+    generator:
+        Source of the subsets.
+
+    Returns
+    -------
+    list of float
+        The alignment at each step, before that step's update.
+    """
+    if steps < 1:
+        raise ValueError(f"steps must be >= 1; got {steps}.")
+    labels = torch.as_tensor(y).reshape(-1)
+    if subset_size is not None and not 2 <= subset_size <= labels.numel():
+        raise ValueError(f"subset_size must lie in [2, {labels.numel()}]; got {subset_size}.")
+    params = [p for p in layer.parameters() if p.requires_grad]
+    if not params:
+        raise ValueError("layer has no trainable parameters.")
+    optimiser = torch.optim.Adam(params, lr=lr)
+    positives = torch.nonzero(labels == labels.max()).reshape(-1)
+    negatives = torch.nonzero(labels != labels.max()).reshape(-1)
+    history: list[float] = []
+    for _ in range(steps):
+        if subset_size is None:
+            rows = torch.arange(labels.numel())
+        else:
+            n_pos = max(1, round(subset_size * positives.numel() / labels.numel()))
+            n_pos = min(n_pos, subset_size - 1)
+            rows = torch.cat(
+                [
+                    positives[torch.randperm(positives.numel(), generator=generator)[:n_pos]],
+                    negatives[
+                        torch.randperm(negatives.numel(), generator=generator)[
+                            : subset_size - n_pos
+                        ]
+                    ],
+                ]
+            )
+        K = quantum_kernel_matrix(X[rows], layer, differentiable=True)
+        alignment = kernel_target_alignment(K, labels[rows])
+        history.append(float(alignment.detach()))
+        optimiser.zero_grad()
+        (-alignment).backward()
+        optimiser.step()
+    return history
+
+
+# ---------------------------------------------------------------------------
+# Overlap-circuit estimate
+# ---------------------------------------------------------------------------
+
+
+def _operations(
+    prepared: torch.Tensor, qlayer: qml.qnn.TorchLayer
+) -> list[list[qml.operation.Operator]]:
+    """The layer's circuit (operations only, level 0) for each prepared input row."""
+    weights = {name: p.detach().to(torch.float64) for name, p in qlayer.qnode_weights.items()}
+    return [
+        list(qml.workflow.construct_tape(qlayer.qnode, level=0)(row, **weights).operations)
+        for row in prepared
+    ]
+
+
+def _overlap_tape(
+    ops_x: list[qml.operation.Operator],
+    ops_y: list[qml.operation.Operator],
+    n_qubits: int,
+    shots: int | None,
+) -> qml.tape.QuantumScript:
+    """``U(x)† U(y)|0⟩`` with ``P(0…0)`` = ``|⟨Φ(x)|Φ(y)⟩|²`` as its first probability."""
+    ops = [*ops_y, *(qml.adjoint(op) for op in reversed(ops_x))]
+    return qml.tape.QuantumScript(ops, [qml.probs(wires=range(n_qubits))], shots=shots)
+
+
+def overlap_kernel_matrix(
+    X: torch.Tensor,
+    layer: nn.Module,
+    Y: torch.Tensor | None = None,
+    *,
+    shots: int | None = None,
+    seed: int | None = None,
+    device: qml.devices.Device | None = None,
+    project_psd: bool = False,
+) -> torch.Tensor:
+    """
+    Kernel estimated entry by entry from the compute-uncompute circuit.
+
+    Each entry is the probability of measuring all zeros after
+    ``U(x_i)† U(y_j)|0…0⟩``, which equals ``|⟨Φ(x_i)|Φ(y_j)⟩|²``; ``U`` is the
+    layer's own circuit, replayed exactly as :func:`quantum_kernel_matrix`
+    replays it.  This is how a device without state-vector access estimates
+    the kernel.
+
+    For the square matrix only the ``M(M-1)/2`` pairs above the diagonal are
+    circuits; the diagonal is set to 1 and the lower triangle mirrored.  The
+    rectangular matrix against ``Y`` takes one circuit per entry.
+
+    Parameters
+    ----------
+    X, layer, Y:
+        As for :func:`quantum_kernel_matrix`.
+    shots:
+        Samples per circuit.  ``None`` (default) gives the exact probability,
+        which agrees with :func:`quantum_kernel_matrix` to rounding; with
+        shots each entry is a binomial estimate with standard error
+        ``sqrt(k(1-k)/shots)``.
+    seed:
+        Seed of the sampling on the default device; ignored with ``device``.
+    device:
+        A PennyLane device to run the circuits on, e.g. a noisy simulator.
+        Default: ``default.qubit``.
+    project_psd:
+        With finite shots or a noisy device the estimate need not be positive
+        semi-definite, which ``SVC(kernel="precomputed")`` assumes.  ``True``
+        projects the square matrix onto the nearest PSD matrix
+        (:func:`nearest_psd`) before returning it.
+
+    Returns
+    -------
+    torch.Tensor
+        ``float64``, shape ``(n_x, n_y)`` or ``(n_x, n_x)``.
+
+    Raises
+    ------
+    TypeError, ValueError, RuntimeError
+        As :func:`quantum_kernel_matrix`; also ``ValueError`` for
+        ``shots < 1`` or ``project_psd`` with ``Y``.
+    """
+    if shots is not None and shots < 1:
+        raise ValueError(f"shots must be a positive integer or None; got {shots}.")
+    if project_psd and Y is not None:
+        raise ValueError("project_psd applies to the square matrix only; pass Y=None.")
+    qlayer, n_qubits, prepare = _resolve_layer(layer, "overlap_kernel_matrix")
+    prepared_x = _prepare(X, prepare, "X")
+    prepared_y = None if Y is None else _prepare(Y, prepare, "Y")
+    ops_x = _operations(prepared_x, qlayer)
+    ops_y = ops_x if prepared_y is None else _operations(prepared_y, qlayer)
+
+    if prepared_y is None:
+        pairs = [(i, j) for i in range(len(ops_x)) for j in range(i + 1, len(ops_x))]
+    else:
+        pairs = [(i, j) for i in range(len(ops_x)) for j in range(len(ops_y))]
+    kernel = torch.zeros(len(ops_x), len(ops_y), dtype=torch.float64)
+    if pairs:
+        tapes = [_overlap_tape(ops_x[i], ops_y[j], n_qubits, shots) for i, j in pairs]
+        run_on = (
+            device
+            if device is not None
+            else qml.device("default.qubit", wires=n_qubits, seed=seed)
+        )
+        results = qml.execute(tapes, run_on, diff_method=None)
+        for (i, j), probs in zip(pairs, results):
+            kernel[i, j] = float(torch.as_tensor(probs).reshape(-1)[0])
+    if prepared_y is None:
+        kernel = kernel + kernel.T
+        kernel.fill_diagonal_(1.0)
+        if project_psd:
+            kernel = nearest_psd(kernel)
+    return kernel
+
+
+def nearest_psd(K: torch.Tensor) -> torch.Tensor:
+    """
+    The positive semi-definite matrix nearest to symmetric ``K`` in the
+    Frobenius norm: ``K``'s eigendecomposition with negative eigenvalues set to
+    zero (Higham 1988).
+
+    The diagonal is not restored to 1 afterwards, so entries can move
+    slightly; the projection changes nothing when ``K`` is already PSD.
+    """
+    if K.ndim != 2 or K.shape[0] != K.shape[1]:
+        raise ValueError(f"K must be a square matrix; got shape {tuple(K.shape)}.")
+    symmetric = 0.5 * (K + K.T).to(torch.float64)
+    eigenvalues, eigenvectors = torch.linalg.eigh(symmetric)
+    projected = (eigenvectors * eigenvalues.clamp(min=0.0)) @ eigenvectors.T
+    return 0.5 * (projected + projected.T)
