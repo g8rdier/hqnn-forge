@@ -853,3 +853,83 @@ class TestConstantKernelIsRefused:
             K = quantum_kernel_matrix(_angles(M), layer)
             off_diagonal = K[~torch.eye(M, dtype=torch.bool)]
             assert off_diagonal.max() < 1 - 1e-6, rotation
+
+
+# ---------------------------------------------------------------------------
+# Simulating in batches (#222)
+# ---------------------------------------------------------------------------
+
+
+def _count_passes(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Rows in each broadcast tape the kernels module executes."""
+    rows: list[int] = []
+    real = kernels.qml.execute
+
+    def counting(tapes, *args, **kwargs):  # type: ignore[no-untyped-def]
+        rows.extend(t.batch_size or 1 for t in tapes)
+        return real(tapes, *args, **kwargs)
+
+    monkeypatch.setattr(kernels.qml, "execute", counting)
+    return rows
+
+
+class TestBatchedSimulation:
+    @pytest.mark.parametrize("build", ALL_LAYERS)
+    @pytest.mark.parametrize(
+        "batch_size", [1, 3, M, 50], ids=["one", "non-divisor", "M", "over-M"]
+    )
+    def test_states_and_kernel_are_unchanged(self, build, batch_size: int) -> None:
+        layer = build()
+        X = _inputs_for(layer)
+        torch.testing.assert_close(
+            encoded_states(X, layer, batch_size=batch_size),
+            encoded_states(X, layer),
+            rtol=0,
+            atol=0,
+        )
+        torch.testing.assert_close(
+            quantum_kernel_matrix(X, layer, batch_size=batch_size),
+            quantum_kernel_matrix(X, layer),
+            rtol=0,
+            atol=0,
+        )
+        Y = X[:2]
+        torch.testing.assert_close(
+            quantum_kernel_matrix(X, layer, Y, batch_size=batch_size),
+            quantum_kernel_matrix(X, layer, Y),
+            rtol=0,
+            atol=0,
+        )
+
+    def test_rows_are_replayed_in_batches(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        rows = _count_passes(monkeypatch)
+        encoded_states(_angles(M), _angle_layer(), batch_size=3)
+        assert rows == [3, 3, 1]
+        rows.clear()
+        encoded_states(_angles(M), _angle_layer())
+        assert rows == [M]
+
+    def test_y_is_rejected_before_any_batch_runs(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        rows = _count_passes(monkeypatch)
+        bad_y = torch.zeros(2, N_QUBITS + 1, dtype=torch.float64)
+        with pytest.raises(ValueError, match="does not match"):
+            quantum_kernel_matrix(_angles(M), _angle_layer(), bad_y, batch_size=2)
+        assert rows == []
+
+    def test_gradients_are_unchanged(self) -> None:
+        def grads(batch_size: int | None) -> torch.Tensor:
+            layer = _reuploading()
+            X, y = _toy_task(7)
+            K = quantum_kernel_matrix(X, layer, differentiable=True, batch_size=batch_size)
+            kernel_target_alignment(K, y).backward()
+            assert layer.qlayer.weights.grad is not None
+            return layer.qlayer.weights.grad
+
+        torch.testing.assert_close(grads(2), grads(None), rtol=0, atol=1e-15)
+
+    @pytest.mark.parametrize("batch_size", [0, -3, True, 2.5])
+    def test_rejected_batch_size(self, batch_size: int) -> None:
+        with pytest.raises(ValueError, match="batch_size must be a positive integer"):
+            encoded_states(_angles(3), _angle_layer(), batch_size=batch_size)
+        with pytest.raises(ValueError, match="batch_size must be a positive integer"):
+            quantum_kernel_matrix(_angles(3), _angle_layer(), batch_size=batch_size)

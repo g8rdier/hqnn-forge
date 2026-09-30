@@ -107,6 +107,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `compare_to_control` and `holm_correction`, NumPy-only
 - `examples/does_the_quantum_layer_help.py`: a step-by-step hybrid-versus-control comparison on
   one's own data, with a plain-words verdict from the paired Wilcoxon test
+- `batch_size` on `encoded_states` and `quantum_kernel_matrix`: the kernel states are simulated
+  that many rows at a time, bounding the simulator's working memory; results are unchanged
 
 ### Changed
 - `load_checkpoint` fills constructor arguments a checkpoint predates from
