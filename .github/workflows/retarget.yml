@@ -1,0 +1,18 @@
+name: Retarget
+
+# Re-runs the test suite when a PR's base branch changes, e.g. when a stacked
+# PR moves to main after its parent is squash-merged: the PR's merge ref then
+# changes although no commit was pushed. A title or body edit leaves only a
+# skipped `tests` check here, under its own name, so it cannot hide the real
+# lint and test results the way a skipped run of tests.yml would (#346).
+on:
+  pull_request:
+    types: [edited]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    if: github.event.changes.base
+    uses: ./.github/workflows/tests.yml
