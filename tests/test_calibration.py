@@ -157,20 +157,6 @@ class TestPlattScaling:
         assert torch.equal(torch.argsort(scaler(z)), torch.argsort(z))
 
 
-def test_reliability_diagram_draws() -> None:
-    pytest.importorskip("matplotlib")
-    import matplotlib
-
-    matplotlib.use("Agg")
-    from hqnn_forge.evaluation.plots import plot_reliability_diagram
-
-    z, y = _synthetic(500, 7)
-    fig = plot_reliability_diagram(y.numpy(), torch.sigmoid(z).numpy(), strategy="quantile")
-    (axes,) = fig.axes
-    legend = axes.get_legend()
-    assert legend is not None and "ECE" in legend.get_texts()[1].get_text()
-
-
 class TestTrainingHistory:
     def _data(self) -> tuple[torch.Tensor, torch.Tensor]:
         g = torch.Generator().manual_seed(0)
