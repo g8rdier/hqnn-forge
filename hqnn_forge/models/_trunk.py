@@ -37,6 +37,7 @@ from hqnn_forge.initializers.restricted_variance import (
     block_local_init_,
     restricted_normal_init_,
 )
+from hqnn_forge.models.base import custom_encoder
 from hqnn_forge.noise import Channel, NoiseMethod, Position
 
 #: Constructor defaults that mark an option as "not asked for".  Both options
@@ -155,6 +156,7 @@ class QuantumTrunk(nn.Module):
     init_std: float
     use_classical_encoder: bool
     encoder_activation: str
+    _custom_encoder_ids: frozenset[int]
 
     def _build_trunk(
         self,
@@ -177,6 +179,7 @@ class QuantumTrunk(nn.Module):
         noise_position: Position,
         noise_method: NoiseMethod,
         noise_trajectories: int,
+        classical_encoder: nn.Module | None,
         trainable_input_scaling: bool = False,
         shots: int | None = None,
         noise_channel: Channel = "depolarizing",
@@ -185,13 +188,25 @@ class QuantumTrunk(nn.Module):
         """
         Build ``classical_encoder``, ``quantum_layer`` and ``dropout`` on ``self``.
 
+        A custom ``classical_encoder`` module is wrapped with the activation
+        and recorded in ``_custom_encoder_ids``, so the model's classical init
+        leaves it as given (it may be pretrained).
+
         Returns the quantum layer's readout width, which the head reads.
         Raises ``ValueError`` for an inconsistent option.
         """
         validate_encoder_activation(encoder_activation)
         validate_init(init_strategy, init_std)
-        if not 0.0 <= dropout_p < 1.0:
-            raise ValueError(f"dropout_p must be in [0, 1); got {dropout_p}.")
+        # dropout_p is deliberately not validated here: the binary models have
+        # always handed it to nn.Dropout unchecked, and tightening that changes
+        # which checkpoints load, so it is its own change (#404).  The
+        # multiclass model keeps its own [0, 1) check.
+        if classical_encoder is not None and not use_classical_encoder:
+            raise ValueError(
+                "classical_encoder replaces the built-in encoder and needs "
+                "use_classical_encoder=True; use_classical_encoder=False feeds the "
+                "input to the circuit directly, with no encoder at all."
+            )
         width = _check_encoding_options(
             encoding_type,
             n_input_features=n_input_features,
@@ -211,7 +226,11 @@ class QuantumTrunk(nn.Module):
         self.init_std = init_std
 
         # ── Classical encoder ─────────────────────────────────────────────
-        if use_classical_encoder:
+        if classical_encoder is not None:
+            self.classical_encoder = custom_encoder(
+                classical_encoder, n_input_features, n_qubits, encoder_activation, width
+            )
+        elif use_classical_encoder:
             self.classical_encoder = nn.Sequential(
                 nn.Linear(n_input_features, width),
                 nn.Tanh() if encoder_activation == "tanh" else nn.Sigmoid(),
@@ -298,12 +317,15 @@ class QuantumTrunk(nn.Module):
 
         # ── Dropout ───────────────────────────────────────────────────────
         self.dropout = nn.Dropout(p=dropout_p) if dropout_p > 0.0 else nn.Identity()
+        self._custom_encoder_ids = frozenset(
+            map(id, classical_encoder.modules()) if classical_encoder is not None else ()
+        )
         return self.quantum_layer.n_outputs
 
     # ------------------------------------------------------------------
     def _initialise_quantum_weights(self) -> None:
         """Draw the circuit weights with ``init_strategy`` (the models' classical init is their own)."""
-        weights = self.quantum_layer.qlayer.weights  # (n_layers, n_qubits, 3)
+        weights = self.quantum_layer.qlayer.weights  # dim 0: layer (variational_weight_shape)
         if self.init_strategy == "block_local":
             block_local_init_(weights.data, n_qubits=self.n_qubits)
         elif self.init_strategy == "normal":

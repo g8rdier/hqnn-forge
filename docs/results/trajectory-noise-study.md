@@ -10,7 +10,7 @@ Pauli trajectories at pure-state cost; its gradient is unbiased but noisier than
   JSON line per run: `docs/results/trajectory_noise_study.jsonl`.
 - **Data:** scikit-learn's breast-cancer set (569 samples, 37 % positive). It is bundled with
   scikit-learn, so the study runs offline; the credit-card and UCI benchmarks named in the issue
-  need data or code that is not on this branch (see *Limits*).
+  were not used (see *Limits*).
 - **Splits:** for each of 5 seeds, a stratified 60/20/20 train/validation/test split, with
   standardisation and PCA fitted on the training rows. The seed also fixes the initial weights,
   so every method starts from the same point.
@@ -42,6 +42,10 @@ The noiseless model is trained once per seed, taking about 5 s. Total training t
 
 ## What this shows
 
+Everything below was measured on the breast-cancer proxy only: one small dataset, 4 and 6
+qubits, 5 seeds. It has not been checked on the credit-card or UCI data that #311 names; that
+is #414.
+
 1. **At p = 0.01, and with noise only before measurement, trajectories train as well as the
    exact channel.** Paired by seed, the mean difference from density is between −0.01 and
    +0.05, which is within the seed-to-seed spread.
@@ -56,7 +60,7 @@ The noiseless model is trained once per seed, taking about 5 s. Total training t
 3. **Cost.** Trajectories trained about 2× faster at 4 qubits and 8–9× faster at 6. Density
    becomes impractical past about 6 qubits (#229), where trajectories keep pure-state memory.
 4. **Noise-aware training did not beat noiseless training here**, even under noise: the
-   noiseless model scores within about 0.03 of density in every setting. At these noise levels
+   noiseless model scores within 0.05 of density in every setting. At these noise levels
    on this data the noise is too weak to hurt a noiselessly trained model much, so this study
    says nothing either way about noise-aware training's value at stronger noise.
 
@@ -76,10 +80,12 @@ The noiseless model is trained once per seed, taking about 5 s. Total training t
 - One small, easy dataset (noiseless MCC ≈ 0.85), 4 and 6 qubits, 5 seeds. With 5 paired seeds,
   a Wilcoxon signed-rank test cannot go below p = 0.0625, so none of the differences above is
   statistically significant. The collapses are the robust observation.
-- The issue asked for the credit-card and UCI benchmarks through `run_benchmark`. Those need the
-  Kaggle download and code on other open stacks (the loaders in #266, the benchmark runner in
-  #269–#297), so they aren't used here. The script's `run_one` is the unit to port once those
-  land.
+- The issue asked for the credit-card and UCI benchmarks through `run_benchmark`. When the study
+  ran, the loaders (#266) and the benchmark runner (#269–#297) were on other open stacks. They
+  have since been merged into this branch's base, but the study has not been re-run on them,
+  for two reasons. First, cost: a 6-qubit density step at batch 256 took 9.1 s, so one epoch of
+  one credit-card fold would take about 3.6 h. Second, `run_benchmark` does not return its
+  trained models, so `noise_sweep` cannot score them. The re-run is #414.
 - The learning rate and schedule were not tuned per method. A lower learning rate may prevent
   the collapses; that is the obvious follow-up. (#347 tested it: it does not; k = 8 does. See
   `trajectory-collapse-study.md`.)

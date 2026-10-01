@@ -92,11 +92,13 @@ Two methods, chosen with ``noise_method``:
     fresh draw every forward pass resembles.  ``noise_trajectories = k``
     averages ``k`` draws per sample, at ``k`` times the cost, to reduce it.
 
-    Measured (#311, ``docs/results/trajectory-noise-study.md``): at
+    Measured on one small proxy dataset (#311, breast cancer, 4 and 6
+    qubits, 5 seeds; ``docs/results/trajectory-noise-study.md``; the
+    benchmark datasets are #414): at
     ``p = 0.01``, and with noise only before measurement, trajectory
     training matched the density channel; at ``p = 0.05`` after every gate
     it collapsed in 3 of 20 runs (``k = 1`` twice, ``k = 4`` once), density
-    in none.  A follow-up over 10 seeds (#347,
+    in none.  A follow-up on the same data over 10 seeds (#347,
     ``docs/results/trajectory-collapse-study.md``) found that
     ``noise_trajectories = 8`` removes the collapses (0 of 100 runs across
     five training variants, against 10 of 100 at ``k = 1`` and 6 of 100 at
@@ -104,8 +106,8 @@ Two methods, chosen with ``noise_method``:
     clipping and a noise warm-up do not reliably help.  On ``default.qubit``
     with backprop the draws run as one batch, so ``k = 8`` cost 1.1 to 1.4
     times ``k = 1`` at 4 and 6 qubits; on the adjoint path each sample runs
-    separately and it costs about 8 times, which is why the default stays
-    1.  So keep ``"density"`` where it fits (up to about 6 qubits), and
+    separately, so it is expected to cost about 8 times (not measured),
+    which is why the default stays 1.  So keep ``"density"`` where it fits (up to about 6 qubits), and
     beyond that use ``"trajectories"`` with ``noise_trajectories ≥ 8``.
 
     **Damping channels as trajectories** (#357).  Phase damping with
@@ -165,6 +167,8 @@ import pennylane as qml
 import torch
 from torch import nn
 
+from hqnn_forge._resolve import resolve_encoding_layer
+
 Position = Literal["all", "end"]
 NoiseMethod = Literal["density", "trajectories"]
 Channel = Literal["depolarizing", "amplitude_damping", "phase_damping", "bit_flip", "phase_flip"]
@@ -216,24 +220,6 @@ CHANNELS: dict[str, _ChannelSpec] = {
     "bit_flip": _ChannelSpec(qml.BitFlip, 1.0, lambda p: (1 - p, p, 0.0, 0.0)),
     "phase_flip": _ChannelSpec(qml.PhaseFlip, 1.0, lambda p: (1 - p, 0.0, 0.0, p)),
 }
-
-
-def _resolve_qlayer(
-    target: nn.Module, caller: str = "apply_depolarizing_noise"
-) -> tuple[qml.qnn.TorchLayer, int]:
-    layer = getattr(target, "quantum_layer", target)
-    qlayer = getattr(layer, "qlayer", None)
-    n_qubits = getattr(layer, "n_qubits", None)
-    if (
-        not isinstance(layer, nn.Module)
-        or not isinstance(qlayer, qml.qnn.TorchLayer)
-        or not isinstance(n_qubits, int)
-    ):
-        raise TypeError(
-            f"{caller} expects an encoding layer or a hybrid classifier "
-            f"with a quantum_layer attribute; got {type(target).__name__}."
-        )
-    return qlayer, n_qubits
 
 
 def validate_noise(
@@ -688,7 +674,7 @@ def apply_readout_error(model: nn.Module, p01: float, p10: float) -> Iterator[nn
         If a block is already open on the same layer.
     """
     validate_readout_error((p01, p10), "(p01, p10)")
-    qlayer, _ = _resolve_qlayer(model, "apply_readout_error")
+    _, qlayer, _ = resolve_encoding_layer(model, "apply_readout_error")
     if getattr(qlayer, "_hqnn_readout_error", None) is not None:
         raise RuntimeError("apply_readout_error cannot be nested on the same layer.")
     qlayer._hqnn_readout_error = (float(p01), float(p10))
@@ -746,7 +732,7 @@ def apply_depolarizing_noise(
     fine-tune under noise.
     """
     validate_noise(p, position, channel=channel)
-    qlayer, n_qubits = _resolve_qlayer(model)
+    _, qlayer, n_qubits = resolve_encoding_layer(model, "apply_depolarizing_noise")
     # Two separate markers.  _hqnn_noise_depth counts open blocks of any p and
     # is what tells run_with_training_noise to skip a layer's train-mode
     # channel.  _hqnn_noise_original is set only while a p > 0 block has
@@ -756,6 +742,17 @@ def apply_depolarizing_noise(
     if p > 0.0 and getattr(qlayer, "_hqnn_noise_original", None) is not None:
         raise RuntimeError("apply_depolarizing_noise cannot be nested on the same layer.")
     original = qlayer.qnode
+    # The noisy QNode simulates the exact channel on default.mixed, so a
+    # sampled layer (built with shots, or inside apply_shots) would silently
+    # return exact values here -- the reason density training noise refuses
+    # shots too.
+    shots = getattr(getattr(original, "shots", None), "total_shots", None)
+    if p > 0.0 and shots is not None:
+        raise RuntimeError(
+            f"apply_depolarizing_noise simulates the exact channel and would ignore the "
+            f"layer's shots={shots}; evaluate the noise without shots, or the shots "
+            f"without the noise block."
+        )
     # Build the replacement before touching the layer. default.mixed refuses
     # more than 23 wires, and a failure here has to leave the layer as it was:
     # arming the guard first would leave it armed with no block to disarm it,
@@ -905,7 +902,7 @@ def apply_shots(model: nn.Module, shots: int | None) -> Iterator[nn.Module]:
     from hqnn_forge.encoding._common import expand_batch_dimension, validate_shots
 
     validate_shots(shots, "parameter-shift")
-    qlayer, _ = _resolve_qlayer(model, "apply_shots")
+    _, qlayer, _ = resolve_encoding_layer(model, "apply_shots")
     if getattr(qlayer, "_hqnn_shots_original", None) is not None:
         raise RuntimeError("apply_shots cannot be nested on the same layer.")
     if getattr(qlayer, "_hqnn_noise_original", None) is not None:

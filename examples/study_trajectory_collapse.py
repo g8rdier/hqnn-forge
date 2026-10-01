@@ -71,8 +71,11 @@ from hqnn_forge.utils import FocalLoss
 
 #: A run whose test MCC under the training noise is below this collapsed.
 COLLAPSE_MCC = 0.5
-#: Gradient-norm bound of the ``clip`` variant.  The median global norm of
-#: the unclipped runs is 0.03 to 0.06, so a bound of 1.0 would never act.
+#: Gradient-norm bound of the ``clip`` variant.  The per-run median of the
+#: unclipped global norm was 0.02 to 0.07 at k = 1 and 0.03 to 0.13 at k = 4
+#: and 8.  A bound of 1.0 would never have acted at k = 1 (per-run maxima at
+#: most 0.43) and only on the largest steps at k = 4 and 8 (maxima above 1.0
+#: in 18 of the 40 runs, up to 1.26 at k = 4 and 3.78 at k = 8).
 CLIP_NORM = 0.1
 #: Epochs over which the ``warmup`` variant ramps the noise up to ``p``.
 WARMUP_EPOCHS = 5

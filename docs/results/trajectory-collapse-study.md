@@ -66,24 +66,31 @@ Median seconds per run at lr 0.05. They are comparable within this table only (1
 No run collapsed at p = 0.01 after every gate or at p = 0.05 before measurement, at any k.
 Mean test MCC under noise, against #311's density runs:
 
-| p | position | qubits | density (5 seeds) | k = 1 | k = 4 | k = 8 |
+| p | position | qubits | density (5 seeds) | k = 1 (10 seeds) | k = 4 (10 seeds) | k = 8 (10 seeds) |
 |---|---|---|---|---|---|---|
 | 0.01 | all | 4 | 0.861 | 0.894 | 0.895 | 0.869 |
 | 0.01 | all | 6 | 0.876 | 0.906 | 0.899 | 0.879 |
 | 0.05 | end | 4 | 0.839 | 0.884 | 0.888 | 0.895 |
 | 0.05 | end | 6 | 0.890 | 0.877 | 0.893 | 0.910 |
 
-Paired by seed against density, k = 8's mean difference lies between −0.012 and +0.058.
+The density means cover #311's seeds 0 to 4, the trajectory means seeds 0 to 9, so the columns
+are not directly comparable. Paired by seed against density (seeds 0 to 4 only), k = 8's mean
+difference lies between −0.012 and +0.058.
 
 ## What this shows
+
+Like #311, everything below was measured on the breast-cancer proxy only: one small dataset,
+4 and 6 qubits, 10 seeds. It has not been checked on the credit-card or UCI benchmark data;
+that re-run is #414.
 
 1. **k = 8 removes the collapses; the other mitigations do not.** k = 8 never collapsed, under
    any variant, at either size. Against k = 1 that is 0 of 100 against 10 of 100
    (Fisher's exact test p = 0.002), and against k = 4, 0 against 6 (p = 0.03). Both p-values
    pool the five variants, which share seeds and are therefore not independent (k = 1 at
    6 qubits collapsed on seed 0 under every variant), so they overstate the evidence. Read them
-   as indicative. The pattern is consistent, though: collapses fall from k = 1 to k = 4 to
-   k = 8 at every size.
+   as indicative. The pattern is consistent, though: at neither size do collapses rise with k,
+   and both reach zero at k = 8 (2, 2 and 0 of 50 at k = 1, 4 and 8 on 4 qubits; 8, 4 and 0
+   of 50 on 6 qubits).
 2. **A lower learning rate does not help, and at k = 4 it hurts.** At 6 qubits, k = 4 went from
    0 collapses at lr 0.05 to 2 at lr 0.02 and 2 at lr 0.01. At k = 1 no learning rate brought
    the collapses to zero: 3, 1 and 2 of 20 at lr 0.05, 0.02 and 0.01. Collapse here is not
@@ -102,20 +109,24 @@ Paired by seed against density, k = 8's mean difference lies between −0.012 an
 
 ## Recommendation
 
+On the evidence above (breast-cancer proxy, 4 and 6 qubits, backprop; the benchmark re-run is
+#414):
+
 - **Train with `noise_trajectories ≥ 8`** when using `noise_method="trajectories"` at noise of a
-  few percent per gate. On backprop devices it costs little more than k = 1.
+  few percent per gate. On backprop devices it cost little more than k = 1 here.
 - **Keep lr 0.05**; don't lower it to stabilise trajectory training.
 - **Warm-up and clipping aren't worth adding to the library** on this evidence: k = 8 does
   better alone, and adds no option.
 - **The default stays `noise_trajectories=1`.** On the adjoint path, which
   `device_name="auto"` picks above 12 qubits (#349), each sample runs separately, so k = 8
-  costs about 8× there. This study measured only 4 and 6 qubits on backprop, so it does not
-  justify that cost as a default. The recommendation is in the `hqnn_forge.noise` docstring.
+  is expected to cost about 8× there (not measured). This study measured only 4 and 6 qubits
+  on backprop, so it does not justify that cost as a default. The recommendation is in the `hqnn_forge.noise` docstring.
 - **`density` remains the default** noise method where it fits (up to about 6 qubits).
 
 ## Limits
 
-- One small dataset, 4 and 6 qubits, one noise model (depolarizing). The ">12 qubit" regime,
+- One small proxy dataset (breast cancer; the benchmark datasets are #414), 4 and 6 qubits,
+  one noise model (depolarizing). The ">12 qubit" regime,
   where trajectories matter most, is extrapolated, not measured.
 - 10 seeds per cell. A collapse rate of a few percent at k = 8 cannot be ruled out: 0 of 100
   bounds it below about 3 % (95 %, one-sided), assuming independent runs, and they are not

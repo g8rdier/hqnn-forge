@@ -31,7 +31,10 @@ Design Rationale
   its exponential decay with qubit count.  The cascaded CNOT ring puts every
   qubit in the backward light cone of each ⟨Z_i⟩ within two layers (of ⟨Z_0⟩
   and ⟨Z_{n-1}⟩ within one), so at the default depth the per-qubit readouts
-  are global costs in the sense of Cerezo et al. (2021).
+  are global costs in the sense of Cerezo et al. (2021).  The escape is the
+  entangler: with ``entangler="brickwork"`` the readouts stay local at
+  shallow depth and the total gradient variance does not fall from 4 to 8
+  qubits (see :func:`apply_variational_layers`).
 
 References
 ----------
@@ -53,7 +56,6 @@ import torch.nn as nn
 
 from hqnn_forge.encoding._common import (
     DEVICE_FAILURES,
-    ENTANGLERS,
     FALLBACK_CHAIN,
     DeviceName,
     DiffMethod,
@@ -79,7 +81,6 @@ logger = logging.getLogger(__name__)
 # QuantumEncodingLayer and build_encoding_qnode are defined here; the rest are
 # re-exported from hqnn_forge.encoding._common, where they live since #306.
 __all__ = [
-    "ENTANGLERS",
     "FALLBACK_CHAIN",
     "AngleEmbeddingQNode",
     "DeviceName",
@@ -127,8 +128,10 @@ def _make_angle_embedding_circuit(
     where
 
     * ``inputs``  — shape ``(n_qubits,)`` — the pre-processed feature vector.
-    * ``weights`` — shape ``(n_layers, n_qubits, 3)`` — rotation angles per
-                    layer, qubit, and Euler angle (φ, θ, ω) for ``qml.Rot``.
+    * ``weights`` — shape :func:`variational_weight_shape`: ``(n_layers,
+                    n_qubits, 3)``, the ``qml.Rot`` angles (φ, θ, ω) per layer
+                    and qubit, or ``(n_layers, n_qubits)``, the ``RY`` angles,
+                    for ``entangler="hardware_efficient"``.
 
     Called inside a QNode it records one ``qml.expval(PauliZ)`` measurement per
     readout wire; the QNode turns them into the expectation values.
@@ -150,6 +153,38 @@ def _make_angle_embedding_circuit(
        not enjoy the local-cost gradient bounds of Cerezo et al. (2021); see
        `hqnn_forge.initializers` for what is measured instead.
 
+       The same conjugation decides which *features* a readout sees.  After
+       one layer with the default ``rotation="X"``, the X and Y terms the
+       ``Rot`` mixes in land, for i < n-1, on operators with an ``X`` on some
+       wire, whose expectation in the RX-embedded product state is 0, so only
+       the Z image survives:
+
+           ⟨Z_0⟩ = c_0(w) · cos x_1 ⋯ cos x_{n-1}      (no x_0)
+           ⟨Z_i⟩ = c_i(w) · cos x_0 ⋯ cos x_i          (0 < i < n-1)
+
+       For i = n-1 the wrap-around CNOT(n-1, 0) carries Y_{n-1} to
+       ∝ Y_0 Y_1 Z_2 ⋯ Z_{n-2} Y_{n-1}, and ⟨Y⟩ = -sin x, so ⟨Z_{n-1}⟩ =
+       a(w) · cos x_0 ⋯ cos x_{n-1} + b(w) · sin x_0 sin x_1 cos x_2 ⋯
+       cos x_{n-2} sin x_{n-1}.
+
+       Readout 0 is blind to its own feature, and carries a product of n-1
+       cosines, which is small for inputs spread over (-π, π).  With
+       ``rotation="Y"`` the X terms survive (⟨X⟩ = sin x) and ⟨Z_0⟩ does see
+       x_0; with ``entangler="strongly_entangling"`` the image of Z_0 leaves
+       wire 0 before its ``Rot`` is reached, so ⟨Z_0⟩ ignores x_0 under either
+       rotation.  For both cascades, from two layers on every readout sees
+       every feature under RX or RY.  (Under ``rotation="Z"`` no readout sees
+       any feature at any depth: RZ on |0⟩ is only a phase, #212.)
+
+       Under ``readout="all"`` the blind spot costs nothing, since readouts
+       1 … n-1 together cover x_0.  Under ``readout="first"`` use
+       ``n_layers >= 2`` with either cascade (#150).  ``entangler="brickwork"``
+       is *not* a remedy there: its CNOT(0, 1) has wire 0 as control, so Z_0
+       keeps its own wire and each ⟨Z_i⟩ sees x_i after one layer, but the
+       same narrow light cone leaves ⟨Z_0⟩ seeing only x_0 (RX) or x_0, x_1
+       (RY), and at 5 qubits still missing x_2 … x_4 (RX) or x_4 (RY) after
+       two layers.
+
     3. **Per-qubit SU(2) rotation block**:
        ``qml.Rot(φ, θ, ω, wires=i)`` applies Rz(ω)·Ry(θ)·Rz(φ), covering the
        full Bloch sphere.  This is the most expressive single-qubit gate.
@@ -165,8 +200,13 @@ def _make_angle_embedding_circuit(
        onto other wires (at 4 qubits, to wire 2, whose last-layer ``Rot`` is
        then live while wire 0's is dead), and the count under ``"first"`` is
        only a lower bound: 8 of the 12 weights autograd finds dead at 4
-       qubits and 2 layers.  The weight tensor keeps its
-       ``(n_layers, n_qubits, 3)`` shape either way.
+       qubits and 2 layers.  With ``entangler="brickwork"`` the narrow light
+       cone of ⟨Z_0⟩ leaves more dead under ``"first"``: 16 of 24 at 4
+       qubits and 2 layers (the last-layer ``Rot`` off wire 0, wire 0's ω,
+       and layer 0's ``Rot`` on wires 2 and 3), 17 by autograd.  The weight
+       tensor keeps its ``(n_layers, n_qubits, 3)`` shape for every
+       ``Rot`` entangler; ``"hardware_efficient"`` has one ``RY`` angle per
+       qubit, shape ``(n_layers, n_qubits)``.
 
     4. **Measurement**:
        Returns ``[qml.expval(qml.PauliZ(i)) for i in range(n_qubits)]``.
@@ -184,8 +224,10 @@ def _make_angle_embedding_circuit(
     entangler:
         ``"ring"`` (steps 2 and 3 above), ``"strongly_entangling"``
         (``qml.StronglyEntanglingLayers``: Rot first, then a CNOT ring of
-        range ``ℓ mod (n-1) + 1``) or ``"hardware_efficient"`` (a CZ ladder,
-        then ``RY``; ``weights`` of shape ``(n_layers, n_qubits)``).  See
+        range ``ℓ mod (n-1) + 1``), ``"brickwork"`` (nearest-neighbour
+        CNOT pairs, no wrap-around, then Rot) or ``"hardware_efficient"`` (a
+        CZ ladder, then ``RY``; ``weights`` of shape ``(n_layers, n_qubits)``).
+        See :func:`apply_variational_layers`.
         :func:`apply_variational_layers`.
     readout:
         ``"all"`` (step 4 above) or ``"first"`` (``[⟨Z_0⟩]`` only, as in the
@@ -261,7 +303,7 @@ def build_encoding_qnode(
         - ``"backprop"``        — auto-diff through simulator; requires default.qubit.
         - ``"finite-diff"``     — approximate; avoid for training.
     entangler:
-        ``"ring"`` (default), ``"strongly_entangling"`` or
+        ``"ring"`` (default), ``"strongly_entangling"``, ``"brickwork"`` or
         ``"hardware_efficient"``; see :func:`apply_variational_layers`.
     readout:
         ``"all"`` (default): ⟨Z_i⟩ on every qubit.  ``"first"``: ⟨Z_0⟩ only.
@@ -343,6 +385,9 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
     | ``weights``| ``(n_layers, n_qubits, 3)``       |
     +-----------+------------------------------------+
 
+    ``(n_layers, n_qubits)`` for ``entangler="hardware_efficient"``; see
+    :func:`variational_weight_shape`.
+
     **Important**: Call ``hqnn_forge.initializers.restricted_normal_init_``
     on ``layer.qlayer.weights`` immediately after construction to obtain
     small-angle initial values (see :mod:`hqnn_forge.initializers` for what
@@ -354,6 +399,9 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
         Number of qubits / input feature dimensions.  Default: 8.
     n_layers:
         Number of entangling + rotation blocks in the VQC ansatz.  Default: 2.
+        At 1, ⟨Z_0⟩ does not see feature 0 under the default ring and RX,
+        so ``readout="first"`` wants 2 or more; see step 2 of
+        :func:`_make_angle_embedding_circuit`.
     rotation:
         Pauli axis for AngleEmbedding: ``"X"`` | ``"Y"`` | ``"Z"``.
     device_name:
@@ -364,9 +412,9 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
         Gradient method.  Use ``"adjoint"`` with ``lightning.qubit`` for
         exact, efficient gradients during state-vector simulation.
     entangler:
-        ``"ring"`` (default), ``"strongly_entangling"`` (the same parameter
-        count) or ``"hardware_efficient"`` (a third of it: one ``RY`` angle
-        per qubit per layer); see :func:`apply_variational_layers`.
+        ``"ring"`` (default), ``"strongly_entangling"``, ``"brickwork"`` (the
+        same parameter count) or ``"hardware_efficient"`` (a third of it: one
+        ``RY`` angle per qubit per layer); see :func:`apply_variational_layers`.
     readout:
         ``"all"`` (default): the layer returns ``(batch, n_qubits)``.
         ``"first"``: ⟨Z_0⟩ only, ``(batch, 1)``, the published SHNN readout.
@@ -392,7 +440,8 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
     noise_trajectories:
         Draws averaged per sample with ``noise_method="trajectories"``.
         Default 1; must be 1 for ``"density"``.  Use 8 or more at noise of a
-        few percent per gate (#347; see :mod:`hqnn_forge.noise`).
+        few percent per gate: fewer draws occasionally made training collapse
+        on the breast-cancer proxy (#347; see :mod:`hqnn_forge.noise`).
 
     Attributes
     ----------
@@ -416,7 +465,7 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
     >>> from hqnn_forge.initializers import restricted_normal_init_
     >>>
     >>> layer = QuantumEncodingLayer(n_qubits=8, n_layers=2)
-    >>> restricted_normal_init_(layer.qlayer.weights, n_qubits=8, n_layers=2)
+    >>> _ = restricted_normal_init_(layer.qlayer.weights, n_qubits=8, n_layers=2)
     >>>
     >>> x = torch.randn(4, 8)   # batch of 4 samples
     >>> out = layer(x)           # shape: (4, 8)
@@ -462,10 +511,11 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
         )
 
         # Declare the trainable weight tensor shape for TorchLayer ─────────
-        # Shape: (n_layers, n_qubits, 3)
+        # Shape: variational_weight_shape(entangler, ...)
         #   dim-0: layer index ℓ ∈ {0, …, n_layers-1}
         #   dim-1: qubit  index i ∈ {0, …, n_qubits-1}
-        #   dim-2: Euler angles (φ, θ, ω) for qml.Rot
+        #   dim-2: Euler angles (φ, θ, ω) for qml.Rot; absent for
+        #          "hardware_efficient", whose RY takes one angle
         weight_shapes: dict[str, tuple[int, ...]] = {
             "weights": variational_weight_shape(entangler, n_qubits, n_layers),
         }
