@@ -111,7 +111,7 @@ contract is spelled out in `hqnn_forge/_encoding_contract.py`:
   `quantum_kernel_matrix`) refuses a layer without it.
 - **`prepare_inputs(x)`**: the *whole* classical step between the batch and the QNode, meaning
   validation (call `check_inputs(x, self.n_features, name="n_features")` from
-  `angle_embedding`, which rejects the wrong width and NaN/inf) and any transform. `forward(x)`
+  `hqnn_forge.encoding._common`, which rejects the wrong width and NaN/inf) and any transform. `forward(x)`
   must be exactly `self._run_circuit(self.prepare_inputs(x))`, which is
   `self.qlayer(self.prepare_inputs(x))` but for training-time noise (below). The kernels (`hqnn_forge.kernels`)
   replay the circuit on `prepare_inputs(X)`, so a step done inline in `forward` is silently
@@ -126,9 +126,9 @@ does.
 
 Beyond the protocol:
 
-- **Build the QNode through the shared helpers** in `hqnn_forge/encoding/angle_embedding.py`:
-  - `_resolve_device(device_name, n_qubits)` provides the fallback chain to `default.qubit`.
-  - `_expand_batch_dimension(qnode, diff_method)` makes a batched `inputs` work under adjoint.
+- **Build the QNode through the shared helpers** in `hqnn_forge/encoding/_common.py`:
+  - `resolve_device(device_name, n_qubits)` provides the fallback chain to `default.qubit`.
+  - `expand_batch_dimension(qnode, diff_method)` makes a batched `inputs` work under adjoint.
   - `apply_variational_layers` and `measure_z` provide the ansatz and the readout.
   - `validate_circuit_options` rejects a bad option at construction, not at the first forward.
 - **Name the angle tensor `weights`**, with dim 0 indexing layers. `gradient_variance` and the
@@ -177,7 +177,7 @@ Beyond the protocol:
 
 ## A variational block (ansatz)
 
-**Reference:** `apply_variational_layers` in `hqnn_forge/encoding/angle_embedding.py`. The
+**Reference:** `apply_variational_layers` in `hqnn_forge/encoding/_common.py`. The
 `"hardware_efficient"` branch, the most recent addition, is the example to copy: a primitive in
 `hqnn_forge/circuits/` applied once per layer, with a weight shape of its own. `"brickwork"`
 shows a block written inline, and `"strongly_entangling"` one that depends on the layer index.
@@ -228,7 +228,7 @@ alone has no effect on the models.
 ### Also update
 
 - The `Entangler` `Literal` and a branch in `apply_variational_layers` (with its docstring
-  entry), both in `angle_embedding.py`, and a branch in `variational_weight_shape` if the
+  entry), both in `_common.py`, and a branch in `variational_weight_shape` if the
   block's shape differs. `validate_circuit_options` and its error message read
   the choices from the `Literal`, so they need no change.
 - The `entangler` parameter docstrings: the angle, IQP and re-uploading builders and layers, and
