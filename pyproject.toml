@@ -115,39 +115,18 @@ ignore = [
     "SIM117",
 ]
 
+[tool.pytest.ini_options]
+# A misspelled marker (@pytest.mark.slwo) would otherwise be a silent no-op,
+# and a slow test would stay in the quick local run.
+addopts = ["--strict-markers"]
+
 [tool.mypy]
 # 3.12, not the 3.11 floor: the numpy stubs use the PEP 695 `type` statement,
 # which mypy only accepts at a target of 3.12 or later (see #102)
 python_version = "3.12"
 ignore_missing_imports = true
 strict = false
-# Flags an override below that no longer matches a module, e.g. after a rename
+# Reports a [[tool.mypy.overrides]] entry that no longer matches a module, e.g.
+# after a rename (CI turns the note into a failure).  There are none since #232:
+# every module in hqnn_forge, tests and examples is type-checked.
 warn_unused_configs = true
-
-# Test and example modules that still fail the type check (#232). Each is
-# checked again once removed from this list, and new modules are checked from
-# the start. An entry for a renamed or deleted module fails the CI type-check
-# step (warn_unused_configs); a module that passes but is still listed does not.
-[[tool.mypy.overrides]]
-module = [
-    "noise_aware_training",  # examples/noise_aware_training.py
-    "test_ablation",
-    "test_checkpoint",
-    "test_circuit_options",
-    "test_circuit_summary",
-    "test_cv",
-    "test_data_reuploading",
-    "test_device_backends",
-    "test_evaluation_plots",
-    "test_evaluation_statistics",
-    "test_fisher",
-    "test_gradient_variance",
-    "test_kernels",
-    "test_multiclass_hybrid_classifier",
-    "test_noise",
-    "test_noise_aware_training",
-    "test_published_shnn_parity",
-    "test_sklearn_estimator",
-    "test_training",
-]
-ignore_errors = true

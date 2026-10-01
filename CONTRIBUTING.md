@@ -15,6 +15,9 @@ background.
 Reduce complexity and increase clarity. A clean `main` branch, understandable commit history,
 and consistent processes lead to better software.
 
+Adding a dataset loader, an encoding layer or a variational block? The conventions and required
+tests for each are in [`docs/extending.md`](docs/extending.md).
+
 ## Git Workflow
 
 ### 1. Issue First
@@ -53,6 +56,26 @@ This keeps the history reviewable and associates every change with a PR number.
 *   **Test plan required** for any PR that changes code behaviour: a markdown checklist of
     steps to verify the change works, checked off before merging. Pure documentation or
     configuration changes don't need one.
+*   **Stacked PRs.** A PR may use another feature branch as its base, when it builds on
+    work not yet on `main`. CI runs on it when it is opened, when its own branch is pushed
+    and when it is retargeted, but **not when its base branch is pushed**, so a review fix
+    on the parent can break a child whose check stays green. After pushing to a branch
+    other PRs are based on, re-run them by closing and reopening each:
+
+    ```bash
+    for n in $(gh pr list --base <branch> --json number --jq '.[].number'); do
+        gh pr close "$n" && gh pr reopen "$n"
+    done
+    ```
+
+    Reopening fires a fresh run against the current merge result. Re-running the old
+    run from the Actions tab does not help: it checks out the merge commit it was
+    created with. This isn't automated because events caused by the workflow's own
+    `GITHUB_TOKEN` start no new workflow runs, so it would need a personal access token
+    or GitHub App secret. Before squash-merging the parent, retarget the children to
+    `main` (`gh pr edit <n> --base main`): the repository deletes a head branch as soon as
+    its PR merges, and depending on how the branch is deleted, GitHub either retargets
+    the PRs based on it or closes them.
 
 ### 5. Squash Merge
 
@@ -88,6 +111,21 @@ feat: add user authentication endpoint
 
 Keep commit bodies to at most 3 bullet points. If you need more, the work is probably better
 split into smaller, more atomic commits.
+
+## Testing
+
+CI runs the whole suite. For the local edit–test loop, leave out the tests marked `slow`
+(end-to-end training, the gradient-variance physics checks, parameter-shift batching, repeated
+fits and bootstraps), which take most of its run time:
+
+```bash
+uv run --frozen --all-extras pytest -m "not slow"   # about a minute
+uv run --frozen --all-extras pytest                 # the full suite, as CI runs it
+```
+
+Mark a test `@pytest.mark.slow` when it takes 1.2 s or more (`pytest --durations=50` finds
+them); `tests/conftest.py` records the rule. `--strict-markers` is on, so a misspelled marker
+fails collection instead of silently leaving a slow test in the quick run.
 
 ## Linting
 
@@ -158,11 +196,20 @@ it.
     `pyproject.toml`, so contributors only regenerate the lockfile when they change
     `pyproject.toml` by hand.
 
+*   **Upcoming PennyLane releases are tested weekly.** `.github/workflows/upstream.yml` runs
+    the suite against the newest PennyLane and pennylane-lightning pre-releases on PyPI and
+    against their nightly builds on TestPyPI. It never blocks a PR. When it fails, it opens
+    (or comments on) an issue titled `ci: test suite fails against PennyLane <source> builds`:
+    the library relies on PennyLane internals, and this is how a break shows up before users
+    upgrade. Trigger it by hand with `gh workflow run upstream.yml`.
+
 ## Versioning
 
 Releases follow [Semantic Versioning](https://semver.org/) (`MAJOR.MINOR.PATCH`), tagged (e.g.
 `v1.2.0`) on the `main` merge commit that encapsulates the release. `CHANGELOG.md` follows
 [Keep a Changelog](https://keepachangelog.com/) and is updated as part of the release PR.
+The release PR also bumps `version` in `CITATION.cff` to the new `pyproject.toml` version
+(`tests/test_citation.py` fails until it does) and, once released, can add a `date-released`.
 
 ## Using AI Coding Assistants
 

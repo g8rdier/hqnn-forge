@@ -46,7 +46,9 @@ References
 
 from __future__ import annotations
 
+import inspect
 import logging
+import os
 import warnings
 from collections.abc import Callable
 from typing import Literal, assert_never, get_args
@@ -56,12 +58,7 @@ import torch
 import torch.nn as nn
 from pennylane.exceptions import AllocationError, DeviceError
 
-from hqnn_forge.noise import (
-    Position,
-    run_with_training_noise,
-    training_noise_qnode,
-    validate_noise,
-)
+from hqnn_forge.noise import NoiseMethod, Position, TrainingNoiseMixin
 
 logger = logging.getLogger(__name__)
 
@@ -254,11 +251,54 @@ def _is_out_of_memory(exc: BaseException) -> bool:
     )
 
 
+#: Backends that failed to initialise in this process, with the failure.  A
+#: failed plugin import is not cached by Python, and a CUDA library load or a
+#: GPU probe is slow, so every layer built with the same device_name would
+#: otherwise repeat them -- and warn again.  Out-of-memory failures are never
+#: recorded: they depend on n_qubits and are raised, not fallen back from.
+_FAILED_BACKENDS: dict[str, BaseException] = {}
+
+#: The hqnn_forge package directory, for attributing warnings to user code.
+_PACKAGE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def reset_device_fallback() -> None:
+    """
+    Forget the backends that failed to initialise, so the next layer tries
+    them again -- e.g. after installing a plugin in a running session.
+    """
+    _FAILED_BACKENDS.clear()
+
+
+def _stacklevel_outside_package() -> int:
+    """
+    ``stacklevel`` that attributes a warning issued by the caller of this
+    function to the first frame outside ``hqnn_forge``: the user's own call,
+    however deep the layer or classifier constructors that led here.
+    (``warnings.warn(skip_file_prefixes=...)`` does this from Python 3.12 on;
+    the floor is 3.11.)
+    """
+    frame = inspect.currentframe()
+    frame = frame.f_back if frame is not None else None  # the function that warns
+    level = 1
+    while frame is not None and os.path.abspath(frame.f_code.co_filename).startswith(
+        _PACKAGE_DIR + os.sep
+    ):
+        frame = frame.f_back
+        level += 1
+    return level
+
+
 def _resolve_device(device_name: DeviceName, n_qubits: int) -> qml.devices.Device:
     """
     Create *device_name*, falling back along :data:`FALLBACK_CHAIN` when a
-    backend is not installed or has no usable hardware, with one
-    ``RuntimeWarning`` per failed step.
+    backend is not installed or has no usable hardware.
+
+    A backend that fails is remembered for the rest of the process: later
+    layers skip it without trying again, and its ``RuntimeWarning`` is issued
+    once, not once per layer (:func:`reset_device_fallback` forgets them).
+    The warning is attributed to the first frame outside ``hqnn_forge`` --
+    the user's call -- whichever layer or classifier constructor led here.
 
     The chain is ``requested → lightning.qubit → default.qubit``; entries at
     or before the requested device are skipped, so ``lightning.qubit`` falls
@@ -299,11 +339,16 @@ def _resolve_device(device_name: DeviceName, n_qubits: int) -> qml.devices.Devic
         )
     start = FALLBACK_CHAIN.index(device_name) + 1 if device_name in FALLBACK_CHAIN else 0
     candidates = [device_name, *FALLBACK_CHAIN[start:]]
+    last = len(candidates) - 1
     for attempt, name in enumerate(candidates):
+        if attempt < last and name in _FAILED_BACKENDS:
+            # Already failed and warned about in this process: go straight on.
+            logger.debug("Skipping %s, which failed before: %r", name, _FAILED_BACKENDS[name])
+            continue
         try:
             dev = qml.device(name, wires=n_qubits)
         except _DEVICE_FAILURES as exc:
-            if attempt == len(candidates) - 1 or _is_out_of_memory(exc):
+            if attempt == last or _is_out_of_memory(exc):
                 raise
             fallback = candidates[attempt + 1]
             hint = (
@@ -316,8 +361,12 @@ def _resolve_device(device_name: DeviceName, n_qubits: int) -> qml.devices.Devic
                 f"Could not initialise '{name}' ({type(exc).__name__}: {exc}).  "
                 f"Falling back to '{fallback}'.{hint}",
                 RuntimeWarning,
-                stacklevel=3,
+                stacklevel=_stacklevel_outside_package(),
             )
+            # Recorded only once warned: if a warnings-as-errors filter turns
+            # the warning into an exception, the next build must try (and
+            # raise) again rather than fall back silently.
+            _FAILED_BACKENDS[name] = exc
             continue
         if attempt:
             logger.info("Quantum device fell back from %s to %s", device_name, name)
@@ -393,7 +442,8 @@ def _make_angle_embedding_circuit(
        wire 0 before its ``Rot`` is reached, so ⟨Z_0⟩ ignores x_0 under either
        rotation.  For both cascades, from two layers on every readout sees
        every feature under RX or RY.  (Under ``rotation="Z"`` no readout sees
-       any feature at any depth: RZ on |0⟩ is only a phase, #212.)
+       any feature at any depth: RZ on |0⟩ is only a phase, which is why
+       :func:`build_encoding_qnode` refuses it, #212.)
 
        Under ``readout="all"`` the blind spot costs nothing, since readouts
        1 … n-1 together cover x_0.  Under ``readout="first"`` use
@@ -438,7 +488,8 @@ def _make_angle_embedding_circuit(
     n_layers:
         Number of variational layers L.  Depth = O(n_qubits * n_layers).
     rotation:
-        Pauli axis used by AngleEmbedding: ``"X"`` | ``"Y"`` | ``"Z"``.
+        Pauli axis used by AngleEmbedding: ``"X"`` | ``"Y"``.
+        :func:`build_encoding_qnode` refuses ``"Z"``, a phase on ``|0⟩``.
     entangler:
         ``"ring"`` (steps 2 and 3 above), ``"strongly_entangling"``
         (``qml.StronglyEntanglingLayers``: Rot first, then a CNOT ring of
@@ -541,7 +592,9 @@ def build_encoding_qnode(
         Number of entangling + rotation layers in the VQC ansatz.
         More layers increase expressibility but deepen the circuit.  Default: 2.
     rotation:
-        Pauli rotation axis for AngleEmbedding: ``"X"`` (default), ``"Y"``, or ``"Z"``.
+        Pauli rotation axis for AngleEmbedding: ``"X"`` (default) or ``"Y"``.
+        ``"Z"`` raises: a single ``RZ`` on ``|0⟩`` is only a phase, so the
+        layer would not depend on its inputs.
     device_name:
         PennyLane device string.  ``"lightning.qubit"`` is strongly preferred for
         adjoint differentiation.  An unavailable backend falls back along
@@ -572,7 +625,8 @@ def build_encoding_qnode(
     ValueError
         If ``n_qubits < 2`` (minimum for a meaningful entangling ring), or if
         ``rotation``, ``entangler`` or ``readout`` is not one of the values
-        above -- all checked here, before the circuit first runs.
+        above, or if ``rotation="Z"`` -- all checked here, before the circuit
+        first runs.
 
     Examples
     --------
@@ -583,6 +637,17 @@ def build_encoding_qnode(
     """
     if n_qubits < 2:
         raise ValueError(f"n_qubits must be ≥ 2 for the CNOT entangling ring; got {n_qubits}.")
+    if rotation == "Z":
+        # The inputs are embedded once, on |0…0⟩, where RZ(x) only multiplies
+        # each wire by a phase: the state entering the ansatz is the same for
+        # every x, so the layer would be a constant.  DataReuploadingLayer
+        # can use "Z" from its second upload on.
+        raise ValueError(
+            'rotation="Z" would make the layer ignore its inputs: a single RZ embedding '
+            "acts on |0…0⟩, where it is only a global phase, so every input gives the same "
+            'state and the input gradients are zero.  Use "X" or "Y", or '
+            'DataReuploadingLayer(rotation="Z", n_layers >= 2).'
+        )
 
     device = _resolve_device(device_name, n_qubits)
     circuit_fn = _make_angle_embedding_circuit(n_qubits, n_layers, rotation, entangler, readout)
@@ -614,7 +679,7 @@ def build_encoding_qnode(
 # ---------------------------------------------------------------------------
 
 
-class QuantumEncodingLayer(nn.Module):
+class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
     """
     A PyTorch ``nn.Module`` that wraps the angle-embedding QNode as a fully
     differentiable layer via ``pennylane.qnn.TorchLayer``.
@@ -649,7 +714,8 @@ class QuantumEncodingLayer(nn.Module):
         so ``readout="first"`` wants 2 or more; see step 2 of
         :func:`_make_angle_embedding_circuit`.
     rotation:
-        Pauli axis for AngleEmbedding: ``"X"`` | ``"Y"`` | ``"Z"``.
+        Pauli axis for AngleEmbedding: ``"X"`` | ``"Y"``; ``"Z"`` raises, see
+        :func:`build_encoding_qnode`.
     device_name:
         PennyLane device, one of :data:`DeviceName`.  An unavailable backend
         falls back along ``lightning.qubit → default.qubit`` with a warning
@@ -670,16 +736,28 @@ class QuantumEncodingLayer(nn.Module):
         ``noise_level > 0`` the train-mode forward pass runs the circuit on
         ``default.mixed`` with a ``DepolarizingChannel`` inserted, so
         gradients are computed through the noisy circuit (noise-aware
-        training); eval mode is always noiseless, like dropout.  Backprop
-        keeps a ``batch × 4^n`` density matrix per operation, so this is
-        practical up to about 6 qubits.  See :mod:`hqnn_forge.noise`.
+        training); eval mode is always noiseless, like dropout.  With the
+        default ``noise_method``, backprop keeps a ``batch × 4^n`` density
+        matrix per operation, so this is practical up to about 6 qubits.  See
+        :mod:`hqnn_forge.noise`.
     noise_position:
         ``"all"`` (after every gate, default) or ``"end"`` (before
         measurement), as in :func:`hqnn_forge.noise.apply_depolarizing_noise`.
+    noise_method:
+        ``"density"`` (default): the exact channel on ``default.mixed``.
+        ``"trajectories"``: Pauli-trajectory sampling on this layer's own
+        device and ``diff_method``, at pure-state memory; the train-mode
+        output is then random, and equal to the ``"density"`` output on
+        average.  See :mod:`hqnn_forge.noise`.
+    noise_trajectories:
+        Draws averaged per sample with ``noise_method="trajectories"``.
+        Default 1; must be 1 for ``"density"``.
 
     Attributes
     ----------
     n_qubits : int
+    n_features : int
+        Width of the input, one feature per qubit: ``n_qubits``.
     n_layers : int
     n_outputs : int
         Width of the output: ``n_qubits`` or 1.
@@ -687,6 +765,8 @@ class QuantumEncodingLayer(nn.Module):
     readout : str
     noise_level : float
     noise_position : str
+    noise_method : str
+    noise_trajectories : int
     qlayer : pennylane.qnn.TorchLayer
         The underlying differentiable quantum layer.
 
@@ -716,16 +796,17 @@ class QuantumEncodingLayer(nn.Module):
         readout: Readout = "all",
         noise_level: float = 0.0,
         noise_position: Position = "all",
+        noise_method: NoiseMethod = "density",
+        noise_trajectories: int = 1,
     ) -> None:
         super().__init__()
 
         self.n_qubits = n_qubits
+        self.n_features = n_qubits
         self.n_layers = n_layers
         self.entangler = entangler
         self.readout = readout
         self.n_outputs = len(readout_wires(n_qubits, readout))
-        self.noise_level = noise_level
-        self.noise_position = noise_position
 
         # Build the QNode ─────────────────────────────────────────────────
         qnode = build_encoding_qnode(
@@ -751,8 +832,8 @@ class QuantumEncodingLayer(nn.Module):
         self.qlayer = qml.qnn.TorchLayer(qnode, weight_shapes)
 
         # Training-time depolarizing noise (see hqnn_forge.noise) ─────────
-        self._training_noise_qnode = _build_training_noise(
-            qnode, n_qubits, noise_level, noise_position
+        self._init_training_noise(
+            qnode, n_qubits, noise_level, noise_position, noise_method, noise_trajectories
         )
 
     # ------------------------------------------------------------------
@@ -805,9 +886,7 @@ class QuantumEncodingLayer(nn.Module):
         # broadcasted tape or split into one tape per sample is decided in
         # build_encoding_qnode (see _expand_batch_dimension); the outputs and
         # gradients are the same either way.
-        if self.training and self._training_noise_qnode is not None:
-            return run_with_training_noise(self.qlayer, self._training_noise_qnode, x)
-        return self.qlayer(x)
+        return self._run_circuit(x)
 
     # ------------------------------------------------------------------
     # Utility
@@ -819,43 +898,12 @@ class QuantumEncodingLayer(nn.Module):
             options += f", entangler={self.entangler!r}"
         if self.readout != "all":
             options += f", readout={self.readout!r}"
-        if self.noise_level:
-            options += f", noise_level={self.noise_level}, noise_position={self.noise_position!r}"
+        options += self._noise_repr()
         return (
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "
             f"n_params={self.n_layers * self.n_qubits * 3}{options}"
         )
-
-
-MAX_TRAINING_NOISE_QUBITS = 6
-"""Above this many qubits, a layer built with ``noise_level > 0`` warns."""
-
-
-def _build_training_noise(
-    qnode: qml.QNode, n_qubits: int, noise_level: float, noise_position: Position
-) -> qml.QNode | None:
-    """
-    The train-mode QNode for ``noise_level > 0``, or ``None`` for the
-    noiseless default.  Shared by every encoding layer; validation happens
-    here so a bad ``noise_level`` fails at construction, and a qubit count
-    past what mixed-state backprop can train in practice warns there too.
-    """
-    validate_noise(
-        noise_level, noise_position, p_name="noise_level", position_name="noise_position"
-    )
-    if noise_level == 0.0:
-        return None
-    if n_qubits > MAX_TRAINING_NOISE_QUBITS:
-        warnings.warn(
-            f"noise_level > 0 trains on default.mixed, which keeps a batch × 4^n density "
-            f"matrix per operation for backprop; at n_qubits={n_qubits} (practical limit "
-            f"about {MAX_TRAINING_NOISE_QUBITS}) a training step may run out of memory.  "
-            f"See hqnn_forge.noise and #229.",
-            RuntimeWarning,
-            stacklevel=3,
-        )
-    return training_noise_qnode(qnode, n_qubits, noise_level, noise_position)
 
 
 # ---------------------------------------------------------------------------
