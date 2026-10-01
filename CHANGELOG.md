@@ -242,6 +242,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one (`p01 ≠ p10`) is not modelled. `noise_method="trajectories"` samples the Pauli channels
   (depolarizing, bit flip, phase flip), including inside `apply_shots`; the damping channels
   need `"density"` (#336)
+- Calibration of binary probabilities in `hqnn_forge.evaluation`: `brier_score`,
+  `expected_calibration_error` and `reliability_curve` (uniform or equal-count bins), the
+  post-hoc `TemperatureScaler` and `PlattScaler` fitted on a validation split (raising when
+  the NLL has no finite optimum, e.g. on separated classes), `plots.plot_reliability_diagram`,
+  `TrainingHistory.temperature` for the returned weights, and per-fold `brier`/`ece` with
+  `brier_mean`/`ece_mean` in `run_benchmark` (NaN for a fold whose probabilities are not
+  finite) (#340)
 
 ### Changed
 - The package metadata links the repository, issue tracker and changelog, and the README's
