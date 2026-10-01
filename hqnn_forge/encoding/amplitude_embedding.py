@@ -301,6 +301,7 @@ class AmplitudeEncodingLayer(TrainingNoiseMixin, nn.Module):
     n_qubits : int
     n_layers : int
     n_features : int
+        Width of the input, before padding to ``n_amplitudes``.
     n_amplitudes : int
         ``2**n_qubits``.
     qlayer : pennylane.qnn.TorchLayer
