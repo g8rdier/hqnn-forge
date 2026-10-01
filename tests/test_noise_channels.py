@@ -10,6 +10,7 @@ closed form (the table in ``hqnn_forge.noise``), so those checks are exact.
 
 from __future__ import annotations
 
+import itertools
 import math
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ from hqnn_forge.noise import (
     apply_depolarizing_noise,
     noise_sweep,
     training_noise_qnode,
+    trajectory_noise_qnode,
 )
 from hqnn_forge.utils import load_checkpoint, save_checkpoint
 
@@ -115,7 +117,7 @@ def test_training_noise_density_has_the_end_effect(channel: Channel) -> None:
 
 
 class TestTrajectories:
-    @pytest.mark.parametrize("channel", ["bit_flip", "phase_flip"])
+    @pytest.mark.parametrize("channel", CHANNEL_NAMES)
     def test_mean_matches_the_density_channel(self, channel: Channel) -> None:
         p, draws = 0.2, 3000
         layer = _layer(noise_level=p, noise_channel=channel, noise_method="trajectories")
@@ -165,11 +167,136 @@ class TestTrajectories:
             for _ in range(20):
                 torch.testing.assert_close(layer(x), clean, atol=1e-6, rtol=0)
 
-    @pytest.mark.parametrize("channel", ["amplitude_damping", "phase_damping"])
+
+class TestDampingTrajectories:
+    """#357: phase damping as a phase flip, amplitude damping by weighted Kraus branches."""
+
+    def test_phase_damping_is_the_mapped_phase_flip(self) -> None:
+        gamma = 0.3
+        layer = _layer()
+        flip = (1 - math.sqrt(1 - gamma)) / 2
+        damping = training_noise_qnode(layer.qlayer.qnode, 3, gamma, "all", "phase_damping")
+        flipping = training_noise_qnode(layer.qlayer.qnode, 3, flip, "all", "phase_flip")
+        with torch.no_grad():
+            for xi in _x():
+                a = torch.stack(damping(xi, layer.qlayer.weights))
+                b = torch.stack(flipping(xi, layer.qlayer.weights))
+                torch.testing.assert_close(a, b, atol=1e-12, rtol=0)
+        assert CHANNELS["phase_damping"].paulis is not None
+        assert CHANNELS["phase_damping"].paulis(gamma) == (1 - flip, 0.0, 0.0, flip)
+
+    @pytest.mark.parametrize("diff_method", ["backprop", "parameter-shift"])
+    def test_every_branch_weighted_is_the_density_channel_exactly(
+        self, diff_method: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Force every combination of branches at once, one per batch row, and
+        # weight each by its probability: the sum must be the channel's output
+        # and gradient to rounding, not merely within sampling error.
+        gamma = 0.3
+        torch.manual_seed(0)
+        layer = QuantumEncodingLayer(
+            n_qubits=2,
+            n_layers=1,
+            device_name="default.qubit",
+            diff_method=diff_method,  # type: ignore[arg-type]
+        )
+        layer.double()
+        x = torch.tensor([0.4, -1.1], dtype=torch.float64)
+        weights = layer.qlayer.weights
+        noisy = trajectory_noise_qnode(layer.qlayer.qnode, gamma, "all", "amplitude_damping")
+
+        real_rand = torch.rand
+        calls: list[int] = []
+
+        def count(*shape: Any, **kwargs: Any) -> torch.Tensor:
+            calls.append(0)
+            return real_rand(*shape, **kwargs)
+
+        monkeypatch.setattr(torch, "rand", count)
+        noisy(x, weights)
+        n_sites = len(calls)
+        assert n_sites >= 6
+
+        combos = torch.tensor(list(itertools.product([0, 1], repeat=n_sites)))
+        q = gamma / 2
+        jump = torch.tensor(q, dtype=torch.float64)
+        prob = torch.where(combos == 1, jump, 1 - jump).prod(1)
+        drawn = iter(range(n_sites * len(combos)))
+
+        def forced(*shape: Any, **kwargs: Any) -> torch.Tensor:
+            # 0 < q draws the jump (branch 1), 1 > q the no-jump branch.  With
+            # backprop the batch is one tape and each site draws a column; the
+            # other methods split it into one tape per sample first, whose
+            # sites then draw one entry each, sample by sample.
+            k = next(drawn)
+            if shape and shape[0] == (len(combos),):
+                return 1.0 - combos[:, k].double()
+            return 1.0 - combos[k // n_sites, k % n_sites].double()
+
+        monkeypatch.setattr(torch, "rand", forced)
+        weights.grad = None
+        out = torch.stack(noisy(x.expand(len(combos), 2), weights), -1)
+        estimate = (prob[:, None] * out).sum(0)
+        estimate.sum().backward()
+        grad = weights.grad.clone()
+        monkeypatch.setattr(torch, "rand", real_rand)
+
+        density = training_noise_qnode(layer.qlayer.qnode, 2, gamma, "all", "amplitude_damping")
+        weights.grad = None
+        exact = torch.stack(density(x, weights))
+        exact.sum().backward()
+        torch.testing.assert_close(estimate, exact.to(estimate.dtype), atol=1e-12, rtol=0)
+        torch.testing.assert_close(grad, weights.grad, atol=1e-12, rtol=0)
+
     @pytest.mark.parametrize("noise_level", [0.0, 0.1])
-    def test_damping_cannot_be_sampled(self, channel: str, noise_level: float) -> None:
-        with pytest.raises(ValueError, match="not a mixture of Pauli errors"):
-            _layer(noise_level=noise_level, noise_channel=channel, noise_method="trajectories")
+    def test_amplitude_damping_refuses_adjoint(self, noise_level: float) -> None:
+        # Refused whatever noise_level is, like every other bad option.
+        with pytest.raises(ValueError, match="differentiates wrongly"):
+            _layer(
+                noise_level=noise_level,
+                noise_channel="amplitude_damping",
+                noise_method="trajectories",
+                diff_method="adjoint",
+            )
+
+    def test_amplitude_damping_refuses_shots(self) -> None:
+        with pytest.raises(ValueError, match="unnormalised"):
+            _layer(
+                noise_level=0.1,
+                noise_channel="amplitude_damping",
+                noise_method="trajectories",
+                diff_method="parameter-shift",
+                shots=100,
+            )
+
+    def test_phase_damping_runs_under_adjoint(self) -> None:
+        # A Pauli channel in disguise: unitary draws, so adjoint is fine.
+        layer = _layer(
+            noise_level=0.1,
+            noise_channel="phase_damping",
+            noise_method="trajectories",
+            diff_method="adjoint",
+        )
+        layer.train()
+        layer(_x()).sum().backward()
+        assert torch.isfinite(layer.qlayer.weights.grad).all()
+
+    def test_classifier_trains_with_amplitude_damping_trajectories(self) -> None:
+        torch.manual_seed(0)
+        model = HybridBinaryClassifier(
+            n_input_features=3,
+            n_qubits=3,
+            n_layers=1,
+            noise_level=0.05,
+            noise_channel="amplitude_damping",
+            noise_method="trajectories",
+            noise_trajectories=4,
+            **CPU,
+        )
+        model.train()
+        model(_x()).sum().backward()
+        grads = [p.grad for p in model.parameters() if p.requires_grad]
+        assert all(g is not None and torch.isfinite(g).all() for g in grads)
 
 
 class TestValidation:
