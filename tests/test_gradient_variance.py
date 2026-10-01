@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 import warnings
+from typing import TypedDict
 
 import pennylane as qml
 import pytest
@@ -25,11 +26,19 @@ from hqnn_forge.diagnostics import (
     gradient_variance,
     gradient_variance_sweep,
 )
+from hqnn_forge.diagnostics.gradients import InitName
 from hqnn_forge.encoding import DataReuploadingLayer, QuantumEncodingLayer
+from hqnn_forge.encoding.angle_embedding import DeviceName, DiffMethod, RotationAxis
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.models import HybridBinaryClassifier
 
-CPU = dict(device_name="default.qubit", diff_method="backprop")
+
+class _Backend(TypedDict):
+    device_name: DeviceName
+    diff_method: DiffMethod
+
+
+CPU: _Backend = {"device_name": "default.qubit", "diff_method": "backprop"}
 
 
 def _layer(n_qubits: int, n_layers: int = 2) -> QuantumEncodingLayer:
@@ -77,6 +86,9 @@ def _result(init: str, n_qubits: int, total: float) -> GradientVarianceResult:
     )
 
 
+# Every test that reads ``measured`` is marked slow, not only one of them: the
+# module fixture's cost (most of this module's run time) goes to whichever of
+# its tests runs first, so deselecting one test would only move it to the next.
 @pytest.fixture(scope="module")
 def measured() -> dict[tuple[str, int, float], float]:
     """
@@ -96,6 +108,7 @@ def measured() -> dict[tuple[str, int, float], float]:
     }
 
 
+@pytest.mark.slow
 class TestMeasuredInitClaims:
     """
     The statements in hqnn_forge.initializers.restricted_variance's
@@ -159,6 +172,7 @@ def entangler_sweep(measured: dict) -> dict[tuple[str, str, int], float]:
     return out
 
 
+@pytest.mark.slow
 class TestBrickworkDecay:
     """
     The brickwork measurements in hqnn_forge.initializers.restricted_variance
@@ -190,6 +204,7 @@ class TestBrickworkDecay:
 
 
 class TestPhysics:
+    @pytest.mark.slow
     def test_uniform_init_variance_decays_with_qubits(self) -> None:
         small = gradient_variance(_layer(2), n_samples=100, generator=_gen())
         large = gradient_variance(_layer(6), n_samples=100, generator=_gen())
@@ -205,7 +220,7 @@ class TestPhysics:
 
 class TestMechanics:
     @pytest.mark.parametrize("init", ["restricted", "block_local"])
-    def test_toy_sizes_do_not_warn(self, init: str) -> None:
+    def test_toy_sizes_do_not_warn(self, init: InitName) -> None:
         """Comparing inits where restricted restricts nothing is the point, not a misuse (#167)."""
         with warnings.catch_warnings():
             warnings.simplefilter("error")
@@ -346,14 +361,16 @@ class TestSeveralTensors:
     """
 
     @staticmethod
-    def _scaled(rotation: str = "X") -> DataReuploadingLayer:
+    def _scaled(rotation: RotationAxis = "X") -> DataReuploadingLayer:
         torch.manual_seed(0)
         return DataReuploadingLayer(
             n_qubits=2, n_layers=2, rotation=rotation, trainable_input_scaling=True, **CPU
         )
 
     @pytest.mark.parametrize(("rotation", "scaling_shape"), [("X", (2, 2)), ("Z", (1, 2))])
-    def test_is_measured_over_every_tensor(self, rotation: str, scaling_shape: tuple) -> None:
+    def test_is_measured_over_every_tensor(
+        self, rotation: RotationAxis, scaling_shape: tuple
+    ) -> None:
         result = gradient_variance(self._scaled(rotation), n_samples=5, generator=_gen())
         assert set(result.per_tensor) == {"weights", "input_scaling"}
         assert result.per_tensor["weights"].shape == (2, 2, 3)
@@ -428,9 +445,11 @@ class TestSeveralTensors:
         from hqnn_forge.diagnostics import effective_dimension, fisher_information_matrix
 
         layer = _two_weight_layer()
+        qlayer = layer.qlayer
+        assert isinstance(qlayer, qml.qnn.TorchLayer)
         with torch.no_grad():
-            layer.qlayer.w1.fill_(0.3)
-            layer.qlayer.w2.fill_(-0.7)
+            qlayer.w1.fill_(0.3)
+            qlayer.w2.fill_(-0.7)
         x = torch.tensor([[0.2, -0.5], [1.1, 0.4]])
         spectrum = fisher_information_matrix(layer, x)
         assert spectrum.parameter_slices == {"w1": slice(0, 1), "w2": slice(1, 2)}

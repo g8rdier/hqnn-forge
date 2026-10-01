@@ -34,8 +34,7 @@ jobs:
   # --all-extras so mypy sees matplotlib, scikit-learn and pennylane-lightning:
   # with ignore_missing_imports, a missing extra silently types its imports as Any.
   # ruff covers the whole tree (it respects .gitignore). mypy covers the package,
-  # tests/ and examples/; modules still failing are listed under
-  # [[tool.mypy.overrides]] in pyproject.toml until #232 clears them.
+  # tests/ and examples/ in full: since #232 no module is exempted.
   lint:
     if: github.event.action != 'edited' || github.event.changes.base
     runs-on: ubuntu-latest
@@ -65,7 +64,8 @@ jobs:
 
     # warn_unused_configs reports an override entry that matches no module (a
     # renamed or deleted file) only as a note and still exits 0, so the grep
-    # turns that note into a failure.
+    # turns that note into a failure, should [[tool.mypy.overrides]] entries
+    # be added again.
     - name: Type-check
       run: |
         out=$(uv run --frozen mypy hqnn_forge tests examples 2>&1) || { echo "$out"; exit 1; }

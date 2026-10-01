@@ -76,7 +76,9 @@ from hqnn_forge.encoding.angle_embedding import (
     apply_variational_layers,
     check_inputs,
     measure_z,
+    variational_weight_shape,
 )
+from hqnn_forge.noise import NoiseMethod, Position, TrainingNoiseMixin
 
 logger = logging.getLogger(__name__)
 
@@ -225,7 +227,7 @@ def build_amplitude_qnode(
 # ---------------------------------------------------------------------------
 
 
-class AmplitudeEncodingLayer(nn.Module):
+class AmplitudeEncodingLayer(TrainingNoiseMixin, nn.Module):
     """
     A PyTorch ``nn.Module`` wrapping the amplitude-embedding QNode.
 
@@ -288,12 +290,19 @@ class AmplitudeEncodingLayer(nn.Module):
         per step.
     diff_method:
         Gradient method.  See *Differentiation methods* above.
+    noise_level, noise_position, noise_method, noise_trajectories:
+        Training-time depolarizing noise, exactly as for
+        :class:`~hqnn_forge.encoding.QuantumEncodingLayer`: ``noise_level``
+        in ``[0, 0.75]`` (default 0, noiseless) applied in train mode only,
+        at ``"all"`` gates or at the ``"end"``, simulated exactly
+        (``"density"``) or by Pauli trajectories.  See :mod:`hqnn_forge.noise`.
 
     Attributes
     ----------
     n_qubits : int
     n_layers : int
     n_features : int
+        Width of the input, before padding to ``n_amplitudes``.
     n_amplitudes : int
         ``2**n_qubits``.
     qlayer : pennylane.qnn.TorchLayer
@@ -323,6 +332,10 @@ class AmplitudeEncodingLayer(nn.Module):
         n_features: int | None = None,
         device_name: DeviceName = "lightning.qubit",
         diff_method: DiffMethod = "adjoint",
+        noise_level: float = 0.0,
+        noise_position: Position = "all",
+        noise_method: NoiseMethod = "density",
+        noise_trajectories: int = 1,
     ) -> None:
         super().__init__()
 
@@ -350,9 +363,12 @@ class AmplitudeEncodingLayer(nn.Module):
         )
 
         weight_shapes: dict[str, tuple[int, ...]] = {
-            "weights": (n_layers, n_qubits, 3),
+            "weights": variational_weight_shape("ring", n_qubits, n_layers),
         }
         self.qlayer = qml.qnn.TorchLayer(qnode, weight_shapes)
+        self._init_training_noise(
+            qnode, n_qubits, noise_level, noise_position, noise_method, noise_trajectories
+        )
 
     # ------------------------------------------------------------------
     def prepare_inputs(self, x: torch.Tensor) -> torch.Tensor:
@@ -416,7 +432,7 @@ class AmplitudeEncodingLayer(nn.Module):
         """
         amplitudes = self.prepare_inputs(x)
         # Whole batch in one call; see QuantumEncodingLayer.forward.
-        return self.qlayer(amplitudes)
+        return self._run_circuit(amplitudes)
 
     # ------------------------------------------------------------------
     def extra_repr(self) -> str:
@@ -424,5 +440,5 @@ class AmplitudeEncodingLayer(nn.Module):
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "
             f"n_features={self.n_features}, "
-            f"n_params={self.n_layers * self.n_qubits * 3}"
+            f"n_params={sum(p.numel() for p in self.parameters())}{self._noise_repr()}"
         )

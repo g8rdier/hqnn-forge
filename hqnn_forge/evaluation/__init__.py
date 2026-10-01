@@ -15,6 +15,8 @@ parameter_efficiency     Score per thousand trainable parameters.
 wilcoxon_signed_rank     Paired signed-rank test with its attainable p-value floor.
 WilcoxonResult           Result of wilcoxon_signed_rank.
 rank_biserial_correlation  Effect size for the paired comparison.
+multiclass_matthews_corrcoef, macro_f1_score, multiclass_balanced_accuracy
+                         The multiclass metrics, on hard labels; MULTICLASS_METRICS by name.
 bootstrap_ci             Class-stratified bootstrap interval (BCa or percentile) for a metric.
 paired_bootstrap_ci      The same for the difference between two models on the same samples.
 BootstrapResult          Result of both.
@@ -35,6 +37,12 @@ from hqnn_forge.evaluation.bootstrap import (
     BootstrapResult,
     bootstrap_ci,
     paired_bootstrap_ci,
+)
+from hqnn_forge.evaluation.multiclass import (
+    MULTICLASS_METRICS,
+    macro_f1_score,
+    multiclass_balanced_accuracy,
+    multiclass_matthews_corrcoef,
 )
 from hqnn_forge.evaluation.statistics import (
     ControlComparison,
@@ -62,6 +70,7 @@ from hqnn_forge.evaluation.thresholds import (
 
 __all__: list[str] = [
     "METRICS",
+    "MULTICLASS_METRICS",
     "BootstrapResult",
     "ControlComparison",
     "FriedmanResult",
@@ -76,7 +85,10 @@ __all__: list[str] = [
     "friedman_from_ranks",
     "friedman_test",
     "holm_correction",
+    "macro_f1_score",
     "matthews_corrcoef",
+    "multiclass_balanced_accuracy",
+    "multiclass_matthews_corrcoef",
     "nemenyi_critical_difference",
     "paired_bootstrap_ci",
     "parameter_efficiency",

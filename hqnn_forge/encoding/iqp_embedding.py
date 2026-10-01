@@ -38,7 +38,6 @@ from hqnn_forge.encoding.angle_embedding import (
     DiffMethod,
     Entangler,
     Readout,
-    _build_training_noise,
     _expand_batch_dimension,
     _resolve_device,
     apply_variational_layers,
@@ -46,8 +45,9 @@ from hqnn_forge.encoding.angle_embedding import (
     measure_z,
     readout_wires,
     validate_circuit_options,
+    variational_weight_shape,
 )
-from hqnn_forge.noise import Position, run_with_training_noise
+from hqnn_forge.noise import NoiseMethod, Position, TrainingNoiseMixin
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,9 @@ def _make_iqp_embedding_circuit(
 
     where ``inputs`` has shape ``(n_qubits,)`` (or ``(batch, n_qubits)`` when
     broadcasted) and ``weights`` has shape ``(n_layers, n_qubits, 3)``: the
-    ``qml.Rot`` angles per layer and qubit.
+    ``qml.Rot`` angles per layer and qubit (``(n_layers, n_qubits)``, the
+    ``RY`` angles, for ``entangler="hardware_efficient"``; see
+    :func:`~hqnn_forge.encoding.angle_embedding.variational_weight_shape`).
 
     Called inside a QNode it records one ``qml.expval(PauliZ)`` measurement per
     readout wire; the QNode turns them into the expectation values.
@@ -153,15 +155,17 @@ def build_iqp_qnode(
     return _expand_batch_dimension(qnode, diff_method)
 
 
-class IQPEncodingLayer(nn.Module):
+class IQPEncodingLayer(TrainingNoiseMixin, nn.Module):
     """
     A PyTorch nn.Module wrapping the IQP-embedding QNode.
 
     ``entangler`` and ``readout`` are the options of
     :class:`~hqnn_forge.encoding.QuantumEncodingLayer`; the output width is
-    ``n_outputs`` (``n_qubits``, or 1 with ``readout="first"``).
-    ``noise_level`` / ``noise_position`` add training-time depolarizing
-    noise exactly as in :class:`~hqnn_forge.encoding.QuantumEncodingLayer`.
+    ``n_outputs`` (``n_qubits``, or 1 with ``readout="first"``), and the
+    input width ``n_features`` is ``n_qubits``, one feature per qubit.
+    ``noise_level`` / ``noise_position`` / ``noise_method`` /
+    ``noise_trajectories`` add training-time depolarizing noise exactly as in
+    :class:`~hqnn_forge.encoding.QuantumEncodingLayer`.
     """
 
     def __init__(
@@ -175,17 +179,18 @@ class IQPEncodingLayer(nn.Module):
         readout: Readout = "all",
         noise_level: float = 0.0,
         noise_position: Position = "all",
+        noise_method: NoiseMethod = "density",
+        noise_trajectories: int = 1,
     ) -> None:
         super().__init__()
 
         self.n_qubits = n_qubits
+        self.n_features = n_qubits
         self.n_layers = n_layers
         self.n_repeats = n_repeats
         self.entangler = entangler
         self.readout = readout
         self.n_outputs = len(readout_wires(n_qubits, readout))
-        self.noise_level = noise_level
-        self.noise_position = noise_position
 
         qnode = build_iqp_qnode(
             n_qubits=n_qubits,
@@ -198,13 +203,13 @@ class IQPEncodingLayer(nn.Module):
         )
 
         weight_shapes: dict[str, tuple[int, ...]] = {
-            "weights": (n_layers, n_qubits, 3),
+            "weights": variational_weight_shape(entangler, n_qubits, n_layers),
         }
 
         self.qlayer = qml.qnn.TorchLayer(qnode, weight_shapes)
         # Training-time depolarizing noise; see QuantumEncodingLayer.
-        self._training_noise_qnode = _build_training_noise(
-            qnode, n_qubits, noise_level, noise_position
+        self._init_training_noise(
+            qnode, n_qubits, noise_level, noise_position, noise_method, noise_trajectories
         )
 
     def prepare_inputs(self, x: torch.Tensor) -> torch.Tensor:
@@ -223,9 +228,7 @@ class IQPEncodingLayer(nn.Module):
         """Embed a batch of feature vectors."""
         # Whole batch in one call; see QuantumEncodingLayer.forward.
         x = self.prepare_inputs(x)
-        if self.training and self._training_noise_qnode is not None:
-            return run_with_training_noise(self.qlayer, self._training_noise_qnode, x)
-        return self.qlayer(x)
+        return self._run_circuit(x)
 
     def extra_repr(self) -> str:
         options = ""
@@ -233,11 +236,10 @@ class IQPEncodingLayer(nn.Module):
             options += f", entangler={self.entangler!r}"
         if self.readout != "all":
             options += f", readout={self.readout!r}"
-        if self.noise_level:
-            options += f", noise_level={self.noise_level}, noise_position={self.noise_position!r}"
+        options += self._noise_repr()
         return (
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "
             f"n_repeats={self.n_repeats}, "
-            f"n_params={self.n_layers * self.n_qubits * 3}{options}"
+            f"n_params={sum(p.numel() for p in self.parameters())}{options}"
         )

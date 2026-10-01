@@ -58,12 +58,8 @@ import torch
 import torch.nn as nn
 from pennylane.exceptions import AllocationError, DeviceError
 
-from hqnn_forge.noise import (
-    Position,
-    run_with_training_noise,
-    training_noise_qnode,
-    validate_noise,
-)
+from hqnn_forge.circuits import hardware_efficient_layer, strongly_entangling_layer
+from hqnn_forge.noise import NoiseMethod, Position, TrainingNoiseMixin
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +69,7 @@ logger = logging.getLogger(__name__)
 RotationAxis = Literal["X", "Y", "Z"]
 DiffMethod = Literal["adjoint", "parameter-shift", "backprop", "finite-diff"]
 DeviceName = Literal["lightning.gpu", "lightning.kokkos", "lightning.qubit", "default.qubit"]
-Entangler = Literal["ring", "strongly_entangling", "brickwork"]
+Entangler = Literal["ring", "strongly_entangling", "brickwork", "hardware_efficient"]
 Readout = Literal["all", "first"]
 
 #: Devices tried, in order, after the requested one fails.  Each is a strict
@@ -128,20 +124,29 @@ def apply_variational_layers(
       Cerezo et al. (2021) while ``n_layers`` is small against ``n_qubits``;
       see :mod:`hqnn_forge.initializers.restricted_variance` for the
       measured gradient variance.
+    * ``"hardware_efficient"``: a nearest-neighbour ``CZ(i, i+1)`` ladder,
+      then ``RY(θ)`` on every qubit (Kandala et al. 2017):
+      :func:`hqnn_forge.circuits.hardware_efficient_layer`.  One angle per
+      qubit per layer and ``n − 1`` two-qubit gates per layer: a third of the
+      parameters of the ``Rot`` blocks, with CZ native on many devices.
 
-    All three take ``weights`` of shape ``(n_layers, n_qubits, 3)`` and use
-    ``n_layers · n_qubits`` ``Rot`` gates.  The ring and
-    ``"strongly_entangling"`` use ``n_qubits`` CNOTs per layer and differ in
-    gate order and, from the second layer on, in which qubits the CNOTs
-    connect; ``"brickwork"`` uses ``n_qubits - 1``.
+    ``"ring"``, ``"strongly_entangling"`` and ``"brickwork"`` take ``weights``
+    of shape ``(n_layers, n_qubits, 3)`` and use ``n_layers · n_qubits``
+    ``Rot`` gates.  The ring and ``"strongly_entangling"`` use ``n_qubits``
+    CNOTs per layer and differ in gate order and, from the second layer on, in
+    which qubits the CNOTs connect; ``"brickwork"`` uses ``n_qubits - 1``.
+    ``"hardware_efficient"`` takes ``(n_layers, n_qubits)``.
+    :func:`variational_weight_shape` gives the shape for each.  The ``"ring"``
+    block is :func:`hqnn_forge.circuits.strongly_entangling_layer` applied per
+    layer.
 
     ``layer_offset`` is the index of the first block within the whole ansatz,
     for circuits that interleave other gates between blocks and so apply them
     a few at a time: the ``"strongly_entangling"`` range of block ``ℓ`` is
     ``(layer_offset + ℓ) mod (n-1) + 1``, so applying the blocks one by one
     with offsets ``0 … L-1`` gives the same ranges as applying all ``L`` at
-    once.  The ``"ring"`` and ``"brickwork"`` blocks do not depend on the
-    layer index.
+    once.  The ``"ring"``, ``"brickwork"`` and ``"hardware_efficient"``
+    blocks do not depend on the layer index.
     """
     if entangler == "strongly_entangling":
         # A single wire has no CNOT partner: leave the ranges to the template,
@@ -156,24 +161,51 @@ def apply_variational_layers(
     _check_entangler(entangler)
     for layer in range(n_layers):
         if entangler == "ring":
-            # CNOT entangling ring (cyclic: last qubit → first qubit)
-            for qubit in range(n_qubits):
-                qml.CNOT(wires=[qubit, (qubit + 1) % n_qubits])
+            # CNOT ring (last qubit → first), then Rot(φ, θ, ω) on every qubit
+            strongly_entangling_layer(weights[layer], n_qubits)
+        elif entangler == "hardware_efficient":
+            # CZ ladder, then RY(θ) on every qubit
+            hardware_efficient_layer(weights[layer], n_qubits)
         elif entangler == "brickwork":
             # Brickwork: even nearest-neighbour pairs, then odd ones
             for start in (0, 1):
                 for qubit in range(start, n_qubits - 1, 2):
                     qml.CNOT(wires=[qubit, qubit + 1])
+            # Per-qubit SU(2) rotation block
+            for qubit in range(n_qubits):
+                qml.Rot(
+                    weights[layer, qubit, 0],  # φ
+                    weights[layer, qubit, 1],  # θ
+                    weights[layer, qubit, 2],  # ω
+                    wires=qubit,
+                )
         else:
             assert_never(entangler)
-        # Per-qubit SU(2) rotation block
-        for qubit in range(n_qubits):
-            qml.Rot(
-                weights[layer, qubit, 0],  # φ
-                weights[layer, qubit, 1],  # θ
-                weights[layer, qubit, 2],  # ω
-                wires=qubit,
-            )
+
+
+def variational_weight_shape(
+    entangler: Entangler, n_qubits: int, n_layers: int
+) -> tuple[int, ...]:
+    """
+    Shape of the ``weights`` tensor :func:`apply_variational_layers` reads for ``entangler``.
+
+    The one place an encoder's variational weight shape is defined: every
+    encoding layer registers its ``weights`` with this shape.  Dim 0 is always
+    the layer index, which :func:`~hqnn_forge.initializers.block_local_init_`
+    and the diagnostics' ``n_layers`` fallback rely on: ``(n_layers, n_qubits,
+    3)`` for the ``Rot`` blocks (``"ring"``, ``"strongly_entangling"``,
+    ``"brickwork"``), ``(n_layers, n_qubits)`` for the ``RY`` of
+    ``"hardware_efficient"``.
+
+    Raises
+    ------
+    ValueError
+        For an unknown ``entangler``.
+    """
+    _check_entangler(entangler)
+    if entangler == "hardware_efficient":
+        return (n_layers, n_qubits)
+    return (n_layers, n_qubits, 3)
 
 
 def validate_circuit_options(
@@ -403,8 +435,10 @@ def _make_angle_embedding_circuit(
     where
 
     * ``inputs``  — shape ``(n_qubits,)`` — the pre-processed feature vector.
-    * ``weights`` — shape ``(n_layers, n_qubits, 3)`` — rotation angles per
-                    layer, qubit, and Euler angle (φ, θ, ω) for ``qml.Rot``.
+    * ``weights`` — shape :func:`variational_weight_shape`: ``(n_layers,
+                    n_qubits, 3)``, the ``qml.Rot`` angles (φ, θ, ω) per layer
+                    and qubit, or ``(n_layers, n_qubits)``, the ``RY`` angles,
+                    for ``entangler="hardware_efficient"``.
 
     Called inside a QNode it records one ``qml.expval(PauliZ)`` measurement per
     readout wire; the QNode turns them into the expectation values.
@@ -457,7 +491,13 @@ def _make_angle_embedding_circuit(
        keeps its own wire and each ⟨Z_i⟩ sees x_i after one layer, but the
        same narrow light cone leaves ⟨Z_0⟩ seeing only x_0 (RX) or x_0, x_1
        (RY), and at 5 qubits still missing x_2 … x_4 (RX) or x_4 (RY) after
-       two layers.
+       two layers.  Nor is ``entangler="hardware_efficient"``: its ``CZ``
+       ladder is diagonal, so ⟨Z_i⟩ reaches a neighbour only through the
+       X_i its ``RY`` mixes in, which the ``CZ`` gates dress with Z_{i±1}.
+       After L layers ⟨Z_i⟩ sees x_{i-L} … x_{i+L}, except that under RX
+       (⟨X⟩ = 0) a single layer leaves it seeing x_i alone; under
+       ``readout="first"``, ⟨Z_0⟩ thus sees L + 1 features (one at L = 1
+       under RX).
 
     3. **Per-qubit SU(2) rotation block**:
        ``qml.Rot(φ, θ, ω, wires=i)`` applies Rz(ω)·Ry(θ)·Rz(φ), covering the
@@ -479,7 +519,11 @@ def _make_angle_embedding_circuit(
        qubits and 2 layers (the last-layer ``Rot`` off wire 0, wire 0's ω,
        and layer 0's ``Rot`` on wires 2 and 3), 17 by autograd.  The weight
        tensor keeps its ``(n_layers, n_qubits, 3)`` shape for every
-       entangler.
+       ``Rot`` entangler; ``"hardware_efficient"`` has one ``RY`` angle per
+       qubit, shape ``(n_layers, n_qubits)``.  None of its angles is inert
+       under ``"all"``; under ``"first"`` the k-th layer counted back from
+       the readout (k = 0 the last) leaves max(0, n − 1 − k) dead, 6 of 12
+       at 4 qubits and 3 layers, and ``n_inert_params`` matches autograd.
 
     4. **Measurement**:
        Returns ``[qml.expval(qml.PauliZ(i)) for i in range(n_qubits)]``.
@@ -498,9 +542,10 @@ def _make_angle_embedding_circuit(
     entangler:
         ``"ring"`` (steps 2 and 3 above), ``"strongly_entangling"``
         (``qml.StronglyEntanglingLayers``: Rot first, then a CNOT ring of
-        range ``ℓ mod (n-1) + 1``) or ``"brickwork"`` (nearest-neighbour
-        CNOT pairs, no wrap-around, then Rot).  See
-        :func:`apply_variational_layers`.
+        range ``ℓ mod (n-1) + 1``), ``"brickwork"`` (nearest-neighbour
+        CNOT pairs, no wrap-around, then Rot) or ``"hardware_efficient"`` (a
+        CZ ladder, then ``RY``; ``weights`` of shape ``(n_layers, n_qubits)``).
+        See :func:`apply_variational_layers`.
     readout:
         ``"all"`` (step 4 above) or ``"first"`` (``[⟨Z_0⟩]`` only, as in the
         published SHNN).
@@ -612,8 +657,8 @@ def build_encoding_qnode(
         - ``"backprop"``        — auto-diff through simulator; requires default.qubit.
         - ``"finite-diff"``     — approximate; avoid for training.
     entangler:
-        ``"ring"`` (default), ``"strongly_entangling"`` or ``"brickwork"``;
-        see :func:`apply_variational_layers`.
+        ``"ring"`` (default), ``"strongly_entangling"``, ``"brickwork"`` or
+        ``"hardware_efficient"``; see :func:`apply_variational_layers`.
     readout:
         ``"all"`` (default): ⟨Z_i⟩ on every qubit.  ``"first"``: ⟨Z_0⟩ only.
 
@@ -684,7 +729,7 @@ def build_encoding_qnode(
 # ---------------------------------------------------------------------------
 
 
-class QuantumEncodingLayer(nn.Module):
+class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
     """
     A PyTorch ``nn.Module`` that wraps the angle-embedding QNode as a fully
     differentiable layer via ``pennylane.qnn.TorchLayer``.
@@ -703,6 +748,9 @@ class QuantumEncodingLayer(nn.Module):
     +===========+====================================+
     | ``weights``| ``(n_layers, n_qubits, 3)``       |
     +-----------+------------------------------------+
+
+    ``(n_layers, n_qubits)`` for ``entangler="hardware_efficient"``; see
+    :func:`variational_weight_shape`.
 
     **Important**: Call ``hqnn_forge.initializers.restricted_normal_init_``
     on ``layer.qlayer.weights`` immediately after construction to obtain
@@ -729,9 +777,9 @@ class QuantumEncodingLayer(nn.Module):
         Gradient method.  Use ``"adjoint"`` with ``lightning.qubit`` for
         exact, efficient gradients during state-vector simulation.
     entangler:
-        ``"ring"`` (default), ``"strongly_entangling"`` or ``"brickwork"``;
-        see :func:`apply_variational_layers`.  Same parameter count for all
-        three.
+        ``"ring"`` (default), ``"strongly_entangling"``, ``"brickwork"`` (the
+        same parameter count) or ``"hardware_efficient"`` (a third of it: one
+        ``RY`` angle per qubit per layer); see :func:`apply_variational_layers`.
     readout:
         ``"all"`` (default): the layer returns ``(batch, n_qubits)``.
         ``"first"``: ⟨Z_0⟩ only, ``(batch, 1)``, the published SHNN readout.
@@ -741,16 +789,28 @@ class QuantumEncodingLayer(nn.Module):
         ``noise_level > 0`` the train-mode forward pass runs the circuit on
         ``default.mixed`` with a ``DepolarizingChannel`` inserted, so
         gradients are computed through the noisy circuit (noise-aware
-        training); eval mode is always noiseless, like dropout.  Backprop
-        keeps a ``batch × 4^n`` density matrix per operation, so this is
-        practical up to about 6 qubits.  See :mod:`hqnn_forge.noise`.
+        training); eval mode is always noiseless, like dropout.  With the
+        default ``noise_method``, backprop keeps a ``batch × 4^n`` density
+        matrix per operation, so this is practical up to about 6 qubits.  See
+        :mod:`hqnn_forge.noise`.
     noise_position:
         ``"all"`` (after every gate, default) or ``"end"`` (before
         measurement), as in :func:`hqnn_forge.noise.apply_depolarizing_noise`.
+    noise_method:
+        ``"density"`` (default): the exact channel on ``default.mixed``.
+        ``"trajectories"``: Pauli-trajectory sampling on this layer's own
+        device and ``diff_method``, at pure-state memory; the train-mode
+        output is then random, and equal to the ``"density"`` output on
+        average.  See :mod:`hqnn_forge.noise`.
+    noise_trajectories:
+        Draws averaged per sample with ``noise_method="trajectories"``.
+        Default 1; must be 1 for ``"density"``.
 
     Attributes
     ----------
     n_qubits : int
+    n_features : int
+        Width of the input, one feature per qubit: ``n_qubits``.
     n_layers : int
     n_outputs : int
         Width of the output: ``n_qubits`` or 1.
@@ -758,6 +818,8 @@ class QuantumEncodingLayer(nn.Module):
     readout : str
     noise_level : float
     noise_position : str
+    noise_method : str
+    noise_trajectories : int
     qlayer : pennylane.qnn.TorchLayer
         The underlying differentiable quantum layer.
 
@@ -787,16 +849,17 @@ class QuantumEncodingLayer(nn.Module):
         readout: Readout = "all",
         noise_level: float = 0.0,
         noise_position: Position = "all",
+        noise_method: NoiseMethod = "density",
+        noise_trajectories: int = 1,
     ) -> None:
         super().__init__()
 
         self.n_qubits = n_qubits
+        self.n_features = n_qubits
         self.n_layers = n_layers
         self.entangler = entangler
         self.readout = readout
         self.n_outputs = len(readout_wires(n_qubits, readout))
-        self.noise_level = noise_level
-        self.noise_position = noise_position
 
         # Build the QNode ─────────────────────────────────────────────────
         qnode = build_encoding_qnode(
@@ -810,20 +873,21 @@ class QuantumEncodingLayer(nn.Module):
         )
 
         # Declare the trainable weight tensor shape for TorchLayer ─────────
-        # Shape: (n_layers, n_qubits, 3)
+        # Shape: variational_weight_shape(entangler, ...)
         #   dim-0: layer index ℓ ∈ {0, …, n_layers-1}
         #   dim-1: qubit  index i ∈ {0, …, n_qubits-1}
-        #   dim-2: Euler angles (φ, θ, ω) for qml.Rot
+        #   dim-2: Euler angles (φ, θ, ω) for qml.Rot; absent for
+        #          "hardware_efficient", whose RY takes one angle
         weight_shapes: dict[str, tuple[int, ...]] = {
-            "weights": (n_layers, n_qubits, 3),
+            "weights": variational_weight_shape(entangler, n_qubits, n_layers),
         }
 
         # Wrap QNode as an nn.Module with registered Parameters ───────────
         self.qlayer = qml.qnn.TorchLayer(qnode, weight_shapes)
 
         # Training-time depolarizing noise (see hqnn_forge.noise) ─────────
-        self._training_noise_qnode = _build_training_noise(
-            qnode, n_qubits, noise_level, noise_position
+        self._init_training_noise(
+            qnode, n_qubits, noise_level, noise_position, noise_method, noise_trajectories
         )
 
     # ------------------------------------------------------------------
@@ -876,9 +940,7 @@ class QuantumEncodingLayer(nn.Module):
         # broadcasted tape or split into one tape per sample is decided in
         # build_encoding_qnode (see _expand_batch_dimension); the outputs and
         # gradients are the same either way.
-        if self.training and self._training_noise_qnode is not None:
-            return run_with_training_noise(self.qlayer, self._training_noise_qnode, x)
-        return self.qlayer(x)
+        return self._run_circuit(x)
 
     # ------------------------------------------------------------------
     # Utility
@@ -890,43 +952,12 @@ class QuantumEncodingLayer(nn.Module):
             options += f", entangler={self.entangler!r}"
         if self.readout != "all":
             options += f", readout={self.readout!r}"
-        if self.noise_level:
-            options += f", noise_level={self.noise_level}, noise_position={self.noise_position!r}"
+        options += self._noise_repr()
         return (
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "
-            f"n_params={self.n_layers * self.n_qubits * 3}{options}"
+            f"n_params={sum(p.numel() for p in self.parameters())}{options}"
         )
-
-
-MAX_TRAINING_NOISE_QUBITS = 6
-"""Above this many qubits, a layer built with ``noise_level > 0`` warns."""
-
-
-def _build_training_noise(
-    qnode: qml.QNode, n_qubits: int, noise_level: float, noise_position: Position
-) -> qml.QNode | None:
-    """
-    The train-mode QNode for ``noise_level > 0``, or ``None`` for the
-    noiseless default.  Shared by every encoding layer; validation happens
-    here so a bad ``noise_level`` fails at construction, and a qubit count
-    past what mixed-state backprop can train in practice warns there too.
-    """
-    validate_noise(
-        noise_level, noise_position, p_name="noise_level", position_name="noise_position"
-    )
-    if noise_level == 0.0:
-        return None
-    if n_qubits > MAX_TRAINING_NOISE_QUBITS:
-        warnings.warn(
-            f"noise_level > 0 trains on default.mixed, which keeps a batch × 4^n density "
-            f"matrix per operation for backprop; at n_qubits={n_qubits} (practical limit "
-            f"about {MAX_TRAINING_NOISE_QUBITS}) a training step may run out of memory.  "
-            f"See hqnn_forge.noise and #229.",
-            RuntimeWarning,
-            stacklevel=3,
-        )
-    return training_noise_qnode(qnode, n_qubits, noise_level, noise_position)
 
 
 # ---------------------------------------------------------------------------
