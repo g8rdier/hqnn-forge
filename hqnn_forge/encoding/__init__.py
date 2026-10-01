@@ -42,7 +42,7 @@ is_circuit_layer        Runtime check for CircuitLayer.
 
 Option types, for annotating calls:
 
-DeviceName              Literal of the supported PennyLane devices.
+DeviceName              Any PennyLane device name (``str``); see ``KNOWN_DEVICES``.
 DiffMethod              Literal of the supported differentiation methods.
 Entangler               Literal of the entangler options.
 Position                Literal of where training noise is inserted (from hqnn_forge.noise).

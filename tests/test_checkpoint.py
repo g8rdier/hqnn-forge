@@ -419,6 +419,8 @@ class TestFailures:
             "noise_position",
             "noise_method",
             "noise_trajectories",
+            "shots",
+            "noise_channel",
         }
 
     def test_dropout_override_needs_no_opt_in_and_keeps_the_weights(self, saved: tuple) -> None:
@@ -668,6 +670,9 @@ CONSTRUCTOR_ARGS = {
         "classical_encoder",
         "noise_method",
         "noise_trajectories",
+        "trainable_input_scaling",
+        "shots",
+        "noise_channel",
     },
     ParallelHybridClassifier: {
         "n_input_features",
@@ -691,6 +696,9 @@ CONSTRUCTOR_ARGS = {
         "classical_encoder",
         "noise_method",
         "noise_trajectories",
+        "trainable_input_scaling",
+        "shots",
+        "noise_channel",
     },
     MulticlassHybridClassifier: {
         "n_input_features",
@@ -716,6 +724,9 @@ CONSTRUCTOR_ARGS = {
         "noise_method",
         "noise_trajectories",
         "classical_encoder",
+        "trainable_input_scaling",
+        "shots",
+        "noise_channel",
     },
     ClassicalBaseline: {
         "n_input_features",

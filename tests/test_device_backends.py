@@ -10,7 +10,6 @@ the accelerated backends when they are installed, and the fallback chain
 from __future__ import annotations
 
 import warnings
-from typing import get_args
 
 import pennylane as qml
 import pytest
@@ -19,6 +18,7 @@ from pennylane.exceptions import AllocationError, DeviceError
 
 from hqnn_forge.encoding import QuantumEncodingLayer
 from hqnn_forge.encoding import angle_embedding as ae
+from hqnn_forge.encoding._common import KNOWN_DEVICES
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.models import HybridBinaryClassifier
 
@@ -84,8 +84,8 @@ class TestAcceleratedBackends:
         )
 
     @pytest.mark.parametrize("name", GPU_BACKENDS)
-    def test_backend_names_are_accepted_by_the_type_alias(self, name: str) -> None:
-        assert name in get_args(ae.DeviceName)
+    def test_backend_names_are_known_to_the_fallback_chain(self, name: str) -> None:
+        assert name in KNOWN_DEVICES
 
 
 # ---------------------------------------------------------------------------
@@ -136,13 +136,20 @@ class TestFallbackChain:
         with pytest.raises(DeviceError):
             ae._resolve_device("default.qubit", 2)
 
-    @pytest.mark.parametrize("name", ["default.qbit", "default.mixed", "no.such.device"])
-    def test_name_outside_device_name_is_refused(self, name: str) -> None:
+    @pytest.mark.parametrize("name", ["default.qbit", "no.such.device"])
+    def test_an_unknown_name_raises_instead_of_falling_back(self, name: str) -> None:
         """A typo must not fail like a missing plugin and run on another simulator."""
         with warnings.catch_warnings():
-            warnings.simplefilter("error", RuntimeWarning)  # refused, not fallen back
-            with pytest.raises(ValueError, match="device_name must be one of"):
-                ae._resolve_device(name, 2)  # type: ignore[arg-type]
+            warnings.simplefilter("error", RuntimeWarning)  # raised, not fallen back
+            with pytest.raises(DeviceError):
+                ae._resolve_device(name, 2)
+
+    def test_any_other_pennylane_device_is_constructed_as_given(self) -> None:
+        # #314: plugin and hardware devices by name.  default.mixed stands in
+        # for one here, as a registered device outside the fallback chain.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            assert ae._resolve_device("default.mixed", 2).name == "default.mixed"
 
     def test_unregistered_plugin_falls_back_without_attribute_error(
         self, monkeypatch: pytest.MonkeyPatch

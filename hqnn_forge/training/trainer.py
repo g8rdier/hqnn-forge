@@ -32,10 +32,12 @@ argmax labels with the multiclass version of the same metric
 from __future__ import annotations
 
 import copy
+import functools
 import itertools
 import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import cast
 
 import torch
 import torch.nn as nn
@@ -184,7 +186,12 @@ def train_model(
         training is unaffected but ``train_loss`` is comparable neither
         across batch sizes nor with the full-batch ``val_loss``.
     optimizer:
-        Optimiser already bound to the parameters to train.
+        Optimiser already bound to the parameters to train.  A gradient-free
+        one (``optimizer.gradient_free``, e.g.
+        :class:`~hqnn_forge.training.SPSA`) gets ``step(closure)`` with a
+        closure that returns the batch loss tensor, and no ``backward`` pass
+        of its own (SPSA's ``gradient_optimizer`` backpropagates that loss to
+        the classical head only).
     X_train, y_train:
         Training split.  For a multiclass model every label of ``y_train``
         and ``y_val`` must be a class index in ``[0, n_classes)`` (integer,
@@ -283,6 +290,17 @@ def train_model(
     if batch_size > 1 and len(bounds) > 2 and bounds[-1] - bounds[-2] == 1:
         del bounds[-2]
 
+    def train_loss(rows: torch.Tensor) -> torch.Tensor:
+        """The loss on the training rows ``rows``, with its autograd graph."""
+        # Labels are checked at the first evaluation, which precedes the first
+        # parameter update on either path.
+        nonlocal unchecked_labels
+        logits = _logits(model, X_train[rows])
+        if unchecked_labels is not None and logits.ndim == 2:
+            _check_class_labels(unchecked_labels, logits.shape[-1])
+            unchecked_labels = None
+        return loss_fn(logits, _target(logits, y_train[rows]))
+
     # The caller's per-submodule modes, not model.train(), which recurses and
     # would unfreeze a submodule the caller put in eval mode (#174).
     with train_mode(model):
@@ -296,15 +314,22 @@ def train_model(
             total, seen = 0.0, 0
             for start, stop in itertools.pairwise(bounds):
                 idx = perm[start:stop]
-                optimizer.zero_grad()
-                logits = _logits(model, X_train[idx])
-                if unchecked_labels is not None and logits.ndim == 2:
-                    _check_class_labels(unchecked_labels, logits.shape[-1])
-                    unchecked_labels = None
-                loss = loss_fn(logits, _target(logits, y_train[idx]))
-                loss.backward()
-                optimizer.step()
-                total += loss.item() * idx.numel()
+                if getattr(optimizer, "gradient_free", False):
+                    # SPSA and the like evaluate the loss themselves, twice, with
+                    # no backward pass of their own (see hqnn_forge.training.spsa).
+                    # The tensor, not a float: SPSA's gradient_optimizer
+                    # backpropagates it to the classical head.  torch types the
+                    # closure as returning float, but its own optimisers (LBFGS)
+                    # take one returning the loss tensor.
+                    closure = functools.partial(train_loss, idx)
+                    batch_loss = float(optimizer.step(cast("Callable[[], float]", closure)))
+                else:
+                    optimizer.zero_grad()
+                    loss = train_loss(idx)
+                    loss.backward()
+                    optimizer.step()
+                    batch_loss = loss.item()
+                total += batch_loss * idx.numel()
                 seen += idx.numel()
             record = EpochRecord(epoch=epoch, train_loss=total / seen)
 
