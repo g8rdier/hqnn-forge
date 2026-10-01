@@ -258,9 +258,11 @@ def test_reliability_diagram_plots_the_reliability_curve() -> None:
     (ax,) = fig.axes
     diagonal, model = ax.get_lines()
     confidence, frequency, counts = reliability_curve(y, prob, 10, "quantile")
-    np.testing.assert_allclose(diagonal.get_xydata(), [[0, 0], [1, 1]])
-    np.testing.assert_allclose(model.get_xdata(), confidence.numpy())
-    np.testing.assert_allclose(model.get_ydata(), frequency.numpy())
+    np.testing.assert_allclose(np.asarray(diagonal.get_xydata(), dtype=float), [[0, 0], [1, 1]])
+    np.testing.assert_allclose(np.asarray(model.get_xdata(), dtype=float), confidence.numpy())
+    np.testing.assert_allclose(np.asarray(model.get_ydata(), dtype=float), frequency.numpy())
     assert [t.get_text() for t in ax.texts] == [str(int(n)) for n in counts.tolist()]
     ece = expected_calibration_error(y, prob, 10, "quantile")
-    assert ax.get_legend().get_texts()[1].get_text() == f"model (ECE {ece:.3f})"
+    legend = ax.get_legend()
+    assert legend is not None
+    assert legend.get_texts()[1].get_text() == f"model (ECE {ece:.3f})"
