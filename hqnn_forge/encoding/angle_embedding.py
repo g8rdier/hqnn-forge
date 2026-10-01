@@ -491,7 +491,13 @@ def _make_angle_embedding_circuit(
        keeps its own wire and each ⟨Z_i⟩ sees x_i after one layer, but the
        same narrow light cone leaves ⟨Z_0⟩ seeing only x_0 (RX) or x_0, x_1
        (RY), and at 5 qubits still missing x_2 … x_4 (RX) or x_4 (RY) after
-       two layers.
+       two layers.  Nor is ``entangler="hardware_efficient"``: its ``CZ``
+       ladder is diagonal, so ⟨Z_i⟩ reaches a neighbour only through the
+       X_i its ``RY`` mixes in, which the ``CZ`` gates dress with Z_{i±1}.
+       After L layers ⟨Z_i⟩ sees x_{i-L} … x_{i+L}, except that under RX
+       (⟨X⟩ = 0) a single layer leaves it seeing x_i alone; under
+       ``readout="first"``, ⟨Z_0⟩ thus sees L + 1 features (one at L = 1
+       under RX).
 
     3. **Per-qubit SU(2) rotation block**:
        ``qml.Rot(φ, θ, ω, wires=i)`` applies Rz(ω)·Ry(θ)·Rz(φ), covering the
@@ -514,7 +520,10 @@ def _make_angle_embedding_circuit(
        and layer 0's ``Rot`` on wires 2 and 3), 17 by autograd.  The weight
        tensor keeps its ``(n_layers, n_qubits, 3)`` shape for every
        ``Rot`` entangler; ``"hardware_efficient"`` has one ``RY`` angle per
-       qubit, shape ``(n_layers, n_qubits)``.
+       qubit, shape ``(n_layers, n_qubits)``.  None of its angles is inert
+       under ``"all"``; under ``"first"`` the k-th layer counted back from
+       the readout (k = 0 the last) leaves max(0, n − 1 − k) dead, 6 of 12
+       at 4 qubits and 3 layers, and ``n_inert_params`` matches autograd.
 
     4. **Measurement**:
        Returns ``[qml.expval(qml.PauliZ(i)) for i in range(n_qubits)]``.
@@ -537,7 +546,6 @@ def _make_angle_embedding_circuit(
         CNOT pairs, no wrap-around, then Rot) or ``"hardware_efficient"`` (a
         CZ ladder, then ``RY``; ``weights`` of shape ``(n_layers, n_qubits)``).
         See :func:`apply_variational_layers`.
-        :func:`apply_variational_layers`.
     readout:
         ``"all"`` (step 4 above) or ``"first"`` (``[⟨Z_0⟩]`` only, as in the
         published SHNN).
