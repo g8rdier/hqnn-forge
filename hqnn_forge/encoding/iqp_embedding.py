@@ -96,13 +96,24 @@ def _make_iqp_embedding_circuit(
         # ── 1. IQP embedding: H → RZ(x_i) → exp(-i x_i x_j Z_i Z_j / 2) ─────
         # This is qml.IQPEmbedding's decomposition written out gate by gate,
         # with the two-qubit MultiRZ replaced by its exact CNOT·RZ·CNOT form.
-        # Written out so that a batched ``inputs`` of shape (batch, n_qubits)
-        # broadcasts through single-parameter gates only.  The QNode wrapper
-        # (expand_batch_dimension) already splits the batch into one tape per
-        # sample for every method except backprop, so lightning.qubit's adjoint
-        # path -- which mis-shapes results for a broadcasted MultiRZ -- never
-        # sees a broadcasted tape here; this form is a safeguard in case the
-        # circuit is ever executed broadcasted without that wrapper.
+        # Noiselessly the two are the same unitary, but the gates written here
+        # are the circuit's physical content, and two things read them
+        # (#136, #230):
+        #
+        # * Noise.  qml.noise.insert (hqnn_forge.noise, training-time noise,
+        #   noisy kernels) puts a channel after every gate on every wire it
+        #   touches: 5 per ZZ term here (2 + 1 + 2), 2 for a template MultiRZ.
+        #   At n_qubits=3, p=0.05 the outputs differ by up to 0.06.
+        # * Resources.  circuit_summary counts 2·C(n, 2)·n_repeats CNOTs here,
+        #   half that as MultiRZ.
+        #
+        # On hardware MultiRZ compiles to CNOT·RZ·CNOT, so this form gives the
+        # realistic noise model and gate count; swapping in qml.IQPEmbedding
+        # would silently change both (tests/test_iqp_embedding.py pins them).
+        # It also broadcasts a batched ``inputs`` of shape (batch, n_qubits)
+        # through single-parameter gates only, a safeguard for lightning's
+        # adjoint path, which mis-shapes a broadcasted MultiRZ, should the
+        # circuit ever run broadcasted without expand_batch_dimension.
         # ``inputs[..., i]`` selects feature i for one sample or a batch alike.
         for _ in range(n_repeats):
             for qubit in range(n_qubits):
@@ -155,9 +166,11 @@ class IQPEncodingLayer(TrainingNoiseMixin, nn.Module):
 
     ``entangler`` and ``readout`` are the options of
     :class:`~hqnn_forge.encoding.QuantumEncodingLayer`; the output width is
-    ``n_outputs`` (``n_qubits``, or 1 with ``readout="first"``).
+    ``n_outputs`` (``n_qubits``, or 1 with ``readout="first"``), and the
+    input width ``n_features`` is ``n_qubits``, one feature per qubit.
     ``noise_level`` / ``noise_position`` / ``noise_method`` /
-    ``noise_trajectories`` add training-time depolarizing noise exactly as in
+    ``noise_trajectories`` add training-time depolarizing noise, and
+    ``shots`` finite-shot sampling, exactly as in
     :class:`~hqnn_forge.encoding.QuantumEncodingLayer`.
     """
 
@@ -179,6 +192,7 @@ class IQPEncodingLayer(TrainingNoiseMixin, nn.Module):
         super().__init__()
 
         self.n_qubits = n_qubits
+        self.n_features = n_qubits
         self.n_layers = n_layers
         self.n_repeats = n_repeats
         self.entangler = entangler
@@ -211,7 +225,6 @@ class IQPEncodingLayer(TrainingNoiseMixin, nn.Module):
             noise_trajectories,
             shots=shots,
         )
-        self.shots = shots
 
     def prepare_inputs(self, x: torch.Tensor) -> torch.Tensor:
         """
