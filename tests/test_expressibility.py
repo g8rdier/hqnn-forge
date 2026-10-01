@@ -12,6 +12,7 @@ against the layer's own states.
 
 from __future__ import annotations
 
+import importlib
 import math
 from typing import Any
 
@@ -36,6 +37,9 @@ from hqnn_forge.models import HybridBinaryClassifier
 from hqnn_forge.noise import apply_depolarizing_noise
 
 CPU: dict[str, Any] = {"device_name": "default.qubit", "diff_method": "backprop"}
+# The module, not the function of the same name that hqnn_forge.diagnostics
+# exports and that shadows it as an attribute.
+expr_module = importlib.import_module("hqnn_forge.diagnostics.expressibility")
 Z = 5.0
 
 
@@ -228,7 +232,71 @@ ENCODERS = [
         lambda: DataReuploadingLayer(n_qubits=3, n_layers=2, trainable_input_scaling=True, **CPU),
         id="reuploading-scaled",
     ),
+    pytest.param(
+        lambda: QuantumEncodingLayer(
+            n_qubits=3, n_layers=2, entangler="strongly_entangling", **CPU
+        ),
+        id="angle-strongly-entangling",
+    ),
 ]
+
+
+@pytest.mark.parametrize("build", ENCODERS)
+@pytest.mark.parametrize("inputs", ["random", "fixed"])
+def test_broadcast_states_are_bit_identical_to_tape_by_tape(
+    build: Any, inputs: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #361: every chunk runs as one broadcast tape; without it (_broadcast
+    # returning None) each tape runs alone.  Same draws, same states, bit for
+    # bit.  40 states in chunks of 32: one full chunk and a partial one.
+    monkeypatch.setattr(expr_module, "_CHUNK", 32)
+    layer = build()
+    width = int(getattr(layer, "n_features", layer.n_qubits))
+    x: Any = "random" if inputs == "random" else torch.linspace(-1.0, 1.0, width)
+
+    def sample() -> torch.Tensor:
+        gen = torch.Generator().manual_seed(3)
+        states, _ = expr_module._sample_states(layer, 40, x, gen, "test")
+        return states
+
+    merged_calls: list[bool] = []
+    real = expr_module._broadcast
+
+    def spy(tapes: Any) -> Any:
+        merged = real(tapes)
+        merged_calls.append(merged is not None)
+        return merged
+
+    monkeypatch.setattr(expr_module, "_broadcast", spy)
+    broadcast = sample()
+    assert merged_calls == [True, True], "every chunk should run broadcast"
+    monkeypatch.setattr(expr_module, "_broadcast", lambda tapes: None)
+    assert torch.equal(broadcast, sample())
+
+
+class TestBroadcastFallback:
+    @staticmethod
+    def _tape(*ops: Any) -> qml.tape.QuantumScript:
+        return qml.tape.QuantumScript(list(ops), [qml.state()])
+
+    def test_differing_structure_is_not_merged(self) -> None:
+        a = self._tape(qml.RX(torch.tensor(0.1), 0), qml.CNOT([0, 1]))
+        b = self._tape(qml.RY(torch.tensor(0.2), 0), qml.CNOT([0, 1]))
+        c = self._tape(qml.RX(torch.tensor(0.2), 1), qml.CNOT([0, 1]))
+        assert expr_module._broadcast([a, b]) is None
+        assert expr_module._broadcast([a, c]) is None
+
+    def test_a_single_or_already_broadcast_tape_is_not_merged(self) -> None:
+        one = self._tape(qml.RX(torch.tensor(0.1), 0))
+        batched = self._tape(qml.RX(torch.tensor([0.1, 0.2]), 0))
+        assert expr_module._broadcast([one]) is None
+        assert expr_module._broadcast([batched, batched]) is None
+
+    def test_equal_structure_is_merged_into_one_batch(self) -> None:
+        tapes = [self._tape(qml.RX(torch.tensor(t), 0), qml.CNOT([0, 1])) for t in (0.1, 0.2, 0.3)]
+        merged = expr_module._broadcast(tapes)
+        assert merged is not None and merged.batch_size == 3
+        torch.testing.assert_close(merged.operations[0].data[0], torch.tensor([0.1, 0.2, 0.3]))
 
 
 @pytest.mark.parametrize("build", ENCODERS)
