@@ -10,7 +10,8 @@ compares, for each encoder, forward and forward+backward time of
 
 * ``split``           -- lightning.qubit / adjoint, one tape per sample (the default until
   #349, and what ``"auto"`` picks above 12 qubits);
-* ``native``          -- lightning.qubit / adjoint on the broadcast tape, no split;
+* ``native``          -- lightning.qubit / adjoint on the broadcast tape, no library split
+                         (the device splits it itself in its preprocessing);
 * ``split+batch_obs`` -- the split, on a lightning device built with ``batch_obs=True``;
 * ``backprop``        -- default.qubit / backprop, which vectorises the batch (what
   ``"auto"``, the default, picks up to 12 qubits);
@@ -24,22 +25,30 @@ peak memory of each, in a fresh interpreter per point, next to the path
 
 Run::
 
-    python examples/benchmark_batching.py            # the comparison table
+    python examples/benchmark_batching.py            # the comparison table, batches 1-1024
+    python examples/benchmark_batching.py --batches 1 2 4 8  # other batch sizes
     python examples/benchmark_batching.py --crossover
 
 Results on one laptop CPU (PennyLane 0.45.1, pennylane-lightning 0.45.0,
-torch 2.14), angle layer, 2 layers, forward+backward:
+torch 2.14), angle layer, 2 layers, 8 qubits, forward / forward+backward:
 
-    batch 128, 8 qubits:  split 643 ms, native 760 ms, backprop 48 ms
+    batch 128:   split  750 /  803 ms, native  501 /  537 ms, backprop 28 /  55 ms
+    batch 1024:  split 4720 / 5357 ms, native 5150 / 5579 ms, backprop 90 / 287 ms
     batch 64, crossover:  qubits   lightning/adjoint   default.qubit/backprop
                                8     0.59 s   +11 MB      0.04 s    +11 MB
                               12     0.57 s   +18 MB      0.30 s   +299 MB
                               14     1.42 s   +22 MB      1.62 s  +1182 MB
                               16    10.1  s   +35 MB      9.8  s  +3161 MB
 
-Timings vary by some tens of percent between runs.  Native broadcasting is
-correct on lightning's adjoint path in this PennyLane version but is not
-faster than the split, so the split stays.  backprop is the fast path for
+Timings are single runs and vary by some tens of percent between runs.  At
+batch 1024, over all encoders at 4 and 8 qubits, native took 1.0-1.3x the
+split's forward+backward time, split+batch_obs 0.8-1.1x, and backprop was
+17-205x faster than the split.  On the lightning paths the forward pass is
+about 90 % of the step, so forward-only gives the same ranking.
+Native broadcasting is correct on lightning's adjoint path in this PennyLane
+version but is not faster than the split: lightning.qubit's own preprocessing
+applies ``broadcast_expand``, so ``native`` is the same per-sample split done
+on the device, and the split stays.  backprop is the fast path for
 batches of small circuits (for a single sample lightning is faster), and loses
 on memory from about 14 qubits, which is why ``"auto"`` switches to lightning
 above 12.
@@ -132,13 +141,17 @@ def _agree(a: list[torch.Tensor], b: list[torch.Tensor]) -> bool:
 
 def compare(qubits: tuple[int, ...], batches: tuple[int, ...]) -> None:
     names = ("split", "native", "split+batch_obs", "backprop")
-    print(f"{'encoder':12s} {'n':>2s} {'batch':>5s}  " + "  ".join(f"{v:>22s}" for v in names))
+    print("ms, forward / forward+backward")
+    print(f"{'encoder':12s} {'n':>2s} {'batch':>5s}  " + "  ".join(f"{v:>26s}" for v in names))
     for name, (cls, extra, per_qubit) in ENCODERS.items():
         # The amplitude layer refuses input gradients outside backprop.
         input_grads = name != "amplitude"
         for n in qubits:
             variants = _variants(cls, n, extra)
             width = n if per_qubit else 2**n
+            # One untimed step per variant, so first-call costs stay out of the table.
+            for layer in variants.values():
+                _run(layer, torch.rand(2, width) + 0.05, input_grads)
             for batch in batches:
                 x = torch.rand(batch, width, generator=torch.Generator().manual_seed(1)) + 0.05
                 reference, *_ = _run(variants["split"], x, input_grads)
@@ -146,8 +159,8 @@ def compare(qubits: tuple[int, ...], batches: tuple[int, ...]) -> None:
                 for layer in variants.values():
                     tensors, fwd, bwd = _run(layer, x, input_grads)
                     flag = "" if _agree(reference, tensors) else " DIFFERS"
-                    cells.append(f"{(fwd + bwd) * 1e3:9.1f} ms{flag:>10s}")
-                print(f"{name:12s} {n:2d} {batch:5d}  " + "  ".join(f"{c:>22s}" for c in cells))
+                    cells.append(f"{fwd * 1e3:8.1f} /{(fwd + bwd) * 1e3:8.1f}{flag:>8s}")
+                print(f"{name:12s} {n:2d} {batch:5d}  " + "  ".join(f"{c:>26s}" for c in cells))
 
 
 _POINT = """
@@ -195,12 +208,19 @@ def main() -> None:
     parser.add_argument(
         "--crossover", action="store_true", help="time a training step by qubit count"
     )
+    parser.add_argument(
+        "--batches",
+        type=int,
+        nargs="+",
+        default=[1, 16, 128, 1024],
+        help="batch sizes for the comparison table",
+    )
     args = parser.parse_args()
     warnings.simplefilter("ignore")
     if args.crossover:
         crossover((8, 10, 12, 14, 16))
     else:
-        compare(qubits=(4, 8), batches=(1, 16, 128))
+        compare(qubits=(4, 8), batches=tuple(args.batches))
 
 
 if __name__ == "__main__":
