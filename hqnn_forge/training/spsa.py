@@ -5,8 +5,9 @@ Simultaneous perturbation stochastic approximation (Spall 1992) as a
 ``torch.optim.Optimizer``, for training on shot-based devices and hardware.
 
 With finite shots (#314) the only gradient methods left are the shift and
-difference rules, which cost two circuit evaluations *per trainable
-parameter* per sample: 96 per sample per step at the library defaults.  SPSA
+difference rules, which cost two circuit evaluations per circuit weight and
+per circuit input per sample, besides the forward pass: 113 per sample per
+step at the library defaults (see *When it pays*).  SPSA
 estimates the whole gradient from two evaluations of the loss, whatever the
 number of parameters.  Each step draws a random direction ``Δ`` with
 independent ``±1`` entries and sets::
@@ -36,11 +37,13 @@ small exact simulations.
 
 Common random numbers
 ---------------------
-Both loss evaluations of a step start from the same torch RNG state, so a
-dropout mask or a trajectory-noise draw (``noise_method="trajectories"``) is the
-same on both sides of the difference and cancels, instead of adding its own
-variance to ``ĝ``.  The shot sampling of a device uses the device's own RNG
-and is not synchronised.
+Both loss evaluations of a step start from the same torch RNG state (the
+CPU's and, once CUDA is initialised, every CUDA device's), so a dropout mask
+or a trajectory-noise draw (``noise_method="trajectories"``) is the same on
+both sides of the difference and cancels, instead of adding its own variance
+to ``ĝ``.  The shot sampling of a device uses the device's own RNG and is not
+synchronised.  Module buffers are not restored either: a ``BatchNorm`` layer
+updates its running statistics in both evaluations, at ``θ ± c_k Δ`` (#424).
 
 Usage
 -----
@@ -79,7 +82,7 @@ gradients at ``θ ± c_k Δ`` is the head's gradient at ``θ`` up to ``O(c_k²)`
 It pays: on the 2-qubit, 1-layer classifier above (full batch of 64, 1000
 steps, mean over 3 seeds), SPSA on all 19 parameters reached a loss of 0.29,
 SPSA on the 16 before the head with Adam on its 3 reached 0.10; on 4 qubits
-and 2 layers (500 steps) 0.37 against 0.10.
+and 2 layers (500 steps) 0.39 against 0.05.
 
 Keep the classical *encoder*, which feeds the circuit, with SPSA: a gradient
 optimiser there would need the encoder's gradient, which runs through the
@@ -101,9 +104,25 @@ from typing import Any
 
 import torch
 
+from hqnn_forge.utils.rng import rng_state, set_rng_state
+
 __all__ = ["SPSA"]
 
 Closure = Callable[[], torch.Tensor | float]
+
+
+def _check_settings(settings: dict[str, Any]) -> None:
+    """Raise unless the gains of a group (or the defaults) are valid."""
+    lr, perturbation = settings["lr"], settings["perturbation"]
+    alpha, gamma, stability = settings["alpha"], settings["gamma"], settings["stability"]
+    if lr <= 0:
+        raise ValueError(f"lr must be > 0; got {lr}.")
+    if perturbation <= 0:
+        raise ValueError(f"perturbation must be > 0; got {perturbation}.")
+    if alpha <= 0 or gamma <= 0 or stability < 0:
+        raise ValueError(
+            f"alpha and gamma must be > 0 and stability ≥ 0; got {alpha}, {gamma}, {stability}."
+        )
 
 
 class SPSA(torch.optim.Optimizer):
@@ -114,7 +133,9 @@ class SPSA(torch.optim.Optimizer):
     ----------
     params:
         Parameters or parameter groups, as for any ``torch.optim.Optimizer``.
-        A group may override ``lr`` and ``perturbation``.
+        A group may override any of the gain settings below; each group is
+        checked as the defaults are, also one added later by
+        ``add_param_group``.
     lr:
         ``a``, the numerator of the step-size sequence.  Default: 0.1.
     perturbation:
@@ -128,8 +149,11 @@ class SPSA(torch.optim.Optimizer):
         ``A`` in ``a_k``; about 10 % of the expected number of steps damps the
         first, largest steps.  Default: 0.
     generator:
-        Source of the ``±1`` directions.  Default: a fresh generator seeded
-        with 0, so runs are reproducible.
+        Source of the ``±1`` directions, a CPU generator (the directions are
+        moved to each parameter's device).  Default: a fresh generator
+        seeded with ``torch.initial_seed()``, so a run is reproducible under
+        ``torch.manual_seed`` and runs under different seeds draw different
+        directions; building the optimiser draws nothing from the global RNG.
     gradient_optimizer:
         An optimiser over parameters that act after the circuit (see *The
         classical head* above), disjoint from ``params``.  Each ``step``
@@ -159,14 +183,6 @@ class SPSA(torch.optim.Optimizer):
         generator: torch.Generator | None = None,
         gradient_optimizer: torch.optim.Optimizer | None = None,
     ) -> None:
-        if lr <= 0:
-            raise ValueError(f"lr must be > 0; got {lr}.")
-        if perturbation <= 0:
-            raise ValueError(f"perturbation must be > 0; got {perturbation}.")
-        if alpha <= 0 or gamma <= 0 or stability < 0:
-            raise ValueError(
-                f"alpha and gamma must be > 0 and stability ≥ 0; got {alpha}, {gamma}, {stability}."
-            )
         defaults = {
             "lr": lr,
             "perturbation": perturbation,
@@ -174,8 +190,13 @@ class SPSA(torch.optim.Optimizer):
             "gamma": gamma,
             "stability": stability,
         }
+        _check_settings(defaults)
         super().__init__(params, defaults)
-        self.generator = generator if generator is not None else torch.Generator().manual_seed(0)
+        self.generator = (
+            generator
+            if generator is not None
+            else torch.Generator().manual_seed(torch.initial_seed())
+        )
         self.k = 0
         self.gradient_optimizer = gradient_optimizer
         if gradient_optimizer is not None:
@@ -186,6 +207,12 @@ class SPSA(torch.optim.Optimizer):
                 raise ValueError(
                     "gradient_optimizer shares parameters with SPSA; give each to one of them."
                 )
+
+    def add_param_group(self, param_group: dict[str, Any]) -> None:
+        # Also reached from __init__, once per group, so a group's own lr or
+        # perturbation is checked like the constructor's.
+        _check_settings({**self.defaults, **param_group})
+        super().add_param_group(param_group)
 
     def _gains(self, group: dict[str, Any]) -> tuple[float, float]:
         a = group["lr"] / (self.k + 1 + group["stability"]) ** group["alpha"]
@@ -213,7 +240,10 @@ class SPSA(torch.optim.Optimizer):
         params = self._params()
         exact = exact or []
         deltas = [
-            torch.randint(0, 2, p.shape, generator=self.generator).to(p.dtype).mul_(2).sub_(1)
+            torch.randint(0, 2, p.shape, generator=self.generator)
+            .to(device=p.device, dtype=p.dtype)
+            .mul_(2)
+            .sub_(1)
             for p, _ in params
         ]
         steps = [self._gains(g)[1] * d for (_, g), d in zip(params, deltas, strict=True)]
@@ -240,12 +270,12 @@ class SPSA(torch.optim.Optimizer):
                     grads[i] = g / 2 if prev is None else prev + g / 2
             return float(loss.detach())
 
-        rng = torch.get_rng_state()
+        rng = rng_state()
         try:
             for (p, _), s in zip(params, steps, strict=True):
                 p.add_(s)
             plus = evaluate()
-            torch.set_rng_state(rng)  # the same dropout / noise draws on both sides
+            set_rng_state(rng)  # the same dropout / noise draws on both sides
             for (p, _), orig, s in zip(params, originals, steps, strict=True):
                 p.copy_(orig - s)
             minus = evaluate()

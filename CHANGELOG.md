@@ -223,7 +223,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `shots` yet (#411) (#334)
 - `hqnn_forge.training.SPSA`: simultaneous perturbation stochastic approximation (Spall 1992)
   as a `torch.optim.Optimizer`, two loss evaluations per step whatever the parameter count,
-  with Spall's gain schedules and common random numbers for the torch RNG. `train_model` calls
+  with Spall's gain schedules and common random numbers for the torch CPU and CUDA RNGs. Its
+  default direction generator is seeded from `torch.initial_seed()`, so runs under different
+  `torch.manual_seed` seeds draw different directions. `train_model` calls
   a gradient-free optimiser's `step(closure)` without a backward pass. `gradient_optimizer=`
   trains the parameters after the circuit (the classical head) with a gradient optimiser such
   as Adam from the same two evaluations, at no extra circuit executions (#335)
