@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- An asymmetric readout error `(p01, p10)`, applied exactly to each ⟨Z⟩ as
+  `(1 − p01 − p10)⟨Z⟩ + (p10 − p01)`: `apply_readout_error` post hoc,
+  `noise_sweep(..., channel="readout")`, and `readout_error=` on the layers and classifiers for
+  training (weight-safe in checkpoints) (#358)
 - `noise_method="trajectories"` for amplitude and phase damping: phase damping is sampled as the
   phase flip it equals, amplitude damping by weighted Kraus branches whose mean is the density
   channel exactly; the latter needs backprop or parameter-shift and exact expectation values

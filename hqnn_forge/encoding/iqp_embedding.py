@@ -176,6 +176,7 @@ class IQPEncodingLayer(TrainingNoiseMixin, nn.Module):
         noise_trajectories: int = 1,
         shots: int | None = None,
         noise_channel: Channel = "depolarizing",
+        readout_error: tuple[float, float] | None = None,
     ) -> None:
         super().__init__()
 
@@ -212,6 +213,7 @@ class IQPEncodingLayer(TrainingNoiseMixin, nn.Module):
             noise_trajectories,
             shots=shots,
             noise_channel=noise_channel,
+            readout_error=readout_error,
         )
         self.shots = shots
 

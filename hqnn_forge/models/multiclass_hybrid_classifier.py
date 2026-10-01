@@ -73,7 +73,7 @@ strategy:
 use_classical_encoder, dropout_p, device_name, diff_method, init_strategy,
 encoding_type, embedding_rotation, entangler, readout, encoder_activation,
 init_std, noise_level, noise_position, noise_method, noise_trajectories,
-trainable_input_scaling, init_seed, classical_encoder, shots, noise_channel:
+trainable_input_scaling, init_seed, classical_encoder, shots, noise_channel, readout_error:
     As for :class:`~hqnn_forge.models.HybridBinaryClassifier`.
 """
 
@@ -120,7 +120,7 @@ class MulticlassHybridClassifier(QuantumTrunk, ClassifierBase):
     use_classical_encoder, dropout_p, device_name, diff_method,
     init_strategy, encoding_type, embedding_rotation, entangler, readout,
     encoder_activation, init_std, noise_level, noise_position, noise_method,
-    noise_trajectories, classical_encoder, trainable_input_scaling, shots, noise_channel:
+    noise_trajectories, classical_encoder, trainable_input_scaling, shots, noise_channel, readout_error:
         The trunk's options, exactly as for
         :class:`~hqnn_forge.models.HybridBinaryClassifier`.  With
         ``readout="first"`` every class head reads ⟨Z_0⟩ alone.
@@ -180,6 +180,7 @@ class MulticlassHybridClassifier(QuantumTrunk, ClassifierBase):
         trainable_input_scaling: bool = False,
         shots: int | None = None,
         noise_channel: Channel = "depolarizing",
+        readout_error: tuple[float, float] | None = None,
     ) -> None:
         super().__init__()
         init_seed = as_seed(init_seed)
@@ -215,6 +216,7 @@ class MulticlassHybridClassifier(QuantumTrunk, ClassifierBase):
                 trainable_input_scaling=trainable_input_scaling,
                 shots=shots,
                 noise_channel=noise_channel,
+                readout_error=readout_error,
             )
 
             if n_classes < 2:
@@ -250,6 +252,7 @@ class MulticlassHybridClassifier(QuantumTrunk, ClassifierBase):
                 trainable_input_scaling=trainable_input_scaling,
                 shots=shots,
                 noise_channel=noise_channel,
+                readout_error=readout_error,
             )
 
             # ── Class heads: one row per class ────────────────────────────────
