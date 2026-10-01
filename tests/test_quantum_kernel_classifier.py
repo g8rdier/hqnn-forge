@@ -22,6 +22,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 from sklearn.utils.estimator_checks import estimator_checks_generator
 
+from hqnn_forge import kernels
 from hqnn_forge.kernels import quantum_kernel_matrix
 from hqnn_forge.sklearn import QuantumKernelClassifier
 
@@ -43,6 +44,8 @@ def _data(n: int = 40, d: int = 3, seed: int = 0) -> tuple[np.ndarray, np.ndarra
         ),
         pytest.param({"encoding": "amplitude"}, id="amplitude"),
         pytest.param({"noise_level": 0.1}, id="noisy"),
+        # svc_ is then the calibrator's full-data refit, which must equal the plain SVM.
+        pytest.param({"probability": True}, id="probability"),
     ],
 )
 def test_predictions_equal_a_hand_built_precomputed_svc(params: dict[str, Any]) -> None:
@@ -148,7 +151,14 @@ class TestValidation:
             ({"n_qubits": 2}, "one feature per qubit"),
             ({"encoding": "kernel"}, "encoding must be"),
             ({"trainable_input_scaling": True}, "'reuploading' only"),
+            ({"encoding": "amplitude", "trainable_input_scaling": True}, "'reuploading' only"),
             ({"align_steps": -1}, "align_steps must be >= 0"),
+            ({"align_steps": 2}, "only changes the kernel of encoding='reuploading'"),
+            ({"encoding": "iqp", "align_steps": 2}, "only changes the kernel"),
+            (
+                {"encoding": "reuploading", "align_steps": 2, "noise_level": 0.1},
+                "cannot be combined with noise_level",
+            ),
         ],
     )
     def test_bad_parameters_fail_in_fit(self, params: dict[str, Any], match: str) -> None:
@@ -156,6 +166,36 @@ class TestValidation:
         est = QuantumKernelClassifier(**params)  # construction never validates
         with pytest.raises(ValueError, match=match):
             est.fit(X, y)
+
+    @pytest.mark.parametrize("encoding", ["angle", "iqp", "reuploading", "amplitude"])
+    def test_one_feature_is_rejected(self, encoding: str) -> None:
+        # Amplitude encoding would normalise every sample to ±|0⟩: a kernel of ones.
+        X, y = _data()
+        with pytest.raises(ValueError, match="at least two features; got n_features = 1"):
+            QuantumKernelClassifier(encoding=encoding).fit(X[:, :1], y)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "params, labels, match",
+        [
+            ({"probability": True}, np.r_[np.zeros(39, int), 1], "two samples of every class"),
+            ({}, np.linspace(0, 1, 40), "Unknown label type"),
+        ],
+    )
+    def test_label_checks_run_before_any_simulation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        params: dict[str, Any],
+        labels: np.ndarray,
+        match: str,
+    ) -> None:
+        def no_simulation(*args: Any, **kwargs: Any) -> None:
+            raise AssertionError("simulated before validating the labels")
+
+        monkeypatch.setattr(kernels, "encoded_states", no_simulation)
+        monkeypatch.setattr(kernels, "encoded_density_matrices", no_simulation)
+        X, _ = _data()
+        with pytest.raises(ValueError, match=match):
+            QuantumKernelClassifier(**params).fit(X, labels)
 
     def test_width_is_checked_at_predict(self) -> None:
         X, y = _data()
@@ -235,3 +275,46 @@ def test_seeded_fit_leaves_the_global_rng_alone() -> None:
     seed: Any = np.int64(3)  # scikit-learn tools pass NumPy integers
     QuantumKernelClassifier(encoding="reuploading", align_steps=2, random_state=seed).fit(X, y)
     assert torch.equal(torch.random.get_rng_state(), state)
+
+
+@pytest.mark.parametrize(
+    "fitted, change",
+    [
+        pytest.param({}, {"noise_level": 0.1}, id="noise-on"),
+        pytest.param({"noise_level": 0.1}, {"noise_level": 0.2}, id="noise-stronger"),
+        pytest.param({"noise_level": 0.1}, {"noise_position": "end"}, id="noise-position"),
+    ],
+)
+def test_set_params_after_fit_does_not_change_predictions(
+    fitted: dict[str, Any], change: dict[str, Any]
+) -> None:
+    X, y = _data()
+    Xt, _ = _data(10, seed=6)
+    est = QuantumKernelClassifier(**fitted, random_state=0).fit(X, y)
+    before = est.decision_function(Xt)
+    est.set_params(**change)  # takes effect at the next fit, as in any estimator
+    np.testing.assert_array_equal(est.decision_function(Xt), before)
+
+
+def test_pickle_rebuilds_the_fitted_layer_not_the_current_parameters() -> None:
+    X, y = _data()
+    Xt, _ = _data(10, seed=7)
+    est = QuantumKernelClassifier(encoding="reuploading", random_state=0).fit(X, y)
+    before = est.decision_function(Xt)
+    # IQP has the same weight shapes, so load_state_dict alone would not notice.
+    est.set_params(encoding="iqp")
+    loaded = pickle.loads(pickle.dumps(est))
+    assert type(loaded.layer_) is type(est.layer_)
+    np.testing.assert_array_equal(loaded.decision_function(Xt), before)
+
+
+def test_failed_refit_keeps_the_previous_model() -> None:
+    X, y = _data()
+    est = QuantumKernelClassifier(encoding="amplitude", random_state=0).fit(X, y)
+    layer, svc, before = est.layer_, est.svc_, est.decision_function(X)
+    X_bad = X.copy()
+    X_bad[0] = 0.0  # amplitude encoding cannot normalise an all-zero sample
+    with pytest.raises(ValueError):
+        est.set_params(random_state=1).fit(X_bad, y)
+    assert est.layer_ is layer and est.svc_ is svc
+    np.testing.assert_array_equal(est.decision_function(X), before)

@@ -47,7 +47,7 @@ try:
     from sklearn.calibration import CalibratedClassifierCV
     from sklearn.svm import SVC
     from sklearn.utils.metaestimators import available_if
-    from sklearn.utils.multiclass import unique_labels
+    from sklearn.utils.multiclass import check_classification_targets, unique_labels
     from sklearn.utils.validation import check_is_fitted, validate_data
 except ImportError as exc:  # pragma: no cover - exercised only without scikit-learn
     raise ImportError(
@@ -486,8 +486,8 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
     encoding:
         ``"angle"`` (default), ``"iqp"``, ``"reuploading"`` or ``"amplitude"``.
     n_qubits:
-        Default: one qubit per feature, or ``ceil(log2(n_features))`` for
-        ``"amplitude"`` (whose features are zero-padded to ``2**n_qubits``).
+        Default: one qubit per feature, or ``max(2, ceil(log2(n_features)))``
+        for ``"amplitude"`` (whose features are zero-padded to ``2**n_qubits``).
         With one feature per qubit it must equal ``n_features``.
     n_layers:
         Variational layers of the encoding layer.  For the single-upload
@@ -497,9 +497,11 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
     trainable_input_scaling:
         ``"reuploading"`` only: a trainable scale per upload.  Default: False.
     align_steps, align_lr, align_subset_size:
-        With ``align_steps > 0`` (two classes only), train the layer by
-        kernel-target alignment before fitting the SVM
-        (:func:`hqnn_forge.kernels.train_kernel_alignment`).  Default: 0.
+        With ``align_steps > 0``, train the layer by kernel-target alignment
+        before fitting the SVM (:func:`hqnn_forge.kernels.train_kernel_alignment`).
+        Only for ``"reuploading"`` (the single-upload ansatz cancels in the
+        kernel, so there is nothing to train), two classes and
+        ``noise_level=0`` (alignment trains the noiseless kernel).  Default: 0.
     noise_level, noise_position:
         Estimate the kernel under depolarising noise from density matrices;
         ``0`` (default) is the exact state-vector kernel.
@@ -565,57 +567,74 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
         self.random_state = random_state
 
     # ------------------------------------------------------------------
-    def _build_layer(self, n_features: int) -> torch.nn.Module:
+    # Everything the fitted model depends on is copied into _fit_config at fit,
+    # so a set_params after fit cannot change how predict encodes new samples
+    # or how unpickling rebuilds layer_.
+    def _config(self) -> dict[str, Any]:
+        return {
+            "encoding": self.encoding,
+            "n_qubits": self.n_qubits,
+            "n_layers": self.n_layers,
+            "trainable_input_scaling": self.trainable_input_scaling,
+            "noise_level": self.noise_level,
+            "noise_position": self.noise_position,
+            "batch_size": self.batch_size,
+        }
+
+    @staticmethod
+    def _build_layer(config: dict[str, Any], n_features: int) -> torch.nn.Module:
+        encoding = config["encoding"]
+        if encoding not in ("angle", "iqp", "reuploading", "amplitude"):
+            raise ValueError(
+                f"encoding must be 'angle', 'iqp', 'reuploading' or 'amplitude'; got {encoding!r}."
+            )
+        if config["trainable_input_scaling"] and encoding != "reuploading":
+            raise ValueError("trainable_input_scaling applies to encoding='reuploading' only.")
         common: dict[str, Any] = dict(
-            n_layers=self.n_layers, device_name="default.qubit", diff_method="backprop"
+            n_layers=config["n_layers"], device_name="default.qubit", diff_method="backprop"
         )
-        if self.encoding == "amplitude":
+        if encoding == "amplitude":
             n_qubits = (
-                self.n_qubits
-                if self.n_qubits is not None
+                config["n_qubits"]
+                if config["n_qubits"] is not None
                 else max(2, math.ceil(math.log2(n_features)))
             )
             return AmplitudeEncodingLayer(n_qubits=n_qubits, n_features=n_features, **common)
-        if self.encoding not in ("angle", "iqp", "reuploading"):
-            raise ValueError(
-                f"encoding must be 'angle', 'iqp', 'reuploading' or 'amplitude'; "
-                f"got {self.encoding!r}."
-            )
-        n_qubits = self.n_qubits if self.n_qubits is not None else n_features
+        n_qubits = config["n_qubits"] if config["n_qubits"] is not None else n_features
         if n_qubits != n_features:
             raise ValueError(
-                f"encoding={self.encoding!r} takes one feature per qubit: n_qubits={n_qubits} "
+                f"encoding={encoding!r} takes one feature per qubit: n_qubits={n_qubits} "
                 f"but X has {n_features} features.  Reduce the features (e.g. PCA) or use "
                 f"encoding='amplitude'."
             )
-        if self.trainable_input_scaling and self.encoding != "reuploading":
-            raise ValueError("trainable_input_scaling applies to encoding='reuploading' only.")
-        if self.encoding == "angle":
+        if encoding == "angle":
             return QuantumEncodingLayer(n_qubits=n_qubits, **common)
-        if self.encoding == "iqp":
+        if encoding == "iqp":
             return IQPEncodingLayer(n_qubits=n_qubits, **common)
         return DataReuploadingLayer(
-            n_qubits=n_qubits, trainable_input_scaling=self.trainable_input_scaling, **common
+            n_qubits=n_qubits, trainable_input_scaling=config["trainable_input_scaling"], **common
         )
 
-    def _encode(self, X: torch.Tensor) -> torch.Tensor:
-        """States, or density matrices under noise, of ``X`` through ``layer_``."""
-        if self.noise_level:
+    @staticmethod
+    def _encode(X: torch.Tensor, layer: torch.nn.Module, config: dict[str, Any]) -> torch.Tensor:
+        """States, or density matrices under noise, of ``X`` through ``layer``."""
+        if config["noise_level"]:
             return kernels.encoded_density_matrices(
                 X,
-                self.layer_,
-                noise_level=self.noise_level,
-                noise_position=self.noise_position,  # type: ignore[arg-type]
-                batch_size=self.batch_size,
+                layer,
+                noise_level=config["noise_level"],
+                noise_position=config["noise_position"],
+                batch_size=config["batch_size"],
             )
-        return kernels.encoded_states(X, self.layer_, batch_size=self.batch_size)
+        return kernels.encoded_states(X, layer, batch_size=config["batch_size"])
 
+    @staticmethod
     def _kernel(
-        self, encoded_x: torch.Tensor, encoded_y: torch.Tensor | None = None
+        config: dict[str, Any], encoded_x: torch.Tensor, encoded_y: torch.Tensor | None = None
     ) -> np.ndarray:
         K = (
             kernels.kernel_from_density_matrices(encoded_x, encoded_y)
-            if self.noise_level
+            if config["noise_level"]
             else kernels.kernel_from_states(encoded_x, encoded_y)
         )
         return K.detach().numpy()
@@ -624,29 +643,53 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
     def fit(self, X: npt.ArrayLike, y: npt.ArrayLike) -> QuantumKernelClassifier:
         """Build (and optionally align) the layer, then fit the SVM on the Gram matrix."""
         X_arr, y_arr = validate_data(self, X, y, dtype=np.float64)
-        classes = unique_labels(y_arr)
+        # Every check that needs no simulation runs before the first circuit.
+        check_classification_targets(y_arr)
+        classes, counts = np.unique(y_arr, return_counts=True)
         if classes.size < 2:
             # "1 class" is the wording scikit-learn's conformance checks match on.
             raise ValueError(
                 f"QuantumKernelClassifier needs at least two classes; got {classes.size} class."
             )
+        if self.probability and counts.min() < 2:
+            raise ValueError(
+                "probability=True calibrates on cross-validated predictions and needs "
+                "at least two samples of every class."
+            )
         if self.align_steps < 0:
             raise ValueError(f"align_steps must be >= 0; got {self.align_steps}.")
-        if self.align_steps and classes.size != 2:
+        if self.align_steps:
+            if classes.size != 2:
+                raise ValueError(
+                    f"kernel-target alignment is defined for two classes; got {classes.size}."
+                )
+            if self.encoding != "reuploading":
+                # The single-upload ansatz cancels in the fidelity kernel, so the
+                # alignment gradient is zero (see kernels.train_kernel_alignment).
+                raise ValueError(
+                    f"kernel-target alignment only changes the kernel of "
+                    f"encoding='reuploading'; got encoding={self.encoding!r}."
+                )
+            if self.noise_level:
+                raise ValueError(
+                    "kernel-target alignment trains the noiseless kernel, so it cannot be "
+                    "combined with noise_level > 0 yet."
+                )
+        if X_arr.shape[1] < 2:
+            # "n_features = 1" is the wording scikit-learn's conformance checks match on.
             raise ValueError(
-                f"kernel-target alignment is defined for two classes; got {classes.size}."
+                f"QuantumKernelClassifier needs at least two features; got n_features = "
+                f"{X_arr.shape[1]}.  Angle, IQP and re-uploading need one qubit per feature "
+                f"and two qubits at least, and amplitude encoding normalises a single "
+                f"feature to ±|0⟩, a constant kernel."
             )
-        if X_arr.shape[1] < 2 and self.encoding != "amplitude":
-            raise ValueError(
-                f"encoding={self.encoding!r} needs at least two qubits, one per feature; "
-                f"got n_features = {X_arr.shape[1]}.  Use encoding='amplitude'."
-            )
+        config = self._config()
         # A NumPy integer, as scikit-learn tools pass, is taken as the int it is.
         # The layer is initialised inside seeded_rng, so a seeded fit leaves the
         # caller's global torch RNG exactly where it was (#175).
         seed = as_seed(self.random_state, "random_state")
         with seeded_rng(seed):
-            layer = self._build_layer(X_arr.shape[1])
+            layer = self._build_layer(config, X_arr.shape[1])
         X_t = torch.tensor(X_arr)
         history: list[float] = []
         if self.align_steps:
@@ -661,9 +704,8 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
                 subset_size=self.align_subset_size,
                 generator=generator,
             )
-        self.layer_ = layer
-        encoded = self._encode(X_t)
-        K = self._kernel(encoded)
+        encoded = self._encode(X_t, layer, config)
+        K = self._kernel(config, encoded)
 
         def svm() -> SVC:
             return SVC(
@@ -673,19 +715,21 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
                 random_state=seed,
             )
 
-        svc = svm().fit(K, y_arr)
         calibrator = None
         if self.probability:
-            smallest = int(np.unique(y_arr, return_counts=True)[1].min())
-            if smallest < 2:
-                raise ValueError(
-                    "probability=True calibrates on cross-validated predictions and needs "
-                    "at least two samples of every class."
-                )
             calibrator = CalibratedClassifierCV(
-                svm(), method="sigmoid", ensemble=False, cv=min(5, smallest)
+                svm(), method="sigmoid", ensemble=False, cv=min(5, int(counts.min()))
             ).fit(K, y_arr)
-        # Published together, after everything that can fail.
+            # With ensemble=False the calibrator refits a clone of svm() on all of
+            # K, which is exactly the plain SVM; reuse it rather than fit it twice.
+            svc = calibrator.calibrated_classifiers_[0].estimator
+        else:
+            svc = svm().fit(K, y_arr)
+        # Published together, after everything that can fail.  (validate_data has
+        # already reset n_features_in_, so after a failed refit the previous model
+        # rejects inputs by width instead of mixing two feature maps.)
+        self._fit_config = config
+        self.layer_ = layer
         self._train_encoded = encoded
         self.svc_ = svc
         self.calibrator_ = calibrator
@@ -696,7 +740,8 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
     def _test_kernel(self, X: npt.ArrayLike) -> np.ndarray:
         check_is_fitted(self, "svc_")
         X_arr = validate_data(self, X, dtype=np.float64, reset=False)
-        return self._kernel(self._encode(torch.tensor(X_arr)), self._train_encoded)
+        encoded = self._encode(torch.tensor(X_arr), self.layer_, self._fit_config)
+        return self._kernel(self._fit_config, encoded, self._train_encoded)
 
     # The kernel is computed before svc_ is touched, so an unfitted estimator
     # raises NotFittedError (from check_is_fitted), not AttributeError.
@@ -719,7 +764,7 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
     # ------------------------------------------------------------------
     # Pickling: layer_ holds a PennyLane QNode built around a local function,
     # which pickle cannot serialise.  It is stored as its weights and rebuilt
-    # from the estimator's own parameters on load.
+    # from the configuration saved at fit on load.
     def __getstate__(self) -> dict[str, Any]:
         state = dict(super().__getstate__())
         layer = state.pop("layer_", None)
@@ -735,7 +780,7 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
             # Construction draws initial weights that load_state_dict then
             # overwrites; fork the RNG so unpickling leaves the caller's alone.
             with torch.random.fork_rng(devices=[]):
-                layer = self._build_layer(self.n_features_in_)
+                layer = self._build_layer(self._fit_config, self.n_features_in_)
             layer.load_state_dict(saved)
             self.layer_ = layer
 
