@@ -40,8 +40,8 @@ error; keeping the step in ``prepare_inputs`` is what makes the replay
 faithful.
 
 The one sanctioned difference between ``forward(x)`` and
-``qlayer(prepare_inputs(x))`` is training-time noise: the angle and IQP layers
-built with ``noise_level > 0`` run a noisy circuit in ``train()`` mode.  In
+``qlayer(prepare_inputs(x))`` is training-time noise: an encoding layer built
+with ``noise_level > 0`` runs a noisy circuit in ``train()`` mode.  In
 ``eval()`` mode, or without training noise, the two are identical.
 
 Why not ``isinstance``
