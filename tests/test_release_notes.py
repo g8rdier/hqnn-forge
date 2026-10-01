@@ -8,6 +8,7 @@ repository's own CHANGELOG.md staying in the shape it parses.
 from __future__ import annotations
 
 import importlib.util
+import re
 import textwrap
 from pathlib import Path
 from types import ModuleType
@@ -28,6 +29,8 @@ def _load() -> ModuleType:
 
 
 release_notes = _load()
+
+PR_REFERENCE = re.compile(r"\(#\d+(?:, #\d+)*\)$")
 
 CHANGELOG = textwrap.dedent(
     """\
@@ -130,8 +133,9 @@ class TestThisRepository:
         assert section is not None and "### Added" in section
 
     def test_every_changelog_entry_names_its_pull_request(self) -> None:
-        # The convention CONTRIBUTING asks for: an entry ends with "(#<PR>)",
-        # possibly after other references, so a release's notes link back.
+        # The convention CONTRIBUTING asks for: an entry ends with "(#<PR>)", or
+        # "(#<PR>, #<PR>)" for an entry several PRs built, so a release's notes
+        # link back. A "#" elsewhere in the entry does not count.
         text = (ROOT / "CHANGELOG.md").read_text()
         entries = []
         for line in text.splitlines():
@@ -140,5 +144,17 @@ class TestThisRepository:
             elif line.startswith("  ") and entries:
                 entries[-1] += " " + line.strip()
         assert entries
-        unreferenced = [e for e in entries if not e.rstrip().endswith(")") or "#" not in e]
+        unreferenced = [e for e in entries if not PR_REFERENCE.search(e.rstrip())]
         assert not unreferenced, unreferenced
+
+    def test_the_readme_links_work_on_pypi(self) -> None:
+        # PyPI renders README.md as the project description without the
+        # repository beside it, so a relative link or image there is broken.
+        readme = (ROOT / "README.md").read_text()
+        text = re.sub(r"^```.*?^```", "", readme, flags=re.DOTALL | re.MULTILINE)
+        targets = re.findall(r"\]\(([^)\s]+)", text)
+        targets += re.findall(r"^\[[^\]]+\]:\s*(\S+)", text, flags=re.MULTILINE)
+        targets += re.findall(r"\b(?:src|href)=\"([^\"]+)\"", text)
+        assert targets
+        relative = [t for t in targets if not re.match(r"https?://|#|mailto:", t)]
+        assert not relative, relative

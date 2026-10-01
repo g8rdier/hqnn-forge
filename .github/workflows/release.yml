@@ -15,8 +15,9 @@ name: Release
 # "pypi" MUST require the owner as reviewer and allow only "v*" tags: a job
 # naming an environment that does not exist creates it without protection.
 #
-# A manual run (workflow_dispatch) is a dry run: it builds the current commit
-# and uploads it to TestPyPI only.
+# A manual run (workflow_dispatch) is a dry run of main: it builds and tests
+# main's head and uploads it to TestPyPI only. It refuses any other ref, so a
+# feature branch never reaches TestPyPI under a version main will use.
 
 on:
   push:
@@ -38,6 +39,11 @@ jobs:
       uses: astral-sh/setup-uv@v10.1.0
       with:
         python-version: "3.12"
+    - name: Check a dry run is of main
+      if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+      run: |
+        echo "::error::a dry run builds main; this run is on $GITHUB_REF."
+        exit 1
     - name: Check the tag against pyproject.toml and CHANGELOG.md
       if: github.event_name == 'push'
       run: python .github/scripts/release_notes.py check "$GITHUB_REF_NAME"
@@ -101,7 +107,9 @@ jobs:
       with:
         name: dist
         path: dist/
-    - uses: pypa/gh-action-pypi-publish@release/v1
+    # Pinned to a commit, as the one action given id-token: write; Dependabot
+    # updates the pin and its version comment.
+    - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
 
   github-release:
     if: github.event_name == 'push'
@@ -139,8 +147,10 @@ jobs:
       with:
         name: dist
         path: dist/
-    - uses: pypa/gh-action-pypi-publish@release/v1
+    - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
       with:
         repository-url: https://test.pypi.org/legacy/
-        # A second dry run of the same version must not fail on the upload.
+        # A second dry run of the same version must not fail on the upload, but
+        # it uploads nothing: TestPyPI keeps the first upload of each version,
+        # so only the first dry run of a version exercises trusted publishing.
         skip-existing: true
