@@ -403,7 +403,9 @@ an experiment record captures.
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the issue/branch/PR workflow, commit conventions,
-and versioning policy this project follows.
+and versioning policy this project follows. To add a dataset loader, an encoding layer or a
+variational block, see [`docs/extending.md`](docs/extending.md) for the conventions each must keep
+and the tests each must pass.
 
 ---
 
