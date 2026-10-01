@@ -82,8 +82,9 @@ The dataset itself is never downloaded in CI. Tests write a small file with the 
 ### Also update
 
 - `hqnn_forge/data/__init__.py`: the import, `__all__`, and the table in the module docstring.
-- The README, wherever the datasets are listed, with the source, size, positive rate and
-  licence (say so if the file may not be redistributed).
+- The module docstring of the file the loader lives in: `uci.py` keeps a table of rows,
+  features and positives, and states the licence and the DOI to cite (say so if the file may
+  not be redistributed). Also the `data/` line in the README's folder structure.
 - Default to a location under `data/raw/`, which `.gitignore` excludes. Never commit a dataset,
   even a small one; tests build their own fixture files.
 
@@ -105,8 +106,9 @@ contract is spelled out in `hqnn_forge/_encoding_contract.py`:
 - **`n_qubits`**: an `int`, the circuit's width.
 - **`n_features`**: an `int`, the input's width, meaning the number of features per sample that
   `prepare_inputs` accepts. It is `n_qubits` for the angle-type layers and up to `2**n_qubits`
-  for the amplitude layer. The kernels size their inputs by it, and `is_encoding_layer` (and
-  with it `quantum_kernel_matrix`) refuses a layer without it.
+  for the amplitude layer. The diagnostics (`circuit_summary`, `gradient_variance`) size their
+  sample inputs by it, and `is_encoding_layer` (and with it the kernels, such as
+  `quantum_kernel_matrix`) refuses a layer without it.
 - **`prepare_inputs(x)`**: the *whole* classical step between the batch and the QNode, meaning
   validation (call `check_inputs(x, self.n_features, name="n_features")` from
   `angle_embedding`, which rejects the wrong width and NaN/inf) and any transform. `forward(x)`
