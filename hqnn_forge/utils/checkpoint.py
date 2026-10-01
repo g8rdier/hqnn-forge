@@ -89,7 +89,8 @@ FORMAT_VERSION: int = 1
 #: the two simulator knobs, plus the train-mode-only regularisers --
 #: ``dropout_p`` (``nn.Dropout`` has no parameters of its own) and the
 #: training-noise options, which only replace the circuit in train mode, and
-#: ``shots``, which samples the same circuit.  None of them touches a weight.
+#: ``shots``, which samples the same circuit, and ``seed``, which only seeds that
+#: sampling.  None of them touches a weight.
 #: ``load_checkpoint`` takes these without an opt-in; every other argument
 #: describes the circuit the weights were trained in, so overriding it needs
 #: ``allow_architecture_override=True``.  That includes ``init_strategy`` and
@@ -106,6 +107,7 @@ WEIGHT_SAFE_ARGS: frozenset[str] = frozenset(
         "noise_method",
         "noise_trajectories",
         "shots",
+        "seed",
     }
 )
 
@@ -132,6 +134,7 @@ _LEGACY_DEFAULTS: dict[str, Any] = {
     "classical_encoder": None,  # the built-in Linear encoder
     "trainable_input_scaling": False,  # added with encoding_type="reuploading"
     "shots": None,  # exact expectation values
+    "seed": None,  # the device's generator unseeded, as before #354
 }
 
 #: Constructor arguments added deliberately without a legacy default: no value
@@ -265,7 +268,7 @@ def load_checkpoint(
         Constructor arguments that replace the stored ones.  Without
         ``allow_architecture_override``, only :data:`WEIGHT_SAFE_ARGS`
         (``device_name``, ``diff_method``, ``dropout_p``, the four
-        ``noise_*`` training-noise options and ``shots``) may be given --
+        ``noise_*`` training-noise options, ``shots`` and ``seed``) may be given --
         typically to run a saved model on a different simulator or with a
         finite shot count, or to fine-tune it at a different dropout rate or
         training-noise level.

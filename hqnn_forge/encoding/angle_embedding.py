@@ -276,6 +276,7 @@ def build_encoding_qnode(
     entangler: Entangler = "ring",
     readout: Readout = "all",
     shots: int | None = None,
+    seed: int | None = None,
 ) -> qml.QNode:
     """
     Build and return a PennyLane QNode for the angle-embedding feature map.
@@ -342,7 +343,7 @@ def build_encoding_qnode(
 
     device_name, diff_method = resolve_backend(device_name, diff_method, n_qubits, shots=shots)
     validate_shots(shots, diff_method)
-    device = resolve_device(device_name, n_qubits)
+    device = resolve_device(device_name, n_qubits, seed=seed)
     circuit_fn = _make_angle_embedding_circuit(n_qubits, n_layers, rotation, entangler, readout)
 
     qnode = qml.QNode(
@@ -498,6 +499,7 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
         noise_method: NoiseMethod = "density",
         noise_trajectories: int = 1,
         shots: int | None = None,
+        seed: int | None = None,
     ) -> None:
         super().__init__()
 
@@ -517,6 +519,7 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
             entangler=entangler,
             readout=readout,
             shots=shots,
+            seed=seed,
         )
 
         # Declare the trainable weight tensor shape for TorchLayer ─────────
@@ -543,6 +546,7 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
             shots=shots,
         )
         self.shots = shots
+        self.seed = seed
 
     # ------------------------------------------------------------------
     # Forward pass
@@ -606,7 +610,9 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
             options += f", entangler={self.entangler!r}"
         if self.readout != "all":
             options += f", readout={self.readout!r}"
-        options += self._noise_repr() + shots_repr(self.shots) + backend_repr(self.qlayer)
+        options += (
+            self._noise_repr() + shots_repr(self.shots, self.seed) + backend_repr(self.qlayer)
+        )
         return (
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "
