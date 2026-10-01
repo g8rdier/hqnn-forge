@@ -25,16 +25,6 @@ N_LAYERS = 2
 BATCH = 6
 
 
-def _lightning_available() -> bool:
-    try:
-        import pennylane as qml
-
-        qml.device("lightning.qubit", wires=1)
-        return True
-    except Exception:  # noqa: BLE001 - any failure means "not installed"
-        return False
-
-
 DEVICE_CONFIGS = [
     # Two circuit runs per parameter per sample: the slow path wherever it appears.
     pytest.param(
@@ -44,13 +34,20 @@ DEVICE_CONFIGS = [
         marks=pytest.mark.slow,
     ),
     pytest.param("default.qubit", "backprop", id="default.qubit/backprop"),
+    # The input-gradient tests feed float32 inputs, for which PennyLane warns
+    # that finite differences may be inaccurate; they still agree within
+    # those tests' tolerances, so the warning is filtered here only.
+    pytest.param(
+        "default.qubit",
+        "finite-diff",
+        id="default.qubit/finite-diff",
+        marks=pytest.mark.filterwarnings("ignore:Finite differences with float32:UserWarning"),
+    ),
     pytest.param(
         "lightning.qubit",
         "adjoint",
         id="lightning.qubit/adjoint",
-        marks=pytest.mark.skipif(
-            not _lightning_available(), reason="pennylane-lightning not installed"
-        ),
+        marks=pytest.mark.requires_lightning,
     ),
 ]
 
