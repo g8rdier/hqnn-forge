@@ -567,3 +567,121 @@ class TestTuning:
     def test_rejected(self, kwargs: dict[str, Any], match: str) -> None:
         with pytest.raises(ValueError, match=match):
             benchmark.Tuning(**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Hybrid against control across a noise sweep (#208)
+# ---------------------------------------------------------------------------
+
+
+def _hybrid_fold(k: int, mcc: float, noise_mcc: dict[float, float]) -> benchmark.FoldResult:
+    """A hybrid fold result carrying only what the noise comparison reads."""
+    idx = np.arange(1)
+    return benchmark.FoldResult(
+        dataset="d",
+        model="hybrid",
+        fold=k,
+        train_idx=idx,
+        val_idx=idx,
+        test_idx=idx,
+        n_synthetic=0,
+        split_seed=0,
+        inner_seed=0,
+        smote_seed=0,
+        init_seed=0,
+        batch_seed=0,
+        threshold=0.5,
+        mcc=mcc,
+        train_seconds=0.0,
+        epochs=1,
+        device=None,
+        noise_mcc=noise_mcc,
+    )
+
+
+class TestNoiseSweep:
+    def test_zero_noise_reproduces_and_full_noise_is_uninformative(self) -> None:
+        result = _run({"a": _data()}, noise_levels=[0.0, 0.3, 0.75], noise_position="end")
+        hybrid = [f for f in result.folds if f.model == "hybrid"]
+        control = [f for f in result.folds if f.model == "control"]
+        # p = 0 replaces nothing: the noiseless score, bit for bit.
+        assert all(f.noise_mcc[0.0] == f.mcc for f in hybrid)
+        # p = 3/4 at the end is fully depolarising: every <Z> is 0, the output
+        # is the same for every sample, and MCC of a constant prediction is 0.
+        assert all(f.noise_mcc[0.75] == 0.0 for f in hybrid)
+        assert all(f.noise_mcc == {} for f in control)
+        # Noise drives the score towards chance (MCC 0), which is down from a
+        # good model but up from one that is worse than chance, as a briefly
+        # trained one can be.
+        means = [row["hybrid_mcc_mean"] for row in result.noise]
+        assert abs(means[2]) <= abs(means[0])
+
+    def test_rows_follow_from_the_fold_scores(self) -> None:
+        result = _run({"a": _data()}, noise_levels=[0.2, 0.0], n_seeds=2)
+        hybrid, control = result.records
+        assert [row["noise_level"] for row in result.noise] == [0.0, 0.2]
+        for row in result.noise:
+            per_fold = tuple(
+                float(
+                    np.mean(
+                        [
+                            f.noise_mcc[row["noise_level"]]
+                            for f in result.folds
+                            if f.model == "hybrid" and f.fold == k
+                        ]
+                    )
+                )
+                for k in range(N_SPLITS)
+            )
+            assert row["hybrid_fold_mcc"] == per_fold
+            assert row["hybrid_mcc_mean"] == pytest.approx(np.mean(per_fold))
+            assert row["control_mcc_mean"] == pytest.approx(control["mcc_mean"])
+            try:
+                expected = wilcoxon_signed_rank(
+                    per_fold, control["fold_mcc"], alternative="greater"
+                )
+                assert row["p_hybrid_better"] == expected.p_value
+            except ValueError:
+                assert math.isnan(row["p_hybrid_better"])
+        # The zero-noise row is the noiseless comparison.
+        assert result.noise[0]["hybrid_fold_mcc"] == pytest.approx(hybrid["fold_mcc"])
+
+    @pytest.mark.parametrize(
+        ("hybrid_by_level", "expected"),
+        [
+            # better without noise, lost at 0.2
+            ({0.1: [0.9] * 6, 0.2: [0.1] * 6}, {"better_noiseless": True, "lost_at": 0.2}),
+            # better at every swept level
+            ({0.1: [0.9] * 6, 0.2: [0.8] * 6}, {"better_noiseless": True, "lost_at": None}),
+        ],
+    )
+    def test_summary(self, hybrid_by_level: dict[float, list[float]], expected: dict) -> None:
+        folds = [
+            _hybrid_fold(k, 0.9, {p: v[k] for p, v in hybrid_by_level.items()}) for k in range(6)
+        ]
+        _, summary = benchmark._noise_comparison(
+            "d",
+            folds,
+            6,
+            list(hybrid_by_level),
+            [0.9] * 6,
+            [0.3, 0.2, 0.25, 0.35, 0.1, 0.15],
+            0.05,
+        )
+        assert summary == expected
+
+    def test_never_better_has_no_level(self) -> None:
+        folds = [_hybrid_fold(k, 0.1, {0.1: 0.1}) for k in range(6)]
+        _, summary = benchmark._noise_comparison("d", folds, 6, [0.1], [0.1] * 6, [0.5] * 6, 0.05)
+        assert summary == {"better_noiseless": False, "lost_at": None}
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"noise_levels": [0.9]}, r"noise level must lie in \[0, 0.75\]"),
+            ({"noise_levels": [0.1], "noise_position": "middle"}, "noise_position must be"),
+        ],
+    )
+    def test_rejected(self, kwargs: dict[str, Any], match: str) -> None:
+        with pytest.raises(ValueError, match=match):
+            _run({"a": _data()}, **kwargs)

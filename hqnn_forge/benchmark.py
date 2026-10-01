@@ -77,6 +77,7 @@ from hqnn_forge.evaluation import (
     wilcoxon_signed_rank,
 )
 from hqnn_forge.models import BinaryClassifierBase, HybridBinaryClassifier
+from hqnn_forge.noise import Position, apply_depolarizing_noise, validate_noise
 from hqnn_forge.preprocessing import oversample_fold, stratified_kfold
 from hqnn_forge.training import train_model
 from hqnn_forge.utils import FocalLoss, classical_baseline
@@ -150,6 +151,8 @@ class FoldResult:
     """Which of the ``n_seeds`` initialisations of this fold (``init_seed`` is its seed)."""
     hyperparameters: dict[str, Any] = field(default_factory=dict)
     """The training settings tuning chose for this fold and model; empty without tuning."""
+    noise_mcc: dict[float, float] = field(default_factory=dict)
+    """Hybrid only: test MCC under depolarising noise of each swept probability."""
 
 
 @dataclass(frozen=True)
@@ -179,6 +182,20 @@ class BenchmarkResult:
     settings: dict[str, Any]
     models: dict[str, dict[str, dict[str, Any]]]
     datasets: dict[str, dict[str, Any]]
+    noise: list[dict[str, Any]] = field(default_factory=list)
+    """
+    With ``noise_levels``: one row per dataset and noise level -- the hybrid's
+    and the noise-free control's mean MCC over folds, and the one-sided paired
+    Wilcoxon test that the hybrid is better (``p_hybrid_better``,
+    ``min_p``).
+    """
+    noise_summary: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """
+    Per dataset: whether the hybrid is significantly better than the control
+    without noise (``better_noiseless``), and the first swept noise level at
+    which it no longer is (``lost_at``; ``None`` if it never was, or never
+    stopped being within the sweep).
+    """
 
 
 def fingerprint(X: npt.NDArray[np.float64], y: npt.NDArray[np.int64]) -> str:
@@ -433,6 +450,77 @@ def _tune(
     return best[1]
 
 
+def _noise_scores(
+    model: BinaryClassifierBase,
+    X_test: npt.NDArray[np.float64],
+    y_test: npt.NDArray[np.int64],
+    threshold: float,
+    levels: Sequence[float],
+    position: Position,
+) -> dict[float, float]:
+    """Test MCC of the trained model under inference-time depolarising noise, per level."""
+    x = torch.from_numpy(X_test.astype(np.float32))
+    scores: dict[float, float] = {}
+    for p in levels:
+        with apply_depolarizing_noise(model, p, position=position):
+            prob = model.predict_proba(x)
+        scores[float(p)] = float(matthews_corrcoef(y_test, (prob >= threshold).long()))
+    return scores
+
+
+def _one_sided_better(hybrid: Sequence[float], control: Sequence[float]) -> tuple[float, float]:
+    """(p, attainable minimum p) that the hybrid scores higher; NaN if every fold ties."""
+    try:
+        test = wilcoxon_signed_rank(hybrid, control, alternative="greater")
+    except ValueError:
+        return math.nan, math.nan
+    return test.p_value, test.min_p_value
+
+
+def _noise_comparison(
+    dataset: str,
+    folds: Sequence[FoldResult],
+    n_splits: int,
+    levels: Sequence[float],
+    hybrid_noiseless: Sequence[float],
+    control: Sequence[float],
+    alpha: float,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Per-level rows and the summary for one dataset (fold scores averaged over seeds)."""
+    rows = []
+    lost_at: float | None = None
+    p0, _ = _one_sided_better(hybrid_noiseless, control)
+    better_noiseless = bool(p0 < alpha)
+    for level in sorted(float(p) for p in levels):
+        per_fold = [
+            float(
+                np.mean(
+                    [
+                        f.noise_mcc[level]
+                        for f in folds
+                        if f.dataset == dataset and f.model == "hybrid" and f.fold == k
+                    ]
+                )
+            )
+            for k in range(n_splits)
+        ]
+        p_value, min_p = _one_sided_better(per_fold, control)
+        rows.append(
+            {
+                "dataset": dataset,
+                "noise_level": level,
+                "hybrid_mcc_mean": float(np.mean(per_fold)),
+                "control_mcc_mean": float(np.mean(control)),
+                "hybrid_fold_mcc": tuple(per_fold),
+                "p_hybrid_better": p_value,
+                "min_p": min_p,
+            }
+        )
+        if better_noiseless and lost_at is None and not p_value < alpha:
+            lost_at = level
+    return rows, {"better_noiseless": better_noiseless, "lost_at": lost_at}
+
+
 def run_benchmark(
     datasets: Mapping[str, tuple[npt.ArrayLike, npt.ArrayLike]],
     hybrid: HybridBuilder = default_hybrid,
@@ -450,6 +538,9 @@ def run_benchmark(
     record_path: str | os.PathLike[str] | None = None,
     n_seeds: int = 1,
     tuning: Tuning | None = None,
+    noise_levels: Sequence[float] | None = None,
+    noise_position: Position = "all",
+    alpha: float = 0.05,
 ) -> BenchmarkResult:
     """
     Compare ``hybrid`` with its matched classical control on every dataset.
@@ -494,6 +585,17 @@ def run_benchmark(
         build its model with ``init_seed=None`` (a model's own seed would
         override the runner's and repeat the same weights); a ``ValueError``
         is raised otherwise.
+    noise_levels, noise_position:
+        Also score each trained hybrid model on its test rows under
+        depolarising noise of each probability (inserted as
+        :func:`hqnn_forge.noise.apply_depolarizing_noise` does, at
+        ``noise_position``), at the fold's threshold, and compare it with the
+        noise-free control per level (:attr:`BenchmarkResult.noise`).  This
+        is **inference-time** noise on a model trained without it: it asks
+        whether an advantage measured in noiseless simulation survives on a
+        noisy device, not what training under noise would give.
+    alpha:
+        Significance level for :attr:`BenchmarkResult.noise_summary`.
     tuning:
         Tune both models' training settings with the same budget in every
         outer fold before training them; see :class:`Tuning`.  Default: no
@@ -530,7 +632,16 @@ def run_benchmark(
         "hybrid_builder": _import_path(hybrid),
         "n_seeds": n_seeds,
         "tuning": None if tuning is None else tuning.as_dict(),
+        "noise_levels": None if noise_levels is None else [float(p) for p in noise_levels],
+        "noise_position": noise_position,
+        "alpha": alpha,
     }
+    if noise_levels is not None:
+        validate_noise(0.0, noise_position, position_name="noise_position")
+        for p in noise_levels:
+            validate_noise(float(p), noise_position, p_name="noise level")
+    noise_rows: list[dict[str, Any]] = []
+    noise_summary: dict[str, dict[str, Any]] = {}
 
     records: list[dict[str, Any]] = []
     folds: list[FoldResult] = []
@@ -642,6 +753,16 @@ def run_benchmark(
                             patience=train_settings["patience"],
                             batch_seed=batch_seed,
                         )
+                        noisy: dict[float, float] = {}
+                        if noise_levels is not None and model_name == "hybrid":
+                            noisy = _noise_scores(
+                                model,
+                                X_fold[test_idx],
+                                y[test_idx],
+                                threshold,
+                                noise_levels,
+                                noise_position,
+                            )
                     n_parameters[model_name] = model.count_parameters()
                     models.setdefault(name, {})[model_name] = {
                         "class": type(model).__name__,
@@ -671,6 +792,7 @@ def run_benchmark(
                             _device_name(model),
                             seed_index,
                             dict(chosen[model_name]),
+                            noisy,
                         )
                     )
                 scores[model_name].append(float(np.mean(seed_scores)))
@@ -678,6 +800,12 @@ def run_benchmark(
                     seed_stds[model_name].append(float(np.std(seed_scores, ddof=1)))
 
         hybrid_scores, control_scores = scores["hybrid"], scores["control"]
+        if noise_levels is not None:
+            noise_rows_here, summary = _noise_comparison(
+                name, folds, n_splits, noise_levels, hybrid_scores, control_scores, alpha
+            )
+            noise_rows.extend(noise_rows_here)
+            noise_summary[name] = summary
         try:
             test = wilcoxon_signed_rank(hybrid_scores, control_scores)
             p, min_p = test.p_value, test.min_p_value
@@ -712,7 +840,9 @@ def run_benchmark(
                     "rank_biserial": effect,
                 }
             )
-    result = BenchmarkResult(records, folds, settings, models, data_info)
+    result = BenchmarkResult(
+        records, folds, settings, models, data_info, noise_rows, noise_summary
+    )
     if record_path is not None:
         from hqnn_forge.experiment import save_record  # imports this module
 
