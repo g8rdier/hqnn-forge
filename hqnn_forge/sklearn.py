@@ -646,11 +646,12 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
     # ------------------------------------------------------------------
     def fit(self, X: npt.ArrayLike, y: npt.ArrayLike) -> QuantumKernelClassifier:
         """Build (and optionally align) the layer, then fit the SVM on the Gram matrix."""
-        # validate_data resets n_features_in_ (and feature_names_in_); put them
-        # back if the fit fails, so a failed refit leaves the previous model whole.
+        # validate_data resets n_features_in_ and feature_names_in_, the latter
+        # even before it rejects X; put them back if the fit fails, so a failed
+        # refit leaves the previous model whole.
         previous = {k: v for k, v in vars(self).items() if k in _INPUT_ATTRIBUTES}
-        X_arr, y_arr = validate_data(self, X, y, dtype=np.float64)
         try:
+            X_arr, y_arr = validate_data(self, X, y, dtype=np.float64)
             return self._fit(X_arr, y_arr)
         except BaseException:
             for name in _INPUT_ATTRIBUTES:
