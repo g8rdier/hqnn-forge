@@ -112,13 +112,17 @@ contract is spelled out in `hqnn_forge/_encoding_contract.py`:
 - **`prepare_inputs(x)`**: the *whole* classical step between the batch and the QNode, meaning
   validation (call `check_inputs(x, self.n_features, name="n_features")` from
   `angle_embedding`, which rejects the wrong width and NaN/inf) and any transform. `forward(x)`
-  must be exactly `self.qlayer(self.prepare_inputs(x))`. The kernels (`hqnn_forge.kernels`)
+  must be exactly `self._run_circuit(self.prepare_inputs(x))`, which is
+  `self.qlayer(self.prepare_inputs(x))` but for training-time noise (below). The kernels (`hqnn_forge.kernels`)
   replay the circuit on `prepare_inputs(X)`, so a step done inline in `forward` is silently
   skipped there, and the kernel describes a different feature map without raising.
 
-The one allowed exception is training-time noise. A layer built with `noise_level > 0` runs
-`run_with_training_noise` in `train()` mode. Build it with `_build_training_noise` in the
-constructor, as the angle and IQP layers do.
+The one allowed exception is training-time noise. A layer built with `noise_level > 0` runs a
+noisy circuit in `train()` mode. Inherit `TrainingNoiseMixin` from `hqnn_forge.noise`, take
+`noise_level`, `noise_position`, `noise_method` and `noise_trajectories` in the constructor, call
+`self._init_training_noise(...)` once the QNode exists, run the circuit through
+`self._run_circuit`, and append `self._noise_repr()` to `extra_repr`, as every encoding layer
+does.
 
 Beyond the protocol:
 
