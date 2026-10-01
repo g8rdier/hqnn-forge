@@ -121,6 +121,7 @@ class TestFitPredict:
             **{**FAST, "validation_fraction": 0.25, "patience": 5}
         ).fit(X, y)
         assert est.history_.best_threshold is not None
+        assert est.threshold_ is not None
         assert est.threshold_ == pytest.approx(est.history_.best_threshold)
         np.testing.assert_array_equal(
             est.predict(X),
@@ -196,13 +197,11 @@ class TestErrors:
         with pytest.raises(ValueError, match="features"):
             est.predict(X[:, :2])
 
-    def test_multiclass_rejected(self, data: tuple) -> None:
+    def test_one_class_rejected(self, data: tuple) -> None:
+        # More than two classes are supported since #309; one is not.
         X, _ = data
-        with pytest.raises(
-            ValueError,
-            match="Only binary classification is supported.  HybridClassifierEstimator got 3 classes",
-        ):
-            HybridClassifierEstimator(**FAST).fit(X, np.arange(80) % 3)
+        with pytest.raises(ValueError, match="needs at least two classes; got 1"):
+            HybridClassifierEstimator(**FAST).fit(X, np.zeros(80, dtype=int))
 
     @pytest.mark.parametrize(
         "params, match",
@@ -311,9 +310,11 @@ MAY_SKIP_CHECKS: dict[str, str] = {
 
 def _conformance_estimator() -> HybridClassifierEstimator:
     # check_classifiers_train requires training accuracy > 0.83 on its own
-    # toy problem; 2 epochs fall short, 30 pass with margin at this seed.
+    # toy problems, binary and (with the multiclass tag) 3-class blobs; 2
+    # epochs fall short, 30 pass with margin at this seed.  Two qubits reach
+    # only 0.77 on the 3-class problem (0.82 at 60 epochs); three reach 0.91.
     return HybridClassifierEstimator(
-        n_qubits=2,
+        n_qubits=3,
         n_layers=1,
         device_name="default.qubit",
         diff_method="backprop",

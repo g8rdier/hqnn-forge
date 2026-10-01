@@ -140,6 +140,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `n_qubits`) the diagnostics accept, and the `is_encoding_layer` / `is_circuit_layer` runtime
   checks. `QuantumEncodingLayer`, `IQPEncodingLayer` and `DataReuploadingLayer` gain an
   `n_features` attribute, their input width, equal to `n_qubits`
+- Multiclass in `HybridClassifierEstimator`: three or more classes train
+  `MulticlassHybridClassifier` with a new `strategy` (`"softmax"` with cross-entropy or
+  `SoftmaxFocalLoss`, `"one_vs_rest"` with BCE or focal loss on one-hot targets);
+  `predict_proba` is `(n, n_classes)` in `classes_` order and `threshold_` is `None`.
+  `train_model` accepts `(batch, n_classes)` logits and monitors them with the new
+  `MULTICLASS_METRICS` (`multiclass_matthews_corrcoef`, `macro_f1_score`,
+  `multiclass_balanced_accuracy`); their labels must be class indices in `[0, n_classes)`
+  in both splits, checked once before the first optimiser step
 
 ### Changed
 - `MulticlassHybridClassifier` builds the same encoder → circuit → dropout trunk as

@@ -49,24 +49,49 @@ except ImportError as exc:  # pragma: no cover - exercised only without scikit-l
         "were added in 1.6, so an older install fails this import too."
     ) from exc
 
-from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
+from hqnn_forge.models import (
+    HybridBinaryClassifier,
+    MulticlassHybridClassifier,
+    ParallelHybridClassifier,
+)
 from hqnn_forge.training import TrainingHistory, train_model
-from hqnn_forge.utils import FocalLoss
+from hqnn_forge.utils import FocalLoss, SoftmaxFocalLoss
 from hqnn_forge.utils.rng import as_seed, seeded_rng
 
 ModelName = Literal["serial", "parallel"]
 LossName = Literal["focal", "bce"]
+StrategyName = Literal["softmax", "one_vs_rest"]
+
+
+class _OneHotLoss(torch.nn.Module):
+    """A per-class binary loss on ``(N, K)`` logits and integer labels, via one-hot targets."""
+
+    def __init__(self, loss: torch.nn.Module, n_classes: int) -> None:
+        super().__init__()
+        self.loss = loss
+        self.n_classes = n_classes
+
+    def forward(self, logits: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        target = torch.nn.functional.one_hot(y.long(), self.n_classes).to(logits.dtype)
+        return self.loss(logits, target)  # type: ignore[no-any-return]
 
 
 class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
     """
     scikit-learn classifier training a hybrid quantum-classical model.
 
+    Binary or multiclass, decided by ``y`` in ``fit``, like any scikit-learn
+    classifier: two classes train a ``HybridBinaryClassifier`` (or the parallel
+    model), three or more a ``MulticlassHybridClassifier`` with the same
+    circuit options.
+
     Parameters
     ----------
     model:
         ``"serial"`` (``HybridBinaryClassifier``) or ``"parallel"``
-        (``ParallelHybridClassifier``).
+        (``ParallelHybridClassifier``).  With more than two classes only
+        ``"serial"`` exists (``MulticlassHybridClassifier``); ``"parallel"``
+        raises in ``fit``.
     n_qubits, n_layers, encoding_type, init_strategy, use_classical_encoder,
     dropout_p, device_name, diff_method:
         Passed to the model constructor.  ``n_input_features`` is taken from
@@ -86,8 +111,13 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
     validation_fraction:
         Share of the training data held out (stratified) for early stopping
         and threshold selection.  ``0`` trains on everything.
+    strategy:
+        More than two classes only: ``"softmax"`` (default; trained with
+        cross-entropy, or its focal version) or ``"one_vs_rest"`` (one binary
+        head per class, trained with BCE, or the focal loss, on one-hot
+        targets).  See :class:`~hqnn_forge.models.MulticlassHybridClassifier`.
     threshold:
-        ``"optimal"`` uses the validation-optimal threshold found by
+        Binary only.  ``"optimal"`` uses the validation-optimal threshold found by
         ``train_model``; a float in ``[0, 1]`` fixes it.  ``train_model``
         searches a threshold for the metric monitors only, so ``"optimal"``
         falls back to 0.5 both without a validation split and under
@@ -114,14 +144,15 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
 
     Attributes
     ----------
-    classes_ : ndarray of shape (2,)
-        The two labels; ``classes_[1]`` is the positive class.
+    classes_ : ndarray of shape (n_classes,)
+        The labels, sorted; with two, ``classes_[1]`` is the positive class.
     n_features_in_ : int
     model_ : torch.nn.Module
         The trained model.
     history_ : TrainingHistory
-    threshold_ : float
-        Decision threshold used by ``predict``.
+    threshold_ : float or None
+        Decision threshold used by ``predict``; ``None`` with more than two
+        classes, where ``predict`` is the argmax.
     """
 
     def __init__(
@@ -149,6 +180,7 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         noise_position: str = "all",
         noise_method: str = "density",
         noise_trajectories: int = 1,
+        strategy: StrategyName = "softmax",
     ) -> None:
         self.model = model
         self.n_qubits = n_qubits
@@ -173,11 +205,12 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         self.noise_position = noise_position
         self.noise_method = noise_method
         self.noise_trajectories = noise_trajectories
+        self.strategy = strategy
 
     # ------------------------------------------------------------------
     def _build(
-        self, n_features: int, init_seed: int | None = None
-    ) -> HybridBinaryClassifier | ParallelHybridClassifier:
+        self, n_features: int, n_classes: int, init_seed: int | None = None
+    ) -> HybridBinaryClassifier | ParallelHybridClassifier | MulticlassHybridClassifier:
         common: dict[str, Any] = dict(
             n_input_features=n_features,
             n_qubits=self.n_qubits,
@@ -194,27 +227,37 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
             noise_trajectories=self.noise_trajectories,
             init_seed=init_seed,
         )
+        if self.model not in ("serial", "parallel"):
+            raise ValueError(f"model must be 'serial' or 'parallel'; got {self.model!r}.")
+        if n_classes > 2:
+            if self.model != "serial":
+                raise ValueError(
+                    f"model='parallel' is a binary topology; {n_classes} classes need "
+                    f"model='serial' (MulticlassHybridClassifier)."
+                )
+            return MulticlassHybridClassifier(
+                n_classes=n_classes, strategy=self.strategy, **common
+            )
         if self.model == "serial":
             return HybridBinaryClassifier(**common)
-        if self.model == "parallel":
-            return ParallelHybridClassifier(
-                classical_hidden_dim=self.classical_hidden_dim, **common
-            )
-        raise ValueError(f"model must be 'serial' or 'parallel'; got {self.model!r}.")
+        return ParallelHybridClassifier(classical_hidden_dim=self.classical_hidden_dim, **common)
 
-    def _loss(self) -> torch.nn.Module:
-        if self.loss == "focal":
-            return FocalLoss()
-        if self.loss == "bce":
-            return torch.nn.BCEWithLogitsLoss()
-        raise ValueError(f"loss must be 'focal' or 'bce'; got {self.loss!r}.")
+    def _loss(self, n_classes: int) -> torch.nn.Module:
+        if self.loss not in ("focal", "bce"):
+            raise ValueError(f"loss must be 'focal' or 'bce'; got {self.loss!r}.")
+        if n_classes == 2:
+            return FocalLoss() if self.loss == "focal" else torch.nn.BCEWithLogitsLoss()
+        if self.strategy == "softmax":
+            return SoftmaxFocalLoss() if self.loss == "focal" else torch.nn.CrossEntropyLoss()
+        per_class = FocalLoss() if self.loss == "focal" else torch.nn.BCEWithLogitsLoss()
+        return _OneHotLoss(per_class, n_classes)
 
     @staticmethod
     def _stratified_holdout(
         y: npt.NDArray[np.int64], fraction: float, rng: np.random.Generator
     ) -> tuple[npt.NDArray[np.intp], npt.NDArray[np.intp]]:
         val_parts, train_parts = [], []
-        for cls in (0, 1):
+        for cls in np.unique(y):
             idx = rng.permutation(np.flatnonzero(y == cls))
             n_val = int(round(fraction * idx.size))
             if n_val == 0 or n_val == idx.size:
@@ -246,19 +289,30 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         """Build the model for ``X``'s width and train it on ``(X, y)``."""
         X_arr, y_arr = validate_data(self, X, y, dtype=np.float32)
         classes = unique_labels(y_arr)
-        if classes.size != 2:
-            # The first sentence is scikit-learn's wording for a binary-only
-            # classifier, which its conformance checks match on.
+        if classes.size < 2:
+            # "1 class" is one of the phrasings scikit-learn's conformance
+            # checks (check_fit2d_1sample) match on.
             raise ValueError(
-                f"Only binary classification is supported.  HybridClassifierEstimator "
-                f"got {classes.size} classes: {classes.tolist()}."
+                f"HybridClassifierEstimator needs at least two classes; got 1 class: "
+                f"{classes.tolist()}."
             )
+        if self.strategy not in ("softmax", "one_vs_rest"):
+            raise ValueError(
+                f"strategy must be 'softmax' or 'one_vs_rest'; got {self.strategy!r}."
+            )
+        n_classes = int(classes.size)
         if not 0.0 <= self.validation_fraction < 1.0:
             raise ValueError(
                 f"validation_fraction must lie in [0, 1); got {self.validation_fraction}."
             )
         self._check_threshold(self.threshold)
-        y01 = (y_arr == classes[1]).astype(np.int64)
+        if n_classes > 2 and self.threshold != "optimal":
+            raise ValueError(
+                f"threshold={self.threshold!r} applies to two classes; with {n_classes}, "
+                f"predict is the argmax."
+            )
+        # Class indices in classes_ order; for two classes, 1 is the positive one.
+        y01 = np.searchsorted(classes, y_arr).astype(np.int64)
 
         # A NumPy integer, as scikit-learn tools pass, is taken as the int it is.
         seed = as_seed(self.random_state, "random_state")
@@ -269,8 +323,10 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         # spawned from it, so neither replays the numbers the init drew.  The
         # global RNG is restored afterwards, so a seeded fit leaves it exactly
         # where it was.
-        model = self._build(X_arr.shape[1], init_seed=seed)
-        loss_fn = self._loss()
+        model = self._build(X_arr.shape[1], n_classes, init_seed=seed)
+        loss_fn = self._loss(n_classes)
+        # BCE-style losses take float targets, cross-entropy class indices.
+        as_target = (lambda t: t.float()) if n_classes == 2 else (lambda t: t.long())
         if seed is None:
             dropout_seed: int | None = None
             generator = None
@@ -285,7 +341,7 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
             tr, va = self._stratified_holdout(y01, self.validation_fraction, rng)
             val: tuple[torch.Tensor, torch.Tensor] | tuple[None, None] = (
                 X_t[va],
-                torch.from_numpy(y01[va]).float(),
+                as_target(torch.from_numpy(y01[va])),
             )
         else:
             tr = np.arange(y01.size)
@@ -297,7 +353,7 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
                 loss_fn,
                 torch.optim.Adam(model.parameters(), lr=self.lr),
                 X_t[tr],
-                torch.from_numpy(y01[tr]).float(),
+                as_target(torch.from_numpy(y01[tr])),
                 val[0],
                 val[1],
                 max_epochs=self.max_epochs,
@@ -306,7 +362,10 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
                 patience=self.patience,
                 generator=generator,
             )
-        if self.threshold == "optimal":
+        threshold: float | None
+        if n_classes > 2:
+            threshold = None
+        elif self.threshold == "optimal":
             best = history.best_threshold
             threshold = float(best) if best is not None else 0.5
         else:
@@ -323,14 +382,23 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         return self
 
     def predict_proba(self, X: npt.ArrayLike) -> npt.NDArray[np.float64]:
-        """Class probabilities, shape ``(n_samples, 2)``, columns in ``classes_`` order."""
+        """Class probabilities, shape ``(n_samples, n_classes)``, columns in ``classes_`` order."""
         check_is_fitted(self, "model_")
         X_arr = validate_data(self, X, dtype=np.float32, reset=False)
-        positive = self.model_.predict_proba(torch.from_numpy(X_arr)).numpy().astype(np.float64)
-        return np.column_stack([1.0 - positive, positive])
+        proba = self.model_.predict_proba(torch.from_numpy(X_arr)).numpy().astype(np.float64)
+        if proba.ndim == 2:  # multiclass: already one column per class
+            return proba
+        return np.column_stack([1.0 - proba, proba])
 
     def predict(self, X: npt.ArrayLike) -> npt.NDArray[Any]:
-        """Labels from ``classes_``, thresholding the positive probability at ``threshold_``."""
+        """
+        Labels from ``classes_``: the positive probability thresholded at
+        ``threshold_`` for two classes, the argmax of the logits for more.
+        """
+        check_is_fitted(self, "model_")
+        if self.threshold_ is None:
+            X_arr = validate_data(self, X, dtype=np.float32, reset=False)
+            return self.classes_[self.model_.predict(torch.from_numpy(X_arr)).numpy()]
         positive = self.predict_proba(X)[:, 1]
         return self.classes_[(positive >= self.threshold_).astype(np.intp)]
 
@@ -357,7 +425,12 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         super().__setstate__(state)
         if saved is not None:
             classes = {
-                cls.__name__: cls for cls in (HybridBinaryClassifier, ParallelHybridClassifier)
+                cls.__name__: cls
+                for cls in (
+                    HybridBinaryClassifier,
+                    ParallelHybridClassifier,
+                    MulticlassHybridClassifier,
+                )
             }
             # Construction initialises weights from the global torch RNG before
             # load_state_dict overwrites them; fork it so unpickling leaves the
@@ -370,6 +443,6 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
 
     def __sklearn_tags__(self) -> Any:
         tags = super().__sklearn_tags__()
-        tags.classifier_tags.multi_class = False
+        tags.classifier_tags.multi_class = True
         tags.non_deterministic = self.random_state is None
         return tags
