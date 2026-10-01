@@ -108,7 +108,8 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
         VQC ansatz layers.  Default: 2.  At 1, with angle encoding and
         ``readout="first"``, ⟨Z_0⟩ misses the first encoded angle under the
         default ring and RX embedding, and most of them under
-        ``entangler="brickwork"``; use 2 or more with a ring.  See step 2 of
+        ``entangler="brickwork"``; under ``"hardware_efficient"`` it sees at most
+        ``n_layers + 1`` of them at any depth.  Use 2 or more with a ring.  See step 2 of
         :func:`hqnn_forge.encoding.angle_embedding._make_angle_embedding_circuit`.
     use_classical_encoder:
         Prepend ``Linear(n_input_features → n_qubits) + Tanh``.  Default: True.
@@ -146,7 +147,9 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
           ``2**n_qubits`` raw features are zero-padded.
     embedding_rotation:
         Pauli axis of the angle embedding, ``"X"`` (default), ``"Y"`` or ``"Z"``.
-        Angle and re-uploading encodings only.
+        Angle and re-uploading encodings only.  ``"Z"`` raises under angle
+        encoding, since a single ``RZ`` embedding on ``|0⟩`` ignores the input;
+        under re-uploading it needs ``n_layers ≥ 2``.
     entangler:
         ``"ring"`` (default: CNOT ring then ``Rot``), ``"strongly_entangling"``
         (``qml.StronglyEntanglingLayers``: ``Rot`` then a CNOT ring of growing
@@ -211,8 +214,11 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
     shots:
         ``None`` (default): exact expectation values.  An ``int``: each circuit
         is sampled that many times, as on hardware, so predictions carry shot
-        noise.  Requires ``diff_method="parameter-shift"`` (or
-        ``"finite-diff"``); ``adjoint`` and ``backprop`` need the exact state.
+        noise.  Requires ``diff_method="parameter-shift"``: ``adjoint`` and
+        ``backprop`` need the exact state, and ``finite-diff``'s tiny step
+        turns the shot noise into gradients of order 1e6.  The samples come
+        from the device's own generator, which ``torch.manual_seed`` does not
+        reach, so a model with shots does not repeat run to run (#354).
         :func:`hqnn_forge.noise.apply_shots` evaluates a model with a finite
         shot count without rebuilding it.
     noise_channel:
@@ -342,6 +348,24 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
         8 qubits, 2 layers, ``Linear(8→8)`` + ``π·sigmoid``, RY angle embedding,
         ``StronglyEntanglingLayers``, ⟨Z_0⟩ readout, ``Linear(1→1)`` head,
         ``N(0, 0.1²)`` quantum init.  122 trainable parameters, 48 quantum.
+
+        **Live parameters: 102 of the 122.**  With the ⟨Z_0⟩ readout, 20 of the
+        48 quantum weights can never move the output, for any input or weight
+        values: the whole last-layer ``Rot`` on wires 0, 1, 3, 5 and 7, the
+        last-layer ``ω`` on wires 2, 4 and 6, and the first-layer ``ω`` on
+        wires 0 and 1 (measured with autograd and pinned in
+        ``tests/test_published_shnn_parity.py``).  ``circuit_summary`` reports
+        16 inert, a lower bound: backwards through the last layer's range-2
+        CNOTs, ``Z_0`` becomes ``Z_2 Z_4 Z_6``, a cancellation a per-wire
+        analysis cannot see.
+
+        The dead weights are **kept** (#234): the ``(2, 8, 3)`` weight shape is
+        the published one, so the model and its checkpoints stay
+        reproducible, and both counts are reported instead.  Parameter
+        efficiency figures use the total, as the published results do (MCC
+        0.5758 over 0.122 kParam = 4.72); over the 102 live parameters the same
+        MCC is 5.65 per kParam.  :func:`hqnn_forge.evaluation.parameter_efficiency`
+        takes an integer count for that.
 
         Parameters
         ----------

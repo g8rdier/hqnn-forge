@@ -50,7 +50,11 @@ own mechanism:
   ``tests/test_checkpoint.py`` pins every constructor's arguments and fails
   when one appears without either entry.  A *removed* or *renamed* argument
   makes older files carry an unexpected key, which is refused; supporting
-  them needs a migration in ``load_checkpoint``.
+  them needs a migration in ``load_checkpoint``.  A *value* a constructor
+  stops accepting is refused the same way, by the constructor's own
+  ``ValueError`` when ``load_checkpoint`` rebuilds the model: a file saved
+  with ``embedding_rotation="Z"`` held a constant quantum layer (#212) and
+  no longer loads.
 
 ``known_args`` makes the added-argument case explicit.  A name missing from
 the config but absent from ``known_args`` too was added after the file was

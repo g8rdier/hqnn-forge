@@ -129,7 +129,8 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
         VQC ansatz layers.  Default: 2.  At 1, with angle encoding and
         ``readout="first"``, ⟨Z_0⟩ misses the first encoded angle under the
         default ring and RX embedding, and most of them under
-        ``entangler="brickwork"``; use 2 or more with a ring.  See step 2 of
+        ``entangler="brickwork"``; under ``"hardware_efficient"`` it sees at most
+        ``n_layers + 1`` of them at any depth.  Use 2 or more with a ring.  See step 2 of
         :func:`hqnn_forge.encoding.angle_embedding._make_angle_embedding_circuit`.
     classical_hidden_dim:
         Width of the classical MLP branch.  Default: 16.
@@ -170,7 +171,9 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
           ``2**n_qubits`` raw features are zero-padded.
     embedding_rotation:
         Pauli axis of the angle embedding, ``"X"`` (default), ``"Y"`` or ``"Z"``.
-        Angle and re-uploading encodings only.
+        Angle and re-uploading encodings only.  ``"Z"`` raises under angle
+        encoding, since a single ``RZ`` embedding on ``|0⟩`` ignores the input;
+        under re-uploading it needs ``n_layers ≥ 2``.
     entangler:
         ``"ring"`` (default: CNOT ring then ``Rot``), ``"strongly_entangling"``
         (``qml.StronglyEntanglingLayers``: ``Rot`` then a CNOT ring of growing
@@ -235,8 +238,11 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
     shots:
         ``None`` (default): exact expectation values.  An ``int``: each circuit
         is sampled that many times, as on hardware, so predictions carry shot
-        noise.  Requires ``diff_method="parameter-shift"`` (or
-        ``"finite-diff"``); ``adjoint`` and ``backprop`` need the exact state.
+        noise.  Requires ``diff_method="parameter-shift"``: ``adjoint`` and
+        ``backprop`` need the exact state, and ``finite-diff``'s tiny step
+        turns the shot noise into gradients of order 1e6.  The samples come
+        from the device's own generator, which ``torch.manual_seed`` does not
+        reach, so a model with shots does not repeat run to run (#354).
         :func:`hqnn_forge.noise.apply_shots` evaluates a model with a finite
         shot count without rebuilding it.
     noise_channel:
