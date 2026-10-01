@@ -108,8 +108,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   submodule the caller froze in eval mode and restores every submodule's mode on exit (#249)
 - `ClassicalBaseline` (a plain MLP with the classifiers' interface) and
   `hqnn_forge.utils.classical_baseline(model)`, which builds the untrained classical control
-  of a hybrid model with its trainable parameter count matched to the hybrid's, every rotation
-  angle counted as one parameter. `ClassicalBaseline` takes `init_seed` like the other
+  of a hybrid model with its trainable parameter count matched to the hybrid's live count
+  (`count_parameters()` minus `circuit_summary(model).n_inert_params`, every other rotation
+  angle counted as one parameter). `ClassicalBaseline` takes `init_seed` like the other
   classifiers, and the builder carries the hybrid's `init_seed` over, so a seeded hybrid gets
   a seeded control (#250)
 - `hqnn_forge.utils.permute_quantum_layer`: the permutation null for quantum ablation, which
@@ -138,12 +139,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the current environment and `rerun_benchmark` repeats the run (#270)
 - `examples/does_the_quantum_layer_help.py`: a step-by-step hybrid-versus-control comparison on
   one's own data, with a plain-words verdict from the paired Wilcoxon test (#271)
+- `CITATION.cff`, so GitHub offers "Cite this repository" with BibTeX and APA output; its
+  `version` and `license` are kept equal to `pyproject.toml` by a test (#272)
 - Comparing several models over several datasets (Demšar 2006) in `hqnn_forge.evaluation`:
   `friedman_test` with the Iman–Davenport F, `nemenyi_critical_difference`,
   `compare_to_control` and `holm_correction`, NumPy-only (#273)
 - `bootstrap_ci` and `paired_bootstrap_ci` in `hqnn_forge.evaluation`: class-stratified
   bootstrap intervals (BCa or percentile) for MCC, F1, balanced accuracy or any callable
   metric, and for the difference between two models on the same samples; NumPy-only (#274)
+- `hqnn_forge.kernels.overlap_kernel_matrix`: the kernel estimated entry by entry from the
+  compute-uncompute circuit with optional shots and any device, and `nearest_psd` to
+  project an estimate onto the positive semi-definite cone (#277)
+- Trainable quantum kernels: `differentiable=True` on `encoded_states` and
+  `quantum_kernel_matrix`, `kernel_target_alignment` (centred) and `train_kernel_alignment`
+  to fit a `DataReuploadingLayer`'s weights to a task before the SVM (#278)
+- `batch_size` on `encoded_states` and `quantum_kernel_matrix`: the kernel states are simulated
+  that many rows at a time, bounding the simulator's working memory; results are unchanged (#282)
+- Quantum kernels under depolarising noise: `noise_level`/`noise_position` on
+  `quantum_kernel_matrix` give the Hilbert–Schmidt kernel `Tr[ρ(x)ρ(y)]` with the same channel
+  insertion as `hqnn_forge.noise`; `encoded_density_matrices` and `kernel_from_density_matrices` (#283)
+- The published SHNN's live parameter count: 102 of its 122 trainable parameters can move
+  the output (autograd, pinned by a test); the 20 dead circuit weights are kept so published
+  checkpoints load unchanged, and both counts are documented (#234). The matched classical
+  control leaves the inert weights out of its target, so the published SHNN's control has 101
+  parameters, not 121 as matched on the total, and the parallel model's 523, not 571.
+  Efficiency figures (MCC/kParam) still divide by the total (#293)
+- `run_benchmark(n_seeds=...)`: each fold trained with several recorded initialisation seeds,
+  fold scores averaged over them for the paired test, and the across-seed spread reported as
+  `mcc_seed_std` (#294)
+- `run_benchmark(tuning=Tuning(...))`: random search over training settings with the same
+  trial budget and inner folds for the hybrid model and its control, inside each outer training
+  split; the chosen settings are recorded (#295)
+- `run_benchmark(noise_levels=...)`: each trained hybrid model also scored under
+  inference-time depolarising noise, compared per level with the noise-free control, with the
+  noise level at which it stops being significantly better (#296)
+- The encoding layer contract, exported from `hqnn_forge.encoding`: the `EncodingLayer`
+  protocol (`qlayer`, `n_qubits`, `n_features`, `prepare_inputs`, with `forward(x)` equal to
+  `qlayer(prepare_inputs(x))` outside training noise), the weaker `CircuitLayer` (`qlayer`,
+  `n_qubits`) the diagnostics accept, and the `is_encoding_layer` / `is_circuit_layer` runtime
+  checks. `QuantumEncodingLayer`, `IQPEncodingLayer` and `DataReuploadingLayer` gain an
+  `n_features` attribute, their input width, equal to `n_qubits` (#298)
+- `noise_method="trajectories"` (with `noise_trajectories`) on the encoding layers and
+  classifiers: training noise by Pauli-trajectory sampling, whose average output and gradient
+  equal the depolarising channel's, on the layer's own device and `diff_method` in O(2^n)
+  memory instead of the density path's O(4^n). `"density"` stays the default, and both are
+  recorded in checkpoints (#300)
+- `AmplitudeEncodingLayer` and `DataReuploadingLayer` accept the training-noise options
+  (`noise_level`, `noise_position`, `noise_method`, `noise_trajectories`), so every encoding
+  layer and classifier now does, with the same meaning (#302)
+- `noise_level`, `noise_position`, `noise_method` and `noise_trajectories` on
+  `HybridClassifierEstimator`, tunable through `GridSearchCV`; `fit` trains through the noisy
+  circuit and `predict` / `predict_proba` stay noiseless (#303)
+- `hqnn_forge.diagnostics.expressibility` (Sim et al. 2019, the KL divergence of the circuit's
+  fidelity histogram from Haar, with exact Haar bin probabilities) and `entangling_capability`
+  (mean Meyer–Wallach Q with its standard error and the Haar reference), with the building
+  blocks `meyer_wallach`, `expressibility_from_fidelities` and
+  `haar_fidelity_bin_probabilities` (#325)
+- `entangler="hardware_efficient"`: a nearest-neighbour `CZ` ladder then `RY` on every qubit
+  (Kandala et al. 2017), backed by `hqnn_forge.circuits.hardware_efficient_layer`, in every
+  encoder but amplitude and in the classifiers. Its weights have shape `(n_layers, n_qubits)`,
+  not `(n_layers, n_qubits, 3)`: code that assumes a trailing Euler-angle axis should read the
+  shape from `variational_weight_shape`. The default `"ring"` block now runs through
+  `hqnn_forge.circuits.strongly_entangling_layer`, gate for gate as before (#331)
+- `encoding_type="reuploading"` and `encoding_type="amplitude"` in `HybridBinaryClassifier`,
+  `ParallelHybridClassifier`, `MulticlassHybridClassifier` and the scikit-learn estimator, with
+  `trainable_input_scaling` for re-uploading. Amplitude with a classical encoder requires
+  `diff_method="backprop"` and is refused at construction otherwise; `AmplitudeEncodingLayer`
+  gains `entangler` and `readout`. Options an encoding cannot use raise at construction (#333)
+- Multiclass in `HybridClassifierEstimator`: three or more classes train
+  `MulticlassHybridClassifier` with a new `strategy` (`"softmax"` with cross-entropy or
+  `SoftmaxFocalLoss`, `"one_vs_rest"` with BCE or focal loss on one-hot targets);
+  `predict_proba` is `(n, n_classes)` in `classes_` order and `threshold_` is `None`.
+  `train_model` accepts `(batch, n_classes)` logits and monitors them with the new
+  `MULTICLASS_METRICS` (`multiclass_matthews_corrcoef`, `macro_f1_score`,
+  `multiclass_balanced_accuracy`); their labels must be class indices in `[0, n_classes)`
+  in both splits, checked once before the first optimiser step (#338)
 
 ### Changed
 - The package metadata links the repository, issue tracker and changelog, and the README's
@@ -220,6 +290,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `FisherSpectrum.parameter_slices` and `block(name)` locate each tensor, and `parameters=`
   measures a subset, whose matrix is the matching block. `effective_dimension` counts every
   tensor in `d` but, like `gradient_variance`, draws only the `weights` angles (#337)
+- `MulticlassHybridClassifier` builds the same encoder → circuit → dropout trunk as
+  `HybridBinaryClassifier`, from shared code, so it now accepts every trunk option:
+  `embedding_rotation`, `entangler`, `readout` (the head reads `Linear(n_outputs, n_classes)`),
+  `encoder_activation`, `noise_level` / `noise_position` / `noise_method` /
+  `noise_trajectories`, and a custom `classical_encoder`. Each defaults to the behaviour the
+  model had before, and a multiclass checkpoint that predates them loads as before, with the
+  "predates" warning. `save_checkpoint` / `load_checkpoint` are typed against the new
+  head-agnostic `ClassifierBase`. The binary models' constructors do not change (#301)
+- Device fallback remembers, per process, a backend that failed to initialise, so later layers
+  skip it without probing it again or warning twice (`reset_device_fallback()` forgets it), and
+  the fallback warning points at the caller's line rather than inside the library (#285)
+- `count_inert_parameters` recognises diagonal gates and measurements structurally rather than
+  by name (`Z`-only Pauli sums and products, `probs` / `sample` / `counts`, `CRZ`,
+  `ControlledPhaseShift`, adjoint or controlled diagonal gates), so it can count more inert
+  parameters on custom circuits; it remains a lower bound (#291)
+- `CircuitSummary.n_inert_params` counts weight entries, like `n_trainable_params`, rather than
+  gate-parameter slots, so `n_effective_params` can no longer go negative; the new
+  `count_inert_weights` gives the per-entry count for any tape. The built-in layers report the
+  same numbers as before (#292)
 
 ### Fixed
 - The classifiers applied the `·π` angle scaling to input that bypasses the classical encoder,
@@ -260,6 +349,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `weighted_bce_loss` raises `ValueError` for a `reduction` other than `"mean"`, `"sum"` or
   `"none"`, as `FocalLoss` does, instead of silently returning the unreduced per-sample loss
   (#261)
+- `circuit_summary`, `draw_circuit` and `gradient_variance` raised on an
+  `AmplitudeEncodingLayer`, because they built their sample input with `n_qubits` features;
+  they now use the layer's input width and `prepare_inputs`, and the default amplitude sample
+  shows the full state preparation, an upper bound on the gate count for any input (#279)
 
 ### Removed
 - `PCANormalizer`'s `copy` option, which never had an effect (#77)

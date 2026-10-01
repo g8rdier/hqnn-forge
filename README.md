@@ -27,7 +27,7 @@ image, text or time-series pipelines are out of scope.
 |---|---|
 | **Small-angle init** | Gaussian initialisation: global σ = π/√(n·L), or a per-layer schedule σ_ℓ = π/√(n·(L+ℓ)) that starts at the global σ and narrows by up to √2 towards the last layer (this library's own heuristics, in the spirit of Zhang et al. 2022). Measured with `hqnn_forge.diagnostics.gradient_variance` on a 2-layer circuit with a ⟨Z_0⟩ cost: no gain over uniform init for inputs spread over (−π, π), which is what both classifiers feed the circuit, and a gain growing from 1.1x to 1.75x between 4 and 8 qubits only near zero input. Over (−π, π) the variance falls ~3x per two qubits under either init — see the module docstring |
 | **Adjoint differentiation** | Exact gradients via `lightning.qubit` — no finite-difference approximation |
-| **Custom angle encoding** | Angle-embedding feature map (8 qubits by default) with a CNOT-ring VQC ansatz; strongly-entangling and brickwork entanglers are options |
+| **Custom angle encoding** | Angle-embedding feature map (8 qubits by default) with a CNOT-ring VQC ansatz; strongly-entangling, brickwork and hardware-efficient (CZ + RY) entanglers are options |
 | **Imbalance-robust losses** | Focal Loss & inverse-frequency weighted BCE |
 | **Pure-NumPy pre-processing** | PCA + standardisation without scikit-learn runtime dependency |
 | **Three hybrid topologies** | Serial `HybridBinaryClassifier`, parallel `ParallelHybridClassifier` (classical MLP branch ‖ quantum branch) and multiclass `MulticlassHybridClassifier` (softmax or one-vs-rest heads on a shared quantum layer), with angle or IQP encoding |
@@ -254,19 +254,25 @@ binary `predict(x, threshold)` contract of `BinaryClassifierBase`, and it does n
 
 Options shared by both models:
 
-- `encoding_type="angle"` (default) or `"iqp"` (Havlíček-style feature map with pairwise
-  `x_i x_j` phases).
+- `encoding_type="angle"` (default), `"iqp"` (Havlíček-style feature map with pairwise
+  `x_i x_j` phases), `"reuploading"` (the angle embedding repeated before every variational
+  layer, with optional `trainable_input_scaling`) or `"amplitude"` (the classical encoder maps
+  to `2**n_qubits` amplitudes, which needs `diff_method="backprop"`; without the encoder, 1 to
+  `2**n_qubits` raw features are zero-padded).
 - `init_strategy="restricted"` (one σ for the whole circuit), `"block_local"` (the same σ in
   the first layer, narrowing by up to √2 towards the last) or `"normal"` (plain
   `N(0, init_std²)`, `init_std=0.1` by default); see `hqnn_forge.initializers`.
-- `embedding_rotation="X"` (default) or `"Y"`: the Pauli axis of the angle embedding
-  (angle encoding only). `"Z"` raises: a single `RZ` embedding on `|0⟩` is a global phase,
-  so the quantum layer would ignore its inputs.
+- `embedding_rotation="X"` (default), `"Y"` or `"Z"`: the Pauli axis of the angle embedding
+  (angle and re-uploading encodings only). `"Z"` raises under angle encoding: a single `RZ`
+  embedding on `|0⟩` is a global phase, so the quantum layer would ignore its inputs. Under
+  re-uploading it needs `n_layers ≥ 2`.
 - `entangler="ring"` (default: CNOT ring then per-qubit `Rot`), `"strongly_entangling"`
   (`qml.StronglyEntanglingLayers`: `Rot` first, then a CNOT ring whose range grows with the
-  layer index) or `"brickwork"` (nearest-neighbour CNOT pairs without wrap-around, so each
+  layer index), `"brickwork"` (nearest-neighbour CNOT pairs without wrap-around, so each
   ⟨Z_i⟩ readout depends on a few neighbouring qubits at shallow depth rather than on all of
-  them).
+  them) or `"hardware_efficient"` (a nearest-neighbour `CZ` ladder then `RY` on every qubit,
+  Kandala et al. 2017: one angle per qubit per layer, so the weights have shape
+  `(n_layers, n_qubits)` instead of `(n_layers, n_qubits, 3)`).
 - `readout="all"` (default: ⟨Z_i⟩ on every qubit) or `"first"` (⟨Z_0⟩ only, so the head reads
   a single number).
 - `encoder_activation="tanh"` (default: `tanh(·)·π`, in (-π, π)) or `"sigmoid"`
@@ -274,7 +280,10 @@ Options shared by both models:
 - `published_shnn()` on either class builds the configuration published in the thesis and in
   `hqnn-fraud-detection-benchmark`: 8 qubits, 2 layers, RY embedding, strongly-entangling
   ansatz, ⟨Z_0⟩ readout, sigmoid encoder, `N(0, 0.1²)` init — 122 trainable parameters for the
-  serial model. Keyword arguments override it.
+  serial model, of which **102 are live**: with the ⟨Z_0⟩ readout, 20 quantum weights can never
+  move the output. They are kept, so the published model and its checkpoints stay as published,
+  and both counts are reported; parameter-efficiency figures use the total unless stated
+  (4.72 MCC/kParam published, 5.65 over the live 102). Keyword arguments override it.
 - `use_classical_encoder=False` to feed features already scaled into (-π, π), for example from
   `PCANormalizer(scale_to_pi=True)`, straight into the circuit. `n_input_features` must then
   equal `n_qubits`.
@@ -285,12 +294,16 @@ Options shared by both models:
 
 `hqnn_forge.utils.classical_baseline(model)` builds the classical model a hybrid result should
 be compared with: an untrained `ClassicalBaseline` MLP, to be trained from scratch on the same
-data. Its trainable parameter count is matched to `model.count_parameters()`, which counts every
-rotation angle as one parameter, the same convention as the MCC/kParam figures, so the two
-models are compared at the same parameter budget. The serial model's control is one hidden
-layer in place of encoder, circuit and head; the parallel model's is its classical branch plus a
-head, widened to the matching width. The published SHNN's 122 parameters get a 121-parameter
-control. A seeded hybrid (`init_seed`) gets a control seeded with the same seed.
+data. Its trainable parameter count is matched to the hybrid's **live** count,
+`model.count_parameters()` minus the circuit weights that can never move the output
+(`circuit_summary(model).n_inert_params`), with every other rotation angle counted as one
+parameter, so the two models are compared at the same usable parameter budget. The serial
+model's control is one hidden layer in place of encoder, circuit and head; the parallel model's
+is its classical branch plus a head, widened to the matching width. The published SHNN's 122
+parameters, 102 of them live, get a 101-parameter control; matched on the total it would get
+121. The structural inert count is a lower bound (16 of the 20 here), so the control is never
+smaller than an exact live match would make it. Efficiency figures (MCC/kParam) still use the
+total. A seeded hybrid (`init_seed`) gets a control seeded with the same seed.
 Switching a trained model's circuit off with `disable_quantum_layer` measures something
 else, how much that model depends on the circuit.
 
@@ -360,7 +373,8 @@ hooks below still need uv.
 
 The `dev` extra brings `ruff`, `mypy`, `vermin` and `pytest`. `uvx pre-commit install` registers the hooks
 in `.pre-commit-config.yaml`, which run `ruff check --fix` and `ruff format` on every commit with
-the settings from `pyproject.toml`. The hooks call ruff through `uv run`, so they need
+the settings from `pyproject.toml`, and refuse a commit that adds a file over 1000 KB (a dataset,
+a checkpoint). CI applies the same size limit to every tracked file. The hooks call ruff through `uv run`, so they need
 [uv](https://docs.astral.sh/uv/getting-started/installation/) on the `PATH` and use the ruff
 version pinned in `uv.lock`, the same one CI uses. To run them over the whole tree at any time:
 
@@ -381,12 +395,43 @@ uv run --frozen --all-extras vermin --no-tips -t=3.11- --violations --eval-annot
 
 [`CONTRIBUTING.md`](https://github.com/g8rdier/hqnn-forge/blob/main/CONTRIBUTING.md#linting) lists every command the lint job runs.
 
+The full test suite takes a few minutes. For the edit–test loop, leave out the tests marked
+`slow` (end-to-end training, the gradient-variance physics checks, parameter-shift batching,
+repeated fits and bootstraps), which account for most of that time; CI always runs everything
+(see [`CONTRIBUTING.md`](https://github.com/g8rdier/hqnn-forge/blob/main/CONTRIBUTING.md#testing)):
+
+```bash
+pytest -m "not slow"   # about a minute
+pytest                 # the full suite, as CI runs it
+```
+
+---
+
+## Methodology
+
+[`docs/methodology.md`](https://github.com/g8rdier/hqnn-forge/blob/main/docs/methodology.md)
+states the rules the comparisons follow: how the classical control is matched, how folds,
+oversampling and thresholds are handled, which statistical test applies when, the equal tuning
+budget, what the noise sweep models, and what an experiment record captures.
+
 ---
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](https://github.com/g8rdier/hqnn-forge/blob/main/CONTRIBUTING.md) for the issue/branch/PR workflow, commit conventions,
-and versioning policy this project follows.
+See [`CONTRIBUTING.md`](https://github.com/g8rdier/hqnn-forge/blob/main/CONTRIBUTING.md) for the
+issue/branch/PR workflow, commit conventions, and versioning policy this project follows. To add
+a dataset loader, an encoding layer or a variational block, see
+[`docs/extending.md`](https://github.com/g8rdier/hqnn-forge/blob/main/docs/extending.md) for the
+conventions each must keep and the tests each must pass.
+
+---
+
+## Citing
+
+If you use hqnn-forge in research, please cite it.
+[`CITATION.cff`](https://github.com/g8rdier/hqnn-forge/blob/main/CITATION.cff) holds the citation
+metadata, and GitHub's **Cite this repository** button in the sidebar turns it into BibTeX or
+APA.
 
 ---
 
@@ -400,17 +445,23 @@ and versioning policy this project follows.
 - Berezniuk et al. (2020) — *A scale-dependent notion of effective dimension*
 - Schuld et al. (2020) — *Circuit-centric quantum classifiers*
 - Sim et al. (2019) — *Expressibility and entangling capability of parameterized quantum circuits for hybrid quantum-classical algorithms*
+- Meyer & Wallach (2002) — *Global entanglement in multiparticle systems*
+- Brennen (2003) — *An observable measure of entanglement for pure states of multi-qubit systems*
+- Scott (2004) — *Multipartite entanglement, quantum-error-correcting codes, and entangling power of quantum evolutions*
 - Jones & Gacon (2020) — *Efficient calculation of gradients in classical simulations of variational quantum algorithms*
 - Kandala et al. (2017) — *Hardware-efficient variational quantum eigensolver for small molecules and quantum magnets*
 - Havlíček et al. (2019) — *Supervised learning with quantum-enhanced feature spaces*
 - Schuld & Killoran (2019) — *Quantum machine learning in feature Hilbert spaces*
 - Hubregtsen et al. (2022) — *Training quantum embedding kernels on near-term quantum computers*
+- Higham (1988) — *Computing a nearest symmetric positive semidefinite matrix*
 - Pérez-Salinas et al. (2020) — *Data re-uploading for a universal quantum classifier*
 - Schuld, Sweke & Meyer (2021) — *Effect of data encoding on the expressive power of variational quantum-machine-learning models*
 - Möttönen et al. (2005) — *Transformation of quantum states using uniformly controlled rotations*
 - Schuld & Petruccione (2018) — *Supervised Learning with Quantum Computers*
 - Lin et al. (2017) — *Focal Loss for Dense Object Detection*
 - King & Zeng (2001) — *Logistic Regression in Rare Events Data*
+- Hubregtsen et al. (2022) — *Training Quantum Embedding Kernels on Near-Term Quantum Computers*
+- Cortes, Mohri & Rostamizadeh (2012) — *Algorithms for Learning Kernels Based on Centered Alignment*
 - Chawla et al. (2002) — *SMOTE: Synthetic Minority Over-sampling Technique*
 - Wilcoxon (1945) — *Individual comparisons by ranking methods*
 - Kerby (2014) — *The simple difference formula: an approach to teaching nonparametric correlation*
