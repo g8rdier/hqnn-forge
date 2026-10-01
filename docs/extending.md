@@ -178,13 +178,16 @@ Beyond the protocol:
 ## A variational block (ansatz)
 
 **Reference:** `apply_variational_layers` in `hqnn_forge/encoding/angle_embedding.py`. The
-`"brickwork"` branch, the most recent addition, is the example to copy; `"strongly_entangling"`
-shows a block that depends on the layer index.
+`"hardware_efficient"` branch, the most recent addition, is the example to copy: a primitive in
+`hqnn_forge/circuits/` applied once per layer, with a weight shape of its own. `"brickwork"`
+shows a block written inline, and `"strongly_entangling"` one that depends on the layer index.
 
-Note that the functions in `hqnn_forge/circuits/` (`strongly_entangling_layer`,
-`hardware_efficient_layer`) are standalone primitives for writing your own QNodes. None of the
-encoding layers call them. The block the encoders use is selected by their `entangler` argument,
-so a new ansatz is a new `entangler` value.
+The functions in `hqnn_forge/circuits/` are the per-layer blocks the encoders run:
+`strongly_entangling_layer` is `entangler="ring"` (not `"strongly_entangling"`, which is
+PennyLane's `qml.StronglyEntanglingLayers`) and `hardware_efficient_layer` is
+`entangler="hardware_efficient"`. The block the encoders use is selected by their `entangler`
+argument, so a new ansatz is a new primitive there plus a new `entangler` value; a primitive
+alone has no effect on the models.
 
 ### Interface and conventions
 
@@ -194,8 +197,9 @@ so a new ansatz is a new `entangler` value.
 - **Weight shape.** `variational_weight_shape(entangler, n_qubits, n_layers)`, next to
   `apply_variational_layers`, is the one definition of the `weights` shape: every encoder
   registers its `weights` from it, and `extra_repr` counts `n_params` from the layer's
-  parameters. Every block so far takes `(n_layers, n_qubits, 3)`; a block with another
-  shape adds a branch there and nowhere else. Within the shape, dim 0 must stay
+  parameters. The `Rot` blocks take `(n_layers, n_qubits, 3)` and `"hardware_efficient"`
+  takes `(n_layers, n_qubits)`; a block with another shape adds a branch there and nowhere
+  else. Within the shape, dim 0 must stay
   the layer index, which is what `block_local_init_` and the diagnostics' `n_layers` fallback
   read.
 - **`layer_offset`.** `DataReuploadingLayer` applies the blocks one at a time, with an embedding
