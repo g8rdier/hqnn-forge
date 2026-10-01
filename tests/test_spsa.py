@@ -207,6 +207,7 @@ class TestCommonRandomNumbers:
         SPSA([theta]).step(loss)
         assert seen == [0, 0]
 
+    @pytest.mark.may_skip  # no CUDA device on the CI runners
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
     def test_steps_a_cuda_parameter(self) -> None:
         theta = torch.nn.Parameter(torch.zeros(3, device="cuda"))
