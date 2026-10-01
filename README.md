@@ -254,14 +254,18 @@ binary `predict(x, threshold)` contract of `BinaryClassifierBase`, and it does n
 
 Options shared by both models:
 
-- `encoding_type="angle"` (default) or `"iqp"` (Havlíček-style feature map with pairwise
-  `x_i x_j` phases).
+- `encoding_type="angle"` (default), `"iqp"` (Havlíček-style feature map with pairwise
+  `x_i x_j` phases), `"reuploading"` (the angle embedding repeated before every variational
+  layer, with optional `trainable_input_scaling`) or `"amplitude"` (the classical encoder maps
+  to `2**n_qubits` amplitudes, which needs `diff_method="backprop"`; without the encoder, 1 to
+  `2**n_qubits` raw features are zero-padded).
 - `init_strategy="restricted"` (one σ for the whole circuit), `"block_local"` (the same σ in
   the first layer, narrowing by up to √2 towards the last) or `"normal"` (plain
   `N(0, init_std²)`, `init_std=0.1` by default); see `hqnn_forge.initializers`.
-- `embedding_rotation="X"` (default) or `"Y"`: the Pauli axis of the angle embedding
-  (angle encoding only). `"Z"` raises: a single `RZ` embedding on `|0⟩` is a global phase,
-  so the quantum layer would ignore its inputs.
+- `embedding_rotation="X"` (default), `"Y"` or `"Z"`: the Pauli axis of the angle embedding
+  (angle and re-uploading encodings only). `"Z"` raises under angle encoding: a single `RZ`
+  embedding on `|0⟩` is a global phase, so the quantum layer would ignore its inputs. Under
+  re-uploading it needs `n_layers ≥ 2`.
 - `entangler="ring"` (default: CNOT ring then per-qubit `Rot`), `"strongly_entangling"`
   (`qml.StronglyEntanglingLayers`: `Rot` first, then a CNOT ring whose range grows with the
   layer index), `"brickwork"` (nearest-neighbour CNOT pairs without wrap-around, so each

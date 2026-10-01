@@ -302,8 +302,8 @@ class AmplitudeEncodingLayer(TrainingNoiseMixin, nn.Module):
     diff_method:
         Gradient method.  See *Differentiation methods* above.
     entangler:
-        The variational block: ``"ring"`` (default), ``"strongly_entangling"``
-        or ``"hardware_efficient"``; see
+        The variational block: ``"ring"`` (default), ``"strongly_entangling"``,
+        ``"brickwork"`` or ``"hardware_efficient"``; see
         :func:`~hqnn_forge.encoding.angle_embedding.apply_variational_layers`.
     readout:
         ``"all"`` (default): the layer returns ``(batch, n_qubits)``.
