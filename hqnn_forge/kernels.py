@@ -791,7 +791,7 @@ def _simulate_density(
     # level so its inserted channels are on the tape; p = 0 inserts none, as
     # apply_depolarizing_noise leaves the circuit untouched at p = 0.
     if noise_level > 0.0:
-        qnode = _noisy_qnode(qlayer.qnode, n_qubits, noise_level, noise_position)
+        qnode = _noisy_qnode(qlayer.qnode, n_qubits, noise_level, noise_position, "depolarizing")
         tape = qml.workflow.construct_tape(qnode, level="user")(prepared, **weights)
     else:
         tape = qml.workflow.construct_tape(qlayer.qnode, level=0)(prepared, **weights)

@@ -404,7 +404,7 @@ class TestValidation:
     def test_training_noise_qnode_rejects_zero(self) -> None:
         layer = _layer()
         with pytest.raises(ValueError, match="p > 0"):
-            training_noise_qnode(layer.qlayer.qnode, N_QUBITS, 0.0)
+            training_noise_qnode(layer.qlayer.qnode, N_QUBITS, 0.0, channel="depolarizing")
 
 
 class TestOneImplementation:

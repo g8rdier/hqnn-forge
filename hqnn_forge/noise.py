@@ -54,8 +54,8 @@ replaced QNode: a ``p > 0`` block may be opened inside it.
 
 Training-time noise
 -------------------
-The encoding layers and hybrid classifiers also take ``noise_level`` and
-``noise_position`` at construction.  With ``noise_level > 0`` the layer runs
+The encoding layers and hybrid classifiers also take ``noise_level``,
+``noise_position`` and ``noise_channel`` at construction.  With ``noise_level > 0`` the layer runs
 the same noisy QNode (built by :func:`training_noise_qnode`) whenever it is
 in **train mode**, so gradients are computed through the noisy circuit, and
 the noiseless QNode in eval mode, like dropout.  Evaluation under noise is
@@ -75,10 +75,13 @@ Two methods, chosen with ``noise_method``:
 ``"trajectories"``
     Pauli-trajectory (Monte Carlo) sampling on the layer's own device and
     differentiation method.  At every channel site each sample independently
-    gets ``I`` with probability ``1 − p``, or ``X``, ``Y`` or ``Z`` with ``p/3``
-    each.  That mixture *is* the depolarizing channel, so the output
-    averaged over draws equals the ``"density"`` output, and so does the
-    gradient: each step's loss gradient is an unbiased estimate of the one
+    gets one Pauli, drawn with the channel's weights: for depolarizing ``I``
+    with probability ``1 − p`` and ``X``, ``Y`` or ``Z`` with ``p/3`` each;
+    for bit flip ``I`` with ``1 − p`` and ``X`` with ``p``; for phase flip
+    ``I`` with ``1 − p`` and ``Z`` with ``p`` (the ``paulis`` weights in
+    :data:`CHANNELS`).  Each mixture *is* its channel, so the output averaged
+    over draws equals the ``"density"`` output, and so does the gradient:
+    each step's loss gradient is an unbiased estimate of the one
     ``"density"`` computes, at pure-state cost.  The same step measured
     +34 MB and 0.8 s on ``lightning.qubit`` with adjoint (+18 MB and 0.3 s
     noiseless).  The price is gradient variance, as with dropout, which a
@@ -182,8 +185,17 @@ def validate_noise(
         raise ValueError(f"{position_name} must be 'all' or 'end'; got {position!r}.")
 
 
+def _require_pauli_channel(channel: Channel, label: str) -> None:
+    """Raise ``ValueError`` unless ``channel`` can be sampled as Pauli trajectories."""
+    if CHANNELS[channel].paulis is None:
+        raise ValueError(
+            f"{label} is not a mixture of Pauli errors, so it cannot be sampled as "
+            f"Pauli trajectories; use noise_method='density'."
+        )
+
+
 def _noisy_qnode(
-    qnode: qml.QNode, n_qubits: int, p: float, position: Position, channel: str = "depolarizing"
+    qnode: qml.QNode, n_qubits: int, p: float, position: Position, channel: Channel
 ) -> qml.QNode:
     device = qml.device("default.mixed", wires=n_qubits)
     base = qml.QNode(qnode.func, device, diff_method="backprop", interface="torch")
@@ -195,7 +207,8 @@ def training_noise_qnode(
     n_qubits: int,
     p: float,
     position: Position = "all",
-    channel: Channel = "depolarizing",
+    *,
+    channel: Channel,
 ) -> qml.QNode:
     """
     The noisy counterpart of ``qnode`` an encoding layer runs in train mode.
@@ -222,7 +235,7 @@ def training_noise_qnode(
 
 @qml.transform
 def _pauli_trajectories(
-    tape: qml.tape.QuantumScript, p: float, position: Position, channel: str = "depolarizing"
+    tape: qml.tape.QuantumScript, p: float, position: Position, channel: Channel
 ) -> tuple[qml.tape.QuantumScriptBatch, Callable[..., object]]:
     """
     ``tape`` with one randomly drawn Pauli per sample at every channel site.
@@ -246,7 +259,7 @@ def _pauli_trajectories(
 
 
 def trajectory_noise_qnode(
-    qnode: qml.QNode, p: float, position: Position = "all", channel: Channel = "depolarizing"
+    qnode: qml.QNode, p: float, position: Position = "all", *, channel: Channel
 ) -> qml.QNode:
     """
     ``qnode`` with a Pauli ``channel`` sampled as Pauli trajectories.
@@ -264,11 +277,7 @@ def trajectory_noise_qnode(
         is not a Pauli channel.
     """
     validate_noise(p, position, channel=channel)
-    if CHANNELS[channel].paulis is None:
-        raise ValueError(
-            f"{channel!r} is not a mixture of Pauli errors, so it cannot be sampled as "
-            f"Pauli trajectories; use noise_method='density'."
-        )
+    _require_pauli_channel(channel, repr(channel))
     if p == 0.0:
         raise ValueError(
             "trajectory_noise_qnode needs p > 0; p = 0 is the noiseless QNode itself."
@@ -400,11 +409,8 @@ class TrainingNoiseMixin:
             channel_name="noise_channel",
         )
         validate_noise_method(noise_method, noise_trajectories)
-        if noise_method == "trajectories" and CHANNELS[noise_channel].paulis is None:
-            raise ValueError(
-                f"noise_channel={noise_channel!r} is not a mixture of Pauli errors, so it "
-                f"cannot be sampled as trajectories; use noise_method='density'."
-            )
+        if noise_method == "trajectories":
+            _require_pauli_channel(noise_channel, f"noise_channel={noise_channel!r}")
         self.noise_channel = noise_channel
         self.noise_level = noise_level
         self.noise_position = noise_position
@@ -421,7 +427,7 @@ class TrainingNoiseMixin:
             )
         if noise_method == "trajectories":
             self._training_noise_qnode = trajectory_noise_qnode(
-                qnode, noise_level, noise_position, noise_channel
+                qnode, noise_level, noise_position, channel=noise_channel
             )
             return
         if n_qubits > MAX_TRAINING_NOISE_QUBITS:
@@ -435,7 +441,7 @@ class TrainingNoiseMixin:
                 stacklevel=3,
             )
         self._training_noise_qnode = training_noise_qnode(
-            qnode, n_qubits, noise_level, noise_position, noise_channel
+            qnode, n_qubits, noise_level, noise_position, channel=noise_channel
         )
 
     @property
@@ -722,7 +728,12 @@ def apply_shots(model: nn.Module, shots: int | None) -> Iterator[nn.Module]:
     # rebuilt on the sampled one, so it samples with the block's shots.
     noise_original = getattr(layer, "_training_noise_qnode", None)
     noise_sampled = (
-        trajectory_noise_qnode(sampled, layer.noise_level, layer.noise_position)  # type: ignore[attr-defined]
+        trajectory_noise_qnode(
+            sampled,
+            layer.noise_level,  # type: ignore[attr-defined]
+            layer.noise_position,  # type: ignore[attr-defined]
+            channel=layer.noise_channel,  # type: ignore[attr-defined]
+        )
         if noise_original is not None and getattr(layer, "noise_method", None) == "trajectories"
         else noise_original
     )
