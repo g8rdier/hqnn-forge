@@ -59,10 +59,13 @@ import torch.nn as nn
 from pennylane.exceptions import AllocationError, DeviceError
 
 from hqnn_forge.noise import (
+    NoiseMethod,
     Position,
     run_with_training_noise,
     training_noise_qnode,
+    trajectory_noise_qnode,
     validate_noise,
+    validate_noise_method,
 )
 
 logger = logging.getLogger(__name__)
@@ -741,12 +744,22 @@ class QuantumEncodingLayer(nn.Module):
         ``noise_level > 0`` the train-mode forward pass runs the circuit on
         ``default.mixed`` with a ``DepolarizingChannel`` inserted, so
         gradients are computed through the noisy circuit (noise-aware
-        training); eval mode is always noiseless, like dropout.  Backprop
-        keeps a ``batch × 4^n`` density matrix per operation, so this is
-        practical up to about 6 qubits.  See :mod:`hqnn_forge.noise`.
+        training); eval mode is always noiseless, like dropout.  With the
+        default ``noise_method``, backprop keeps a ``batch × 4^n`` density
+        matrix per operation, so this is practical up to about 6 qubits.  See
+        :mod:`hqnn_forge.noise`.
     noise_position:
         ``"all"`` (after every gate, default) or ``"end"`` (before
         measurement), as in :func:`hqnn_forge.noise.apply_depolarizing_noise`.
+    noise_method:
+        ``"density"`` (default): the exact channel on ``default.mixed``.
+        ``"trajectories"``: Pauli-trajectory sampling on this layer's own
+        device and ``diff_method``, at pure-state memory; the train-mode
+        output is then random, and equal to the ``"density"`` output on
+        average.  See :mod:`hqnn_forge.noise`.
+    noise_trajectories:
+        Draws averaged per sample with ``noise_method="trajectories"``.
+        Default 1; must be 1 for ``"density"``.
 
     Attributes
     ----------
@@ -760,6 +773,8 @@ class QuantumEncodingLayer(nn.Module):
     readout : str
     noise_level : float
     noise_position : str
+    noise_method : str
+    noise_trajectories : int
     qlayer : pennylane.qnn.TorchLayer
         The underlying differentiable quantum layer.
 
@@ -789,6 +804,8 @@ class QuantumEncodingLayer(nn.Module):
         readout: Readout = "all",
         noise_level: float = 0.0,
         noise_position: Position = "all",
+        noise_method: NoiseMethod = "density",
+        noise_trajectories: int = 1,
     ) -> None:
         super().__init__()
 
@@ -800,6 +817,8 @@ class QuantumEncodingLayer(nn.Module):
         self.n_outputs = len(readout_wires(n_qubits, readout))
         self.noise_level = noise_level
         self.noise_position = noise_position
+        self.noise_method = noise_method
+        self.noise_trajectories = noise_trajectories
 
         # Build the QNode ─────────────────────────────────────────────────
         qnode = build_encoding_qnode(
@@ -826,7 +845,7 @@ class QuantumEncodingLayer(nn.Module):
 
         # Training-time depolarizing noise (see hqnn_forge.noise) ─────────
         self._training_noise_qnode = _build_training_noise(
-            qnode, n_qubits, noise_level, noise_position
+            qnode, n_qubits, noise_level, noise_position, noise_method, noise_trajectories
         )
 
     # ------------------------------------------------------------------
@@ -880,7 +899,9 @@ class QuantumEncodingLayer(nn.Module):
         # build_encoding_qnode (see _expand_batch_dimension); the outputs and
         # gradients are the same either way.
         if self.training and self._training_noise_qnode is not None:
-            return run_with_training_noise(self.qlayer, self._training_noise_qnode, x)
+            return run_with_training_noise(
+                self.qlayer, self._training_noise_qnode, x, self.noise_trajectories
+            )
         return self.qlayer(x)
 
     # ------------------------------------------------------------------
@@ -895,6 +916,7 @@ class QuantumEncodingLayer(nn.Module):
             options += f", readout={self.readout!r}"
         if self.noise_level:
             options += f", noise_level={self.noise_level}, noise_position={self.noise_position!r}"
+            options += _noise_method_repr(self.noise_method, self.noise_trajectories)
         return (
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "
@@ -903,11 +925,23 @@ class QuantumEncodingLayer(nn.Module):
 
 
 MAX_TRAINING_NOISE_QUBITS = 6
-"""Above this many qubits, a layer built with ``noise_level > 0`` warns."""
+"""Above this many qubits, a layer built with ``noise_method="density"`` warns."""
+
+
+def _noise_method_repr(method: str, n_trajectories: int) -> str:
+    """The ``extra_repr`` fragment for a non-default noise method."""
+    if method == "density":
+        return ""
+    return f", noise_method={method!r}, noise_trajectories={n_trajectories}"
 
 
 def _build_training_noise(
-    qnode: qml.QNode, n_qubits: int, noise_level: float, noise_position: Position
+    qnode: qml.QNode,
+    n_qubits: int,
+    noise_level: float,
+    noise_position: Position,
+    noise_method: NoiseMethod = "density",
+    noise_trajectories: int = 1,
 ) -> qml.QNode | None:
     """
     The train-mode QNode for ``noise_level > 0``, or ``None`` for the
@@ -918,14 +952,18 @@ def _build_training_noise(
     validate_noise(
         noise_level, noise_position, p_name="noise_level", position_name="noise_position"
     )
+    validate_noise_method(noise_method, noise_trajectories)
     if noise_level == 0.0:
         return None
+    if noise_method == "trajectories":
+        return trajectory_noise_qnode(qnode, noise_level, noise_position)
     if n_qubits > MAX_TRAINING_NOISE_QUBITS:
         warnings.warn(
             f"noise_level > 0 trains on default.mixed, which keeps a batch × 4^n density "
             f"matrix per operation for backprop; at n_qubits={n_qubits} (practical limit "
             f"about {MAX_TRAINING_NOISE_QUBITS}) a training step may run out of memory.  "
-            f"See hqnn_forge.noise and #229.",
+            f"noise_method='trajectories' samples the same noise at pure-state cost; "
+            f"see hqnn_forge.noise.",
             RuntimeWarning,
             stacklevel=3,
         )

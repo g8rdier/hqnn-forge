@@ -79,7 +79,7 @@ from hqnn_forge.initializers.restricted_variance import (
     restricted_normal_init_,
 )
 from hqnn_forge.models.base import BinaryClassifierBase, custom_encoder
-from hqnn_forge.noise import Position
+from hqnn_forge.noise import NoiseMethod, Position
 from hqnn_forge.utils.rng import as_seed, seeded_rng
 
 #: Constructor arguments of the SHNN published in the thesis (see
@@ -169,11 +169,18 @@ class HybridBinaryClassifier(BinaryClassifierBase):
     noise_level:
         Training-time depolarizing probability for the quantum layer, in
         ``[0, 0.75]``.  Default: ``0.0`` (noiseless).  Applied in train mode
-        only, on ``default.mixed`` with backprop, whose memory grows as
-        ``batch × 4^n_qubits`` per operation: practical up to about 6 qubits.
-        See :mod:`hqnn_forge.noise`.
+        only.  With the default ``noise_method`` it runs on ``default.mixed``
+        with backprop, whose memory grows as ``batch × 4^n_qubits`` per
+        operation: practical up to about 6 qubits.  See :mod:`hqnn_forge.noise`.
     noise_position:
         ``"all"`` (default) or ``"end"``; where the channel is inserted.
+    noise_method:
+        ``"density"`` (default, exact) or ``"trajectories"`` (Pauli-trajectory
+        sampling on the layer's own device, at pure-state memory; equal to
+        ``"density"`` on average).  See
+        :class:`~hqnn_forge.encoding.QuantumEncodingLayer`.
+    noise_trajectories:
+        Draws averaged per sample with ``"trajectories"``.  Default: 1.
     init_seed:
         Seed for weight initialisation.  ``None`` (default) draws the initial
         weights from the global torch RNG; an int draws them from a private RNG
@@ -234,6 +241,8 @@ class HybridBinaryClassifier(BinaryClassifierBase):
         noise_position: Position = "all",
         init_seed: int | None = None,
         classical_encoder: nn.Module | None = None,
+        noise_method: NoiseMethod = "density",
+        noise_trajectories: int = 1,
     ) -> None:
         super().__init__()
         init_seed = as_seed(init_seed)
@@ -262,6 +271,8 @@ class HybridBinaryClassifier(BinaryClassifierBase):
                 noise_position=noise_position,
                 init_seed=init_seed,
                 classical_encoder=classical_encoder,
+                noise_method=noise_method,
+                noise_trajectories=noise_trajectories,
             )
 
             if encoder_activation not in ("tanh", "sigmoid"):
@@ -332,6 +343,8 @@ class HybridBinaryClassifier(BinaryClassifierBase):
                     readout=readout,
                     noise_level=noise_level,
                     noise_position=noise_position,
+                    noise_method=noise_method,
+                    noise_trajectories=noise_trajectories,
                 )
             elif encoding_type == "iqp":
                 if embedding_rotation != "X":
@@ -349,6 +362,8 @@ class HybridBinaryClassifier(BinaryClassifierBase):
                     readout=readout,
                     noise_level=noise_level,
                     noise_position=noise_position,
+                    noise_method=noise_method,
+                    noise_trajectories=noise_trajectories,
                 )
             else:
                 raise ValueError(f"Unsupported encoding_type: {encoding_type}")
