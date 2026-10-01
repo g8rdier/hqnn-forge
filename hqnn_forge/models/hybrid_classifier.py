@@ -141,7 +141,8 @@ class HybridBinaryClassifier(BinaryClassifierBase):
     encoding_type:
         Type of quantum embedding to use: ``"angle"`` or ``"iqp"``. Default: ``"angle"``.
     embedding_rotation:
-        Pauli axis of the angle embedding, ``"X"`` (default), ``"Y"`` or ``"Z"``.
+        Pauli axis of the angle embedding, ``"X"`` (default) or ``"Y"``; ``"Z"``
+        raises, since a single ``RZ`` embedding on ``|0⟩`` ignores the input.
         Angle encoding only.
     entangler:
         ``"ring"`` (default: CNOT ring then ``Rot``), ``"strongly_entangling"``
@@ -377,6 +378,24 @@ class HybridBinaryClassifier(BinaryClassifierBase):
         8 qubits, 2 layers, ``Linear(8→8)`` + ``π·sigmoid``, RY angle embedding,
         ``StronglyEntanglingLayers``, ⟨Z_0⟩ readout, ``Linear(1→1)`` head,
         ``N(0, 0.1²)`` quantum init.  122 trainable parameters, 48 quantum.
+
+        **Live parameters: 102 of the 122.**  With the ⟨Z_0⟩ readout, 20 of the
+        48 quantum weights can never move the output, for any input or weight
+        values: the whole last-layer ``Rot`` on wires 0, 1, 3, 5 and 7, the
+        last-layer ``ω`` on wires 2, 4 and 6, and the first-layer ``ω`` on
+        wires 0 and 1 (measured with autograd and pinned in
+        ``tests/test_published_shnn_parity.py``).  ``circuit_summary`` reports
+        16 inert, a lower bound: backwards through the last layer's range-2
+        CNOTs, ``Z_0`` becomes ``Z_2 Z_4 Z_6``, a cancellation a per-wire
+        analysis cannot see.
+
+        The dead weights are **kept** (#234): the ``(2, 8, 3)`` weight shape is
+        the published one, so the model and its checkpoints stay
+        reproducible, and both counts are reported instead.  Parameter
+        efficiency figures use the total, as the published results do (MCC
+        0.5758 over 0.122 kParam = 4.72); over the 102 live parameters the same
+        MCC is 5.65 per kParam.  :func:`hqnn_forge.evaluation.parameter_efficiency`
+        takes an integer count for that.
 
         Parameters
         ----------
