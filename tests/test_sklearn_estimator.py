@@ -158,6 +158,7 @@ class TestFitPredict:
 
 
 class TestSklearnTooling:
+    @pytest.mark.slow  # three full fits
     def test_cross_val_score(self, data: tuple) -> None:
         X, y = data
         scores = cross_val_score(
@@ -336,6 +337,10 @@ def _check_name(check: Any) -> str:
     return getattr(check, "func", check).__name__
 
 
+# Checks that fit to convergence several times over: 3-4 s per case (#323).
+SLOW_CHECKS = frozenset({"check_classifiers_train"})
+
+
 def _conformance_params() -> list[Any]:
     # The strict xfail marks are applied here rather than through
     # estimator_checks_generator(mark="xfail", xfail_strict=True): xfail_strict
@@ -356,6 +361,8 @@ def _conformance_params() -> list[Any]:
             )
         if name in MAY_SKIP_CHECKS:
             marks.append(pytest.mark.may_skip)
+        if name in SLOW_CHECKS:
+            marks.append(pytest.mark.slow)
         params.append(pytest.param(estimator, check, marks=marks))
     return params
 

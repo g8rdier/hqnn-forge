@@ -112,6 +112,21 @@ feat: add user authentication endpoint
 Keep commit bodies to at most 3 bullet points. If you need more, the work is probably better
 split into smaller, more atomic commits.
 
+## Testing
+
+CI runs the whole suite. For the local edit–test loop, leave out the tests marked `slow`
+(end-to-end training, the gradient-variance physics checks, parameter-shift batching, repeated
+fits and bootstraps), which take most of its run time:
+
+```bash
+uv run --frozen --all-extras pytest -m "not slow"   # about a minute
+uv run --frozen --all-extras pytest                 # the full suite, as CI runs it
+```
+
+Mark a test `@pytest.mark.slow` when it takes 1.2 s or more (`pytest --durations=50` finds
+them); `tests/conftest.py` records the rule. `--strict-markers` is on, so a misspelled marker
+fails collection instead of silently leaving a slow test in the quick run.
+
 ## Linting
 
 The `lint` job in `.github/workflows/tests.yml` runs four checks, and a PR must pass all of
@@ -180,6 +195,13 @@ it.
 *   **Dependabot bumps the lockfile on its own.** Its PRs update `uv.lock` without touching
     `pyproject.toml`, so contributors only regenerate the lockfile when they change
     `pyproject.toml` by hand.
+
+*   **Upcoming PennyLane releases are tested weekly.** `.github/workflows/upstream.yml` runs
+    the suite against the newest PennyLane and pennylane-lightning pre-releases on PyPI and
+    against their nightly builds on TestPyPI. It never blocks a PR. When it fails, it opens
+    (or comments on) an issue titled `ci: test suite fails against PennyLane <source> builds`:
+    the library relies on PennyLane internals, and this is how a break shows up before users
+    upgrade. Trigger it by hand with `gh workflow run upstream.yml`.
 
 ## Versioning
 

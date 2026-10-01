@@ -389,6 +389,16 @@ uv run --frozen --all-extras vermin --no-tips -t=3.11- --violations --eval-annot
 
 [`CONTRIBUTING.md`](CONTRIBUTING.md#linting) lists every command the lint job runs.
 
+The full test suite takes a few minutes. For the edit–test loop, leave out the tests marked
+`slow` (end-to-end training, the gradient-variance physics checks, parameter-shift batching,
+repeated fits and bootstraps), which account for most of that time; CI always runs everything
+(see [`CONTRIBUTING.md`](CONTRIBUTING.md#testing)):
+
+```bash
+pytest -m "not slow"   # about a minute
+pytest                 # the full suite, as CI runs it
+```
+
 ---
 
 ## Methodology

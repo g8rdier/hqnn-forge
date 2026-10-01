@@ -45,6 +45,7 @@ from hqnn_forge.encoding.angle_embedding import (
     measure_z,
     readout_wires,
     validate_circuit_options,
+    variational_weight_shape,
 )
 from hqnn_forge.noise import NoiseMethod, Position, TrainingNoiseMixin
 
@@ -200,7 +201,7 @@ class IQPEncodingLayer(TrainingNoiseMixin, nn.Module):
         )
 
         weight_shapes: dict[str, tuple[int, ...]] = {
-            "weights": (n_layers, n_qubits, 3),
+            "weights": variational_weight_shape(entangler, n_qubits, n_layers),
         }
 
         self.qlayer = qml.qnn.TorchLayer(qnode, weight_shapes)
@@ -238,5 +239,5 @@ class IQPEncodingLayer(TrainingNoiseMixin, nn.Module):
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "
             f"n_repeats={self.n_repeats}, "
-            f"n_params={self.n_layers * self.n_qubits * 3}{options}"
+            f"n_params={sum(p.numel() for p in self.parameters())}{options}"
         )

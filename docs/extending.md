@@ -191,11 +191,11 @@ so a new ansatz is a new `entangler` value.
 - **Signature:** a block is applied as
   `apply_variational_layers(weights, n_qubits, n_layers, entangler, layer_offset)` inside the
   QNode, and records gates only.
-- **Weight shape `(n_layers, n_qubits, 3)`.** Every encoder hardcodes this shape in its
-  `weight_shapes`, and the angle, IQP and amplitude layers compute `n_params` in `extra_repr`
-  from it. A
-  block that needs another shape first needs the shape to come from one shared function; open
-  an issue for that rather than patching four constructors. Within the shape, dim 0 must stay
+- **Weight shape.** `variational_weight_shape(entangler, n_qubits, n_layers)`, next to
+  `apply_variational_layers`, is the one definition of the `weights` shape: every encoder
+  registers its `weights` from it, and `extra_repr` counts `n_params` from the layer's
+  parameters. Every block so far takes `(n_layers, n_qubits, 3)`; a block with another
+  shape adds a branch there and nowhere else. Within the shape, dim 0 must stay
   the layer index, which is what `block_local_init_` and the diagnostics' `n_layers` fallback
   read.
 - **`layer_offset`.** `DataReuploadingLayer` applies the blocks one at a time, with an embedding
@@ -224,7 +224,8 @@ so a new ansatz is a new `entangler` value.
 ### Also update
 
 - The `Entangler` `Literal` and a branch in `apply_variational_layers` (with its docstring
-  entry), both in `angle_embedding.py`. `validate_circuit_options` and its error message read
+  entry), both in `angle_embedding.py`, and a branch in `variational_weight_shape` if the
+  block's shape differs. `validate_circuit_options` and its error message read
   the choices from the `Literal`, so they need no change.
 - The `entangler` parameter docstrings: the angle, IQP and re-uploading builders and layers, and
   `hqnn_forge/models/` (`HybridBinaryClassifier`, `ParallelHybridClassifier`).
