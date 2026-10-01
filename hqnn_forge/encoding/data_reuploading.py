@@ -358,6 +358,8 @@ class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
     Attributes
     ----------
     n_qubits, n_layers : int
+    n_features : int
+        Width of the input, one feature per qubit: ``n_qubits``.
     n_outputs : int
         Width of the output: ``n_qubits`` or 1.
     rotation : str
@@ -395,6 +397,7 @@ class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
         super().__init__()
 
         self.n_qubits = n_qubits
+        self.n_features = n_qubits
         self.n_layers = n_layers
         self.rotation = rotation
         self.trainable_input_scaling = trainable_input_scaling

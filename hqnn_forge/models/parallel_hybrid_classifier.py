@@ -152,7 +152,8 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
     encoding_type:
         Type of quantum embedding to use: ``"angle"`` or ``"iqp"``. Default: ``"angle"``.
     embedding_rotation:
-        Pauli axis of the angle embedding, ``"X"`` (default), ``"Y"`` or ``"Z"``.
+        Pauli axis of the angle embedding, ``"X"`` (default) or ``"Y"``; ``"Z"``
+        raises, since a single ``RZ`` embedding on ``|0⟩`` ignores the input.
         Angle encoding only.
     entangler:
         ``"ring"`` (default: CNOT ring then ``Rot``), ``"strongly_entangling"``
