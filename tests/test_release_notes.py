@@ -149,12 +149,13 @@ class TestThisRepository:
 
     def test_the_readme_links_work_on_pypi(self) -> None:
         # PyPI renders README.md as the project description without the
-        # repository beside it, so a relative link or image there is broken.
+        # repository beside it, so a relative link or image there is broken,
+        # and so is a "#heading" anchor: PyPI gives headings no ids.
         readme = (ROOT / "README.md").read_text()
         text = re.sub(r"^```.*?^```", "", readme, flags=re.DOTALL | re.MULTILINE)
-        targets = re.findall(r"\]\(([^)\s]+)", text)
-        targets += re.findall(r"^\[[^\]]+\]:\s*(\S+)", text, flags=re.MULTILINE)
-        targets += re.findall(r"\b(?:src|href)=\"([^\"]+)\"", text)
+        targets = re.findall(r"\]\(\s*<?([^)\s>]+)", text)
+        targets += re.findall(r"^ {0,3}\[[^\]]+\]:\s*<?([^\s>]+)", text, flags=re.MULTILINE)
+        targets += re.findall(r"\b(?:src|href)\s*=\s*[\"']?([^\"'\s>]+)", text)
         assert targets
-        relative = [t for t in targets if not re.match(r"https?://|#|mailto:", t)]
+        relative = [t for t in targets if not re.match(r"https?://|mailto:", t)]
         assert not relative, relative

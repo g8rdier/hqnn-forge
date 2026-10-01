@@ -14,8 +14,9 @@ threshold search, MCC per thousand parameters, a paired Wilcoxon test, ablation 
 layer, and circuit diagnostics.
 
 **Scope.** Binary classification on imbalanced tabular data, or data made tabular by a
-pretrained embedding (see [Non-tabular data](#non-tabular-data-precomputed-embeddings)). The
-estimator, losses, thresholds and metrics are built for binary targets;
+pretrained embedding (see
+[Non-tabular data](https://github.com/g8rdier/hqnn-forge#non-tabular-data-precomputed-embeddings)).
+The estimator, losses, thresholds and metrics are built for binary targets;
 `MulticlassHybridClassifier` covers multiclass targets at the model level only. End-to-end
 image, text or time-series pipelines are out of scope.
 
@@ -52,10 +53,10 @@ The extras add optional parts; combine them as needed, e.g. `".[lightning,sklear
 | `lightning` | `pennylane-lightning` | the `lightning.qubit` backend and adjoint differentiation, the library defaults |
 | `sklearn` | `scikit-learn` | the scikit-learn estimator in `hqnn_forge.sklearn` |
 | `examples` | `scikit-learn`, `matplotlib` | the scripts in `examples/` and the plots in `hqnn_forge.evaluation` |
-| `dev` | test and lint tools | development; see [Development Setup](#development-setup) |
+| `dev` | test and lint tools | development; see [Development Setup](https://github.com/g8rdier/hqnn-forge#development-setup) |
 
 pip installs the newest versions that `pyproject.toml` allows. To work on the project in the
-environment CI tests against, use the uv setup under [Development Setup](#development-setup).
+environment CI tests against, use the uv setup under [Development Setup](https://github.com/g8rdier/hqnn-forge#development-setup).
 
 ### Device backends
 

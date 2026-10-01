@@ -108,9 +108,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   submodule the caller froze in eval mode and restores every submodule's mode on exit (#249)
 - `ClassicalBaseline` (a plain MLP with the classifiers' interface) and
   `hqnn_forge.utils.classical_baseline(model)`, which builds the untrained classical control
-  of a hybrid model with its trainable parameter count matched to the hybrid's live count
-  (`count_parameters()` minus `circuit_summary(model).n_inert_params`, every other rotation
-  angle counted as one parameter). `ClassicalBaseline` takes `init_seed` like the other
+  of a hybrid model with its trainable parameter count matched to the hybrid's, every rotation
+  angle counted as one parameter. `ClassicalBaseline` takes `init_seed` like the other
   classifiers, and the builder carries the hybrid's `init_seed` over, so a seeded hybrid gets
   a seeded control (#250)
 - `hqnn_forge.utils.permute_quantum_layer`: the permutation null for quantum ablation, which
@@ -160,10 +159,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   insertion as `hqnn_forge.noise`; `encoded_density_matrices` and `kernel_from_density_matrices` (#283)
 - The published SHNN's live parameter count: 102 of its 122 trainable parameters can move
   the output (autograd, pinned by a test); the 20 dead circuit weights are kept so published
-  checkpoints load unchanged, and both counts are documented (#234). The matched classical
-  control leaves the inert weights out of its target, so the published SHNN's control has 101
-  parameters, not 121 as matched on the total, and the parallel model's 523, not 571.
-  Efficiency figures (MCC/kParam) still divide by the total (#293)
+  checkpoints load unchanged, and both counts are documented (#293)
 - `run_benchmark(n_seeds=...)`: each fold trained with several recorded initialisation seeds,
   fold scores averaged over them for the paired test, and the across-seed spread reported as
   `mcc_seed_std` (#294)
@@ -193,13 +189,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `hqnn_forge.diagnostics.expressibility` (Sim et al. 2019, the KL divergence of the circuit's
   fidelity histogram from Haar, with exact Haar bin probabilities) and `entangling_capability`
   (mean Meyer–Wallach Q with its standard error and the Haar reference), with the building
-  blocks `meyer_wallach`, `expressibility_from_fidelities` and
-  `haar_fidelity_bin_probabilities` (#325)
+  block `meyer_wallach`; `expressibility_from_fidelities` and `haar_fidelity_bin_probabilities`
+  are in the `hqnn_forge.diagnostics.expressibility` module (#325)
 - `entangler="hardware_efficient"`: a nearest-neighbour `CZ` ladder then `RY` on every qubit
-  (Kandala et al. 2017), backed by `hqnn_forge.circuits.hardware_efficient_layer`, in every
-  encoder but amplitude and in the classifiers. Its weights have shape `(n_layers, n_qubits)`,
-  not `(n_layers, n_qubits, 3)`: code that assumes a trailing Euler-angle axis should read the
-  shape from `variational_weight_shape`. The default `"ring"` block now runs through
+  (Kandala et al. 2017), backed by `hqnn_forge.circuits.hardware_efficient_layer`, in the
+  angle, IQP and re-uploading encoders and in the classifiers (and, since #333, the amplitude
+  encoder). Its weights have shape `(n_layers, n_qubits)`, not `(n_layers, n_qubits, 3)`: code
+  that assumes a trailing Euler-angle axis should read the shape from
+  `hqnn_forge.encoding.angle_embedding.variational_weight_shape`. The default `"ring"` block now runs through
   `hqnn_forge.circuits.strongly_entangling_layer`, gate for gate as before (#331)
 - `encoding_type="reuploading"` and `encoding_type="amplitude"` in `HybridBinaryClassifier`,
   `ParallelHybridClassifier`, `MulticlassHybridClassifier` and the scikit-learn estimator, with
@@ -207,8 +204,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `diff_method="backprop"` and is refused at construction otherwise; `AmplitudeEncodingLayer`
   gains `entangler` and `readout`. Options an encoding cannot use raise at construction (#333)
 - Multiclass in `HybridClassifierEstimator`: three or more classes train
-  `MulticlassHybridClassifier` with a new `strategy` (`"softmax"` with cross-entropy or
-  `SoftmaxFocalLoss`, `"one_vs_rest"` with BCE or focal loss on one-hot targets);
+  `MulticlassHybridClassifier` with a new `strategy` (`"softmax"` with cross-entropy or the
+  new `hqnn_forge.utils.SoftmaxFocalLoss`, `"one_vs_rest"` with BCE or focal loss on one-hot targets);
   `predict_proba` is `(n, n_classes)` in `classes_` order and `threshold_` is `None`.
   `train_model` accepts `(batch, n_classes)` logits and monitors them with the new
   `MULTICLASS_METRICS` (`multiclass_matthews_corrcoef`, `macro_f1_score`,
@@ -298,6 +295,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model had before, and a multiclass checkpoint that predates them loads as before, with the
   "predates" warning. `save_checkpoint` / `load_checkpoint` are typed against the new
   head-agnostic `ClassifierBase`. The binary models' constructors do not change (#301)
+- `classical_baseline(model)` matches the control to the hybrid's live parameter count
+  (`count_parameters()` minus `circuit_summary(model).n_inert_params`) rather than its total,
+  so the published SHNN's control has 101 parameters, not 121, and the parallel model's 523,
+  not 571. Efficiency figures (MCC/kParam) still divide by the total (#293)
 - Device fallback remembers, per process, a backend that failed to initialise, so later layers
   skip it without probing it again or warning twice (`reset_device_fallback()` forgets it), and
   the fallback warning points at the caller's line rather than inside the library (#285)
