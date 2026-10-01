@@ -308,13 +308,25 @@ def test_pickle_rebuilds_the_fitted_layer_not_the_current_parameters() -> None:
     np.testing.assert_array_equal(loaded.decision_function(Xt), before)
 
 
-def test_failed_refit_keeps_the_previous_model() -> None:
+@pytest.mark.parametrize("width", [3, 4])
+def test_failed_refit_keeps_the_previous_model(width: int) -> None:
     X, y = _data()
     est = QuantumKernelClassifier(encoding="amplitude", random_state=0).fit(X, y)
     layer, svc, before = est.layer_, est.svc_, est.decision_function(X)
-    X_bad = X.copy()
+    X_bad, _ = _data(d=width, seed=8)
     X_bad[0] = 0.0  # amplitude encoding cannot normalise an all-zero sample
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="zero"):
         est.set_params(random_state=1).fit(X_bad, y)
-    assert est.layer_ is layer and est.svc_ is svc
+    assert est.layer_ is layer and est.svc_ is svc and est.n_features_in_ == 3
     np.testing.assert_array_equal(est.decision_function(X), before)
+
+
+def test_predict_proba_follows_the_fit_not_set_params() -> None:
+    X, y = _data()
+    est = QuantumKernelClassifier(random_state=0).fit(X, y)
+    est.set_params(probability=True)
+    assert not hasattr(est, "predict_proba")  # unchanged until the next fit
+    est = QuantumKernelClassifier(probability=True, random_state=0).fit(X, y)
+    proba = est.predict_proba(X)
+    est.set_params(probability=False)
+    np.testing.assert_array_equal(est.predict_proba(X), proba)

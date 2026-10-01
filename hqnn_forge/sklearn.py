@@ -466,6 +466,9 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
 
 KernelEncoding = Literal["angle", "iqp", "reuploading", "amplitude"]
 
+#: Set by validate_data in fit; restored if the fit fails.
+_INPUT_ATTRIBUTES = ("n_features_in_", "feature_names_in_")
+
 
 class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
     """
@@ -567,7 +570,8 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
         self.random_state = random_state
 
     # ------------------------------------------------------------------
-    # Everything the fitted model depends on is copied into _fit_config at fit,
+    # Everything the fitted model depends on is copied into _fit_config at fit
+    # (batch_size, which only bounds memory, stays live),
     # so a set_params after fit cannot change how predict encodes new samples
     # or how unpickling rebuilds layer_.
     def _config(self) -> dict[str, Any]:
@@ -578,7 +582,6 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
             "trainable_input_scaling": self.trainable_input_scaling,
             "noise_level": self.noise_level,
             "noise_position": self.noise_position,
-            "batch_size": self.batch_size,
         }
 
     @staticmethod
@@ -615,8 +618,9 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
             n_qubits=n_qubits, trainable_input_scaling=config["trainable_input_scaling"], **common
         )
 
-    @staticmethod
-    def _encode(X: torch.Tensor, layer: torch.nn.Module, config: dict[str, Any]) -> torch.Tensor:
+    def _encode(
+        self, X: torch.Tensor, layer: torch.nn.Module, config: dict[str, Any]
+    ) -> torch.Tensor:
         """States, or density matrices under noise, of ``X`` through ``layer``."""
         if config["noise_level"]:
             return kernels.encoded_density_matrices(
@@ -624,9 +628,9 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
                 layer,
                 noise_level=config["noise_level"],
                 noise_position=config["noise_position"],
-                batch_size=config["batch_size"],
+                batch_size=self.batch_size,
             )
-        return kernels.encoded_states(X, layer, batch_size=config["batch_size"])
+        return kernels.encoded_states(X, layer, batch_size=self.batch_size)
 
     @staticmethod
     def _kernel(
@@ -642,7 +646,21 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
     # ------------------------------------------------------------------
     def fit(self, X: npt.ArrayLike, y: npt.ArrayLike) -> QuantumKernelClassifier:
         """Build (and optionally align) the layer, then fit the SVM on the Gram matrix."""
+        # validate_data resets n_features_in_ (and feature_names_in_); put them
+        # back if the fit fails, so a failed refit leaves the previous model whole.
+        previous = {k: v for k, v in vars(self).items() if k in _INPUT_ATTRIBUTES}
         X_arr, y_arr = validate_data(self, X, y, dtype=np.float64)
+        try:
+            return self._fit(X_arr, y_arr)
+        except BaseException:
+            for name in _INPUT_ATTRIBUTES:
+                if name in previous:
+                    setattr(self, name, previous[name])
+                else:
+                    self.__dict__.pop(name, None)
+            raise
+
+    def _fit(self, X_arr: np.ndarray, y_arr: np.ndarray) -> QuantumKernelClassifier:
         # Every check that needs no simulation runs before the first circuit.
         check_classification_targets(y_arr)
         classes, counts = np.unique(y_arr, return_counts=True)
@@ -725,9 +743,7 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
             svc = calibrator.calibrated_classifiers_[0].estimator
         else:
             svc = svm().fit(K, y_arr)
-        # Published together, after everything that can fail.  (validate_data has
-        # already reset n_features_in_, so after a failed refit the previous model
-        # rejects inputs by width instead of mixing two feature maps.)
+        # Published together, after everything that can fail.
         self._fit_config = config
         self.layer_ = layer
         self._train_encoded = encoded
@@ -755,7 +771,12 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
         K = self._test_kernel(X)
         return self.svc_.predict(K)  # type: ignore[no-any-return]
 
-    @available_if(lambda self: self.probability)
+    # Fitted, it follows the fit (calibrator_), not a later set_params.
+    @available_if(
+        lambda self: (
+            self.calibrator_ is not None if hasattr(self, "calibrator_") else self.probability
+        )
+    )
     def predict_proba(self, X: npt.ArrayLike) -> npt.NDArray[np.float64]:
         """Platt-scaled probabilities; only present with ``probability=True``, as in ``SVC``."""
         K = self._test_kernel(X)
