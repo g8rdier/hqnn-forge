@@ -259,12 +259,6 @@ class FitScore(NamedTuple):
     ece: float
 
 
-def _mean_of(folds: list[FoldResult], dataset: str, model: str, attr: str) -> float:
-    """Mean of a per-fold attribute over every fold and seed of ``model`` on ``dataset``."""
-    values = [getattr(f, attr) for f in folds if f.dataset == dataset and f.model == model]
-    return float(np.mean(values))
-
-
 def _fit_and_score(
     model: BinaryClassifierBase,
     loss: LossBuilder,
@@ -302,13 +296,17 @@ def _fit_and_score(
     threshold = history.best_threshold if history.best_threshold is not None else 0.5
     prob = model.predict_proba(as_tensor(X_test.astype(np.float32)))
     mcc = matthews_corrcoef(y_test, (prob >= threshold).long())
+    # A diverged model's NaN probabilities still score an MCC (every comparison
+    # is False, so all negative); they have no calibration, and must not end
+    # the run.
+    finite = bool(torch.isfinite(prob).all())
     return FitScore(
-        float(mcc),
-        float(threshold),
-        seconds,
-        history.n_epochs,
-        brier_score(y_test, prob),
-        expected_calibration_error(y_test, prob, ECE_BINS, "quantile"),
+        mcc=float(mcc),
+        threshold=float(threshold),
+        seconds=seconds,
+        epochs=history.n_epochs,
+        brier=brier_score(y_test, prob) if finite else math.nan,
+        ece=expected_calibration_error(y_test, prob, ECE_BINS, "quantile") if finite else math.nan,
     )
 
 
@@ -711,6 +709,8 @@ def run_benchmark(
         outer = stratified_kfold(y, n_splits, random_state=split_seed)
         scores: dict[str, list[float]] = {m: [] for m in MODELS}
         seed_stds: dict[str, list[float]] = {m: [] for m in MODELS}
+        briers: dict[str, list[float]] = {m: [] for m in MODELS}
+        eces: dict[str, list[float]] = {m: [] for m in MODELS}
         seconds: dict[str, float] = {m: 0.0 for m in MODELS}
         n_parameters: dict[str, int] = {}
         architecture: dict[str, str] = {}
@@ -763,6 +763,8 @@ def run_benchmark(
             for model_name in MODELS:
                 train_settings = {**defaults, **chosen[model_name]}
                 seed_scores: list[float] = []
+                seed_briers: list[float] = []
+                seed_eces: list[float] = []
                 for seed_index, seed in enumerate(init_seeds):
                     with torch.random.fork_rng(devices=[]):
                         torch.manual_seed(seed)
@@ -791,19 +793,13 @@ def run_benchmark(
                             patience=train_settings["patience"],
                             batch_seed=batch_seed,
                         )
-                        mcc, threshold, secs, epochs = (
-                            fit.mcc,
-                            fit.threshold,
-                            fit.seconds,
-                            fit.epochs,
-                        )
                         noisy: dict[float, float] = {}
                         if noise_levels is not None and model_name == "hybrid":
                             noisy = _noise_scores(
                                 model,
                                 X_fold[test_idx],
                                 y[test_idx],
-                                threshold,
+                                fit.threshold,
                                 noise_levels,
                                 noise_position,
                             )
@@ -813,35 +809,39 @@ def run_benchmark(
                         "config": model.get_config(),
                     }
                     architecture[model_name] = type(model).__name__
-                    seed_scores.append(mcc)
-                    seconds[model_name] += secs
+                    seed_scores.append(fit.mcc)
+                    seed_briers.append(fit.brier)
+                    seed_eces.append(fit.ece)
+                    seconds[model_name] += fit.seconds
                     folds.append(
                         FoldResult(
-                            name,
-                            model_name,
-                            k,
-                            np.sort(train_idx),
-                            np.sort(val_idx),
-                            np.sort(test_idx),
-                            n_synthetic,
-                            split_seed,
-                            inner_seed,
-                            smote_seed,
-                            seed,
-                            batch_seed,
-                            threshold,
-                            mcc,
-                            secs,
-                            epochs,
-                            _device_name(model),
-                            seed_index,
-                            dict(chosen[model_name]),
-                            noisy,
-                            fit.brier,
-                            fit.ece,
+                            dataset=name,
+                            model=model_name,
+                            fold=k,
+                            train_idx=np.sort(train_idx),
+                            val_idx=np.sort(val_idx),
+                            test_idx=np.sort(test_idx),
+                            n_synthetic=n_synthetic,
+                            split_seed=split_seed,
+                            inner_seed=inner_seed,
+                            smote_seed=smote_seed,
+                            init_seed=seed,
+                            batch_seed=batch_seed,
+                            threshold=fit.threshold,
+                            mcc=fit.mcc,
+                            train_seconds=fit.seconds,
+                            epochs=fit.epochs,
+                            device=_device_name(model),
+                            seed_index=seed_index,
+                            hyperparameters=dict(chosen[model_name]),
+                            noise_mcc=noisy,
+                            brier=fit.brier,
+                            ece=fit.ece,
                         )
                     )
                 scores[model_name].append(float(np.mean(seed_scores)))
+                briers[model_name].extend(seed_briers)
+                eces[model_name].extend(seed_eces)
                 if n_seeds > 1:
                     seed_stds[model_name].append(float(np.std(seed_scores, ddof=1)))
 
@@ -879,8 +879,10 @@ def run_benchmark(
                         float(np.mean(seed_stds[model_name])) if n_seeds > 1 else None
                     ),
                     "mcc_per_kparam": parameter_efficiency(n_parameters[model_name], mean),
-                    "brier_mean": _mean_of(folds, name, model_name, "brier"),
-                    "ece_mean": _mean_of(folds, name, model_name, "ece"),
+                    # NaN when any fold diverged: a mean over the rest would
+                    # flatter the model.
+                    "brier_mean": float(np.mean(briers[model_name])),
+                    "ece_mean": float(np.mean(eces[model_name])),
                     "fold_mcc": tuple(float(s) for s in fold_scores),
                     "train_seconds": seconds[model_name],
                     "wilcoxon_p": p,

@@ -272,6 +272,24 @@ class TestReportedStatistics:
         assert math.isnan(hybrid["wilcoxon_p"]) and math.isnan(control["wilcoxon_min_p"])
         assert hybrid["rank_biserial"] == 0.0
 
+    def test_one_diverged_fold_makes_the_calibration_mean_nan(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = iter(range(1000))
+
+        def fit(*a: object, **k: object) -> benchmark.FitScore:
+            first = next(calls) == 0  # the hybrid's first fold diverged
+            nan_or = lambda v: math.nan if first else v
+            return benchmark.FitScore(
+                0.0 if first else 0.3, 0.5, 0.01, 1, nan_or(0.2), nan_or(0.1)
+            )
+
+        monkeypatch.setattr(benchmark, "_fit_and_score", fit)
+        hybrid, control = _run({"a": _data()}).records
+        assert math.isnan(hybrid["brier_mean"]) and math.isnan(hybrid["ece_mean"])
+        assert control["brier_mean"] == pytest.approx(0.2)
+        assert control["ece_mean"] == pytest.approx(0.1)
+
     def test_five_folds_cannot_reach_five_percent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # The limit the module docstring warns about: the hybrid wins every fold.
         scores = iter([0.9, 0.1] * 5)

@@ -89,7 +89,9 @@ class TrainingHistory:
         on the validation split for the returned weights, or ``None`` without a
         validation split, for a multiclass model, or when it cannot be fitted
         (non-binary targets such as smoothed labels, one class, non-finite
-        logits).  ``T > 1`` means the model is
+        logits, or logits that separate the validation classes or rank them no
+        better than chance, where the NLL has no finite optimum in ``T``).
+        ``T > 1`` means the model is
         over-confident on held-out data; ``σ(logits / T)`` is the calibrated
         probability (#319).
     restored_best:
@@ -421,13 +423,12 @@ def _validation_temperature(
     x_v, y_v = val
     with torch.no_grad(), eval_mode(model):
         logits = _logits(model, x_v)
-    if (
-        logits.ndim != 1
-        or not torch.isfinite(logits).all()
-        # Soft targets train fine under a loss monitor; they just have no
-        # binary NLL to fit a temperature to, so the run must not fail here.
-        or not torch.isin(y_v, torch.tensor([0.0, 1.0], dtype=y_v.dtype)).all()
-        or torch.unique(y_v).numel() < 2
-    ):
+    if logits.ndim != 1:
         return None
-    return TemperatureScaler.fit(logits, y_v).temperature
+    try:
+        return TemperatureScaler.fit(logits, y_v).temperature
+    except ValueError:
+        # Soft targets, one class, non-finite logits or a split the logits
+        # separate (no finite temperature) all train fine; they just have no
+        # temperature to report, so the finished run must not fail here.
+        return None
