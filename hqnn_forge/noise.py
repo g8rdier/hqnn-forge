@@ -40,12 +40,37 @@ then done with :func:`apply_depolarizing_noise` / :func:`noise_sweep`, which
 take precedence over the training-time channel if both are active at once.
 ``noise_level=0`` (the default) leaves the layer exactly as before.
 
-Mixed-state simulation costs ``O(4^n)`` memory and is differentiated with
-backprop.  Evaluation stores little, but training keeps a ``batch × 4^n``
-complex density matrix for every gate and every inserted channel for the
-backward pass: at 8 qubits, batch 64 and ``position="all"`` that is several GB
-per step, against kilobytes on the adjoint path.  Training-time noise is
-practical up to about 6 qubits; see #229 for a trajectory-sampling alternative.
+Two methods, chosen with ``noise_method``:
+
+``"density"`` (default)
+    The exact channel: mixed-state simulation on ``default.mixed``,
+    differentiated with backprop.  It costs ``O(4^n)`` memory, and training
+    keeps a ``batch × 4^n`` complex density matrix for every gate and every
+    inserted channel for the backward pass.  At 8 qubits, batch 64 and
+    ``position="all"``, one step measured +2.7 GB peak and 50 s, so this is
+    practical up to about 6 qubits.
+``"trajectories"``
+    Pauli-trajectory (Monte Carlo) sampling on the layer's own device and
+    differentiation method.  At every channel site each sample independently
+    gets ``I`` with probability ``1 − p``, or ``X``, ``Y`` or ``Z`` with ``p/3``
+    each.  That mixture *is* the depolarizing channel, so the output
+    averaged over draws equals the ``"density"`` output, and so does the
+    gradient: each step's loss gradient is an unbiased estimate of the one
+    ``"density"`` computes, at pure-state cost.  The same step measured
+    +34 MB and 0.8 s on ``lightning.qubit`` with adjoint (+18 MB and 0.3 s
+    noiseless).  The price is gradient variance, as with dropout, which a
+    fresh draw every forward pass resembles.  ``noise_trajectories = k``
+    averages ``k`` draws per sample, at ``k`` times the cost, to reduce it.
+
+    The Pauli at a site is applied as ``RZ(π·z)`` then ``RX(π·x)`` with bits
+    ``(x, z)``: ``(0, 0)`` is ``I``, ``(1, 0)`` is ``X``, ``(0, 1)`` is ``Z``
+    and ``(1, 1)`` is ``Y`` up to a global phase.  Every sample therefore
+    runs the same gate sequence with different angles, so parameter
+    broadcasting and the per-sample batch split of the adjoint path apply
+    unchanged.  The sites are placed by ``qml.noise.insert`` itself, so they
+    are exactly the sites the ``"density"`` path puts channels on.  The
+    draws use torch's global RNG, like dropout, so ``torch.manual_seed``
+    makes them reproducible.
 """
 
 from __future__ import annotations
@@ -61,6 +86,7 @@ from torch import nn
 from hqnn_forge._resolve import resolve_encoding_layer
 
 Position = Literal["all", "end"]
+NoiseMethod = Literal["density", "trajectories"]
 MAX_P = 0.75
 
 
@@ -110,11 +136,61 @@ def training_noise_qnode(
     return _noisy_qnode(qnode, n_qubits, p, position)
 
 
+@qml.transform
+def _pauli_trajectories(
+    tape: qml.tape.QuantumScript, p: float, position: Position
+) -> tuple[qml.tape.QuantumScriptBatch, Callable[..., object]]:
+    """
+    ``tape`` with one randomly drawn Pauli per sample at every channel site.
+
+    The draw happens here, when the tape is built, so every forward pass
+    draws afresh; the backward pass differentiates the tape that ran.
+    """
+    shape = () if tape.batch_size is None else (tape.batch_size,)
+    n_draws = 1 if tape.batch_size is None else tape.batch_size
+    weights = torch.tensor([1.0 - p, p / 3, p / 3, p / 3], dtype=torch.float64)
+
+    def pauli_error(wires: object) -> None:
+        # 0 = I, 1 = X, 2 = Y, 3 = Z; Y = i·X·Z, so Y sets both bits.
+        u = torch.multinomial(weights, n_draws, replacement=True).reshape(shape)
+        qml.RZ(torch.pi * ((u == 2) | (u == 3)).to(torch.float64), wires=wires)
+        qml.RX(torch.pi * ((u == 1) | (u == 2)).to(torch.float64), wires=wires)
+
+    return qml.noise.insert(tape, pauli_error, (), position=position)
+
+
+def trajectory_noise_qnode(qnode: qml.QNode, p: float, position: Position = "all") -> qml.QNode:
+    """
+    ``qnode`` with depolarizing noise sampled as Pauli trajectories.
+
+    Runs on ``qnode``'s own device and differentiation method; each call draws
+    a fresh error pattern per sample (see the module docstring).  The average
+    over draws equals :func:`training_noise_qnode`'s output.
+
+    Raises
+    ------
+    ValueError
+        If ``p`` is outside ``(0, 0.75]`` or ``position`` is unknown.
+    """
+    validate_noise(p, position)
+    if p == 0.0:
+        raise ValueError(
+            "trajectory_noise_qnode needs p > 0; p = 0 is the noiseless QNode itself."
+        )
+    return _pauli_trajectories(qnode, p=p, position=position)
+
+
 def run_with_training_noise(
-    qlayer: qml.qnn.TorchLayer, noisy_qnode: qml.QNode, x: torch.Tensor
+    qlayer: qml.qnn.TorchLayer,
+    noisy_qnode: qml.QNode,
+    x: torch.Tensor,
+    n_trajectories: int = 1,
 ) -> torch.Tensor:
     """
     Evaluate ``qlayer`` on ``x`` with ``noisy_qnode`` in place of its QNode.
+
+    ``n_trajectories > 1`` (the ``"trajectories"`` method only) runs each
+    sample that many times and returns the mean, each run with its own draw.
 
     If :func:`apply_depolarizing_noise` is active on the layer, its channel
     (none at ``p = 0``) is kept and the training-time one is not applied: the
@@ -126,9 +202,42 @@ def run_with_training_noise(
     original = qlayer.qnode
     qlayer.qnode = noisy_qnode
     try:
-        return qlayer(x)
+        if n_trajectories == 1:
+            return qlayer(x)
+        # Sample-major repeat: rows k·i … k·i + k − 1 are sample i's draws.
+        batched = x.ndim > 1
+        repeated = (
+            x.repeat_interleave(n_trajectories, dim=0)
+            if batched
+            else x.expand(n_trajectories, *x.shape)
+        )
+        out = qlayer(repeated)
+        out = out.reshape(-1, n_trajectories, *out.shape[1:]).mean(dim=1)
+        return out if batched else out[0]
     finally:
         qlayer.qnode = original
+
+
+def validate_noise_method(method: str, n_trajectories: object) -> None:
+    """
+    Raise ``ValueError`` unless ``method`` is known and ``n_trajectories`` fits it.
+
+    ``n_trajectories`` must be a positive ``int`` (not ``bool``), and 1 for
+    ``"density"``, which is exact and has nothing to average.
+    """
+    if method not in ("density", "trajectories"):
+        raise ValueError(f"noise_method must be 'density' or 'trajectories'; got {method!r}.")
+    if (
+        isinstance(n_trajectories, bool)
+        or not isinstance(n_trajectories, int)
+        or n_trajectories < 1
+    ):
+        raise ValueError(f"noise_trajectories must be a positive int; got {n_trajectories!r}.")
+    if method == "density" and n_trajectories != 1:
+        raise ValueError(
+            f"noise_trajectories={n_trajectories} needs noise_method='trajectories'; the "
+            f"density method is exact and has nothing to average."
+        )
 
 
 @contextmanager
