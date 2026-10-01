@@ -120,17 +120,22 @@ class TestSeed:
 
 
 class TestEstimator:
-    def test_random_state_seeds_the_model(self) -> None:
+    # A NumPy integer, as scikit-learn tools pass around, is converted to the
+    # plain int the layer's seed validation accepts.
+    @pytest.mark.parametrize("random_state", [13, np.int64(13)])
+    def test_random_state_seeds_the_model(self, random_state: int) -> None:
         pytest.importorskip("sklearn")
         from hqnn_forge.sklearn import HybridClassifierEstimator
 
         rng = np.random.default_rng(0)
         X = rng.normal(size=(24, 3))
         y = (X[:, 0] > 0).astype(int)
-        est = HybridClassifierEstimator(n_qubits=2, n_layers=1, max_epochs=1, random_state=13).fit(
-            X, y
-        )
-        assert est.model_.get_config()["seed"] == 13
+        est = HybridClassifierEstimator(
+            n_qubits=2, n_layers=1, max_epochs=1, random_state=random_state
+        ).fit(X, y)
+        seed = est.model_.get_config()["seed"]
+        assert seed == 13
+        assert type(seed) is int
 
 
 class TestSPSACommonShotNoise:

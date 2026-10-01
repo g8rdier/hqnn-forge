@@ -58,6 +58,7 @@ def _failing_device(failing: dict[str, type[BaseException]]):
 
 
 class TestAcceleratedBackends:
+    @pytest.mark.may_skip  # no GPU backend on the CI runners
     @pytest.mark.parametrize("name", GPU_BACKENDS)
     def test_layer_runs_on_backend_when_available(self, name: str) -> None:
         if not _available(name):
@@ -364,3 +365,56 @@ class TestAuto:
             diff_method="parameter-shift",
         )
         assert _backend(model.quantum_layer) == ("default.qubit", "parameter-shift")
+
+    def test_auto_is_the_resolved_choice_made_explicitly(self) -> None:
+        """ "auto" only rewrites names: the explicit pair gives identical outputs."""
+        auto = HybridBinaryClassifier(init_seed=0)
+        explicit = HybridBinaryClassifier(
+            init_seed=0, device_name="default.qubit", diff_method="backprop"
+        )
+        explicit.load_state_dict(auto.state_dict())
+        x = torch.randn(6, 8, generator=torch.Generator().manual_seed(1))
+        auto(x).sum().backward()
+        explicit(x).sum().backward()
+        torch.testing.assert_close(auto(x), explicit(x), rtol=0, atol=0)
+        for a, e in zip(auto.parameters(), explicit.parameters(), strict=True):
+            torch.testing.assert_close(a.grad, e.grad, rtol=0, atol=0)
+
+    @requires_lightning
+    @pytest.mark.parametrize("encoding_type", ["angle", "iqp", "reuploading"])
+    def test_auto_default_matches_the_old_lightning_default(self, encoding_type: str) -> None:
+        """
+        The default moved from lightning.qubit/adjoint to "auto" (#349); at the
+        default 8 qubits that is default.qubit/backprop.  The two agree on
+        outputs and on every gradient to float32 rounding, so the change does
+        not alter what a model computes.
+        """
+        old = HybridBinaryClassifier(
+            init_seed=0,
+            encoding_type=encoding_type,
+            device_name="lightning.qubit",
+            diff_method="adjoint",
+        )
+        new = HybridBinaryClassifier(init_seed=0, encoding_type=encoding_type)
+        assert _backend(new.quantum_layer) == ("default.qubit", "backprop")
+        new.load_state_dict(old.state_dict())
+        x = torch.randn(16, 8, generator=torch.Generator().manual_seed(1))
+        torch.testing.assert_close(new(x), old(x), rtol=0, atol=1e-5)
+        new(x).sum().backward()
+        old(x).sum().backward()
+        for n, o in zip(new.parameters(), old.parameters(), strict=True):
+            torch.testing.assert_close(n.grad, o.grad, rtol=0, atol=1e-5)
+
+    def test_repr_names_the_resolved_backend(self) -> None:
+        model = HybridBinaryClassifier(n_input_features=3, n_qubits=2, n_layers=1)
+        assert "device='default.qubit', diff_method='backprop'" in repr(model)
+
+    def test_amplitude_encoder_with_shots_names_shots_in_the_refusal(self) -> None:
+        with pytest.raises(ValueError, match="which shots require"):
+            HybridBinaryClassifier(
+                n_input_features=3,
+                n_qubits=2,
+                n_layers=1,
+                encoding_type="amplitude",
+                shots=100,
+            )

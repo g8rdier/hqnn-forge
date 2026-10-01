@@ -111,6 +111,7 @@ from hqnn_forge.models._trunk import (
 from hqnn_forge.models.base import BinaryClassifierBase
 from hqnn_forge.models.hybrid_classifier import _PUBLISHED_SHNN
 from hqnn_forge.noise import NoiseMethod, Position
+from hqnn_forge.utils.rng import as_seed, seeded_rng
 
 
 class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
@@ -129,7 +130,11 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
     n_qubits:
         Number of qubits in the quantum branch.  Default: 8.
     n_layers:
-        VQC ansatz layers.  Default: 2.
+        VQC ansatz layers.  Default: 2.  At 1, with angle encoding and
+        ``readout="first"``, ⟨Z_0⟩ misses the first encoded angle under the
+        default ring and RX embedding, and most of them under
+        ``entangler="brickwork"``; use 2 or more with a ring.  See step 2 of
+        :func:`hqnn_forge.encoding.angle_embedding._make_angle_embedding_circuit`.
     classical_hidden_dim:
         Width of the classical MLP branch.  Default: 16.
     use_classical_encoder:
@@ -177,8 +182,9 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
     entangler:
         ``"ring"`` (default: CNOT ring then ``Rot``), ``"strongly_entangling"``
         (``qml.StronglyEntanglingLayers``: ``Rot`` then a CNOT ring of growing
-        range) or ``"hardware_efficient"`` (a CZ ladder then ``RY``: a third of
-        the circuit parameters).  See
+        range), ``"brickwork"`` (nearest-neighbour CNOT pairs, so each ⟨Z_i⟩
+        keeps a local light cone at shallow depth) or ``"hardware_efficient"``
+        (a CZ ladder then ``RY``: a third of the circuit parameters).  See
         :func:`hqnn_forge.encoding.angle_embedding.apply_variational_layers`.
     readout:
         ``"all"`` (default): the head reads every ⟨Z_i⟩.  ``"first"``: ⟨Z_0⟩
@@ -211,6 +217,26 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
         :class:`~hqnn_forge.encoding.QuantumEncodingLayer`.
     noise_trajectories:
         Draws averaged per sample with ``"trajectories"``.  Default: 1.
+    init_seed:
+        Seed for weight initialisation.  ``None`` (default) draws the initial
+        weights from the global torch RNG; an int draws them from a private RNG
+        seeded with it, so the same seed gives the same weights and the global
+        RNG is left exactly as it was.
+    classical_encoder:
+        Your own module in place of the built-in ``Linear(n_input_features →
+        n_qubits)``, trained together with the quantum layer: a small MLP,
+        or a CNN or sequence model that reshapes the flat
+        ``(batch, n_input_features)`` input itself.  It must return
+        ``(batch, n_qubits)`` (``(batch, 2**n_qubits)`` with
+        ``encoding_type="amplitude"``), which is checked here with one forward pass.
+        The model owns the angle range: it applies ``encoder_activation`` and
+        the factor π on top of the module, exactly as for the built-in
+        encoder, so the module should output unbounded features and not end
+        in ``Tanh`` or ``Sigmoid`` (that warns).  The module is used as given
+        and never re-initialised, so pretrained weights are kept.  Requires
+        ``use_classical_encoder=True``.  ``save_checkpoint`` refuses a model
+        with a custom encoder; save its ``state_dict`` instead.  Default:
+        ``None``, the built-in encoder.
     trainable_input_scaling:
         With ``encoding_type="reuploading"`` only: a trainable per-upload
         scale on the features, initialised to 1.  Default: ``False``.
@@ -231,6 +257,8 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
     ----------
     classical_branch  : nn.Sequential
     classical_encoder : nn.Sequential or nn.Identity
+        ``Sequential(Linear, activation)``, ``Sequential(custom module,
+        activation)`` with a custom ``classical_encoder``, or ``Identity``.
     quantum_layer     : QuantumEncodingLayer or IQPEncodingLayer
     dropout           : nn.Dropout
     head              : nn.Linear
@@ -265,6 +293,8 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
         init_std: float = DEFAULT_INIT_STD,
         noise_level: float = 0.0,
         noise_position: Position = "all",
+        init_seed: int | None = None,
+        classical_encoder: nn.Module | None = None,
         noise_method: NoiseMethod = "density",
         noise_trajectories: int = 1,
         trainable_input_scaling: bool = False,
@@ -272,75 +302,86 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
         seed: int | None = None,
     ) -> None:
         super().__init__()
-        self._config = dict(
-            n_input_features=n_input_features,
-            n_qubits=n_qubits,
-            n_layers=n_layers,
-            classical_hidden_dim=classical_hidden_dim,
-            use_classical_encoder=use_classical_encoder,
-            dropout_p=dropout_p,
-            device_name=device_name,
-            diff_method=diff_method,
-            init_strategy=init_strategy,
-            encoding_type=encoding_type,
-            embedding_rotation=embedding_rotation,
-            entangler=entangler,
-            readout=readout,
-            encoder_activation=encoder_activation,
-            init_std=init_std,
-            noise_level=noise_level,
-            noise_position=noise_position,
-            noise_method=noise_method,
-            noise_trajectories=noise_trajectories,
-            trainable_input_scaling=trainable_input_scaling,
-            shots=shots,
-            seed=seed,
-        )
+        init_seed = as_seed(init_seed)
+        # Building the layers draws from the global RNG (nn.Linear and
+        # TorchLayer defaults), all of it overwritten by _initialise_weights.
+        # With init_seed the whole build runs inside seeded_rng, so the
+        # caller's stream is exactly where it was afterwards -- also when a
+        # check below raises after some layers were built.
+        with seeded_rng(init_seed) as reseed:
+            self._config = dict(
+                n_input_features=n_input_features,
+                n_qubits=n_qubits,
+                n_layers=n_layers,
+                classical_hidden_dim=classical_hidden_dim,
+                use_classical_encoder=use_classical_encoder,
+                dropout_p=dropout_p,
+                device_name=device_name,
+                diff_method=diff_method,
+                init_strategy=init_strategy,
+                encoding_type=encoding_type,
+                embedding_rotation=embedding_rotation,
+                entangler=entangler,
+                readout=readout,
+                encoder_activation=encoder_activation,
+                init_std=init_std,
+                noise_level=noise_level,
+                noise_position=noise_position,
+                init_seed=init_seed,
+                classical_encoder=classical_encoder,
+                noise_method=noise_method,
+                noise_trajectories=noise_trajectories,
+                trainable_input_scaling=trainable_input_scaling,
+                shots=shots,
+                seed=seed,
+            )
 
-        # Validated before the classical branch is built, as before the shared
-        # trunk: a bad option fails without drawing from the RNG.
-        validate_encoder_activation(encoder_activation)
-        validate_init(init_strategy, init_std)
-        self.classical_hidden_dim = classical_hidden_dim
+            # Validated before the classical branch is built, as before the shared
+            # trunk: a bad option fails without drawing from the RNG.
+            validate_encoder_activation(encoder_activation)
+            validate_init(init_strategy, init_std)
+            self.classical_hidden_dim = classical_hidden_dim
 
-        # ── Classical branch (MLP) ────────────────────────────────────────
-        self.classical_branch = nn.Sequential(
-            nn.Linear(n_input_features, classical_hidden_dim),
-            nn.ReLU(),
-            nn.Linear(classical_hidden_dim, classical_hidden_dim),
-            nn.ReLU(),
-        )
+            # ── Classical branch (MLP) ────────────────────────────────────────
+            self.classical_branch = nn.Sequential(
+                nn.Linear(n_input_features, classical_hidden_dim),
+                nn.ReLU(),
+                nn.Linear(classical_hidden_dim, classical_hidden_dim),
+                nn.ReLU(),
+            )
 
-        # ── Quantum branch: encoder, circuit and the fused dropout ─────────
-        n_readouts = self._build_trunk(
-            n_input_features=n_input_features,
-            n_qubits=n_qubits,
-            n_layers=n_layers,
-            use_classical_encoder=use_classical_encoder,
-            dropout_p=dropout_p,
-            device_name=device_name,
-            diff_method=diff_method,
-            init_strategy=init_strategy,
-            encoding_type=encoding_type,
-            embedding_rotation=embedding_rotation,
-            entangler=entangler,
-            readout=readout,
-            encoder_activation=encoder_activation,
-            init_std=init_std,
-            noise_level=noise_level,
-            noise_position=noise_position,
-            noise_method=noise_method,
-            noise_trajectories=noise_trajectories,
-            trainable_input_scaling=trainable_input_scaling,
-            shots=shots,
-            seed=seed,
-        )
+            # ── Quantum branch: encoder, circuit and the fused dropout ─────────
+            n_readouts = self._build_trunk(
+                n_input_features=n_input_features,
+                n_qubits=n_qubits,
+                n_layers=n_layers,
+                use_classical_encoder=use_classical_encoder,
+                dropout_p=dropout_p,
+                device_name=device_name,
+                diff_method=diff_method,
+                init_strategy=init_strategy,
+                encoding_type=encoding_type,
+                embedding_rotation=embedding_rotation,
+                entangler=entangler,
+                readout=readout,
+                encoder_activation=encoder_activation,
+                init_std=init_std,
+                noise_level=noise_level,
+                noise_position=noise_position,
+                noise_method=noise_method,
+                noise_trajectories=noise_trajectories,
+                classical_encoder=classical_encoder,
+                trainable_input_scaling=trainable_input_scaling,
+                shots=shots,
+                seed=seed,
+            )
 
-        # ── Classical head ────────────────────────────────────────────────
-        self.head = nn.Linear(classical_hidden_dim + n_readouts, 1)
+            # ── Classical head ────────────────────────────────────────────────
+            self.head = nn.Linear(classical_hidden_dim + n_readouts, 1)
 
-        # ── Small-angle restricted-variance initialisation ─────────────────
-        self._initialise_weights()
+            # ── Small-angle restricted-variance initialisation ─────────────────
+            reseed()
+            self._initialise_weights()
 
     # ------------------------------------------------------------------
     @classmethod
@@ -368,9 +409,10 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
 
-        # Tanh encoder and linear head: Xavier uniform.
+        # Tanh encoder and linear head: Xavier uniform.  A custom encoder is
+        # left as given.
         for module in (*self.classical_encoder.modules(), self.head):
-            if isinstance(module, nn.Linear):
+            if isinstance(module, nn.Linear) and id(module) not in self._custom_encoder_ids:
                 nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)

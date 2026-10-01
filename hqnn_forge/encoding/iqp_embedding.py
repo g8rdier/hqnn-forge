@@ -40,6 +40,7 @@ from hqnn_forge.encoding._common import (
     Entangler,
     Readout,
     apply_variational_layers,
+    backend_repr,
     check_inputs,
     expand_batch_dimension,
     measure_z,
@@ -76,7 +77,9 @@ def _make_iqp_embedding_circuit(
 
     where ``inputs`` has shape ``(n_qubits,)`` (or ``(batch, n_qubits)`` when
     broadcasted) and ``weights`` has shape ``(n_layers, n_qubits, 3)``: the
-    ``qml.Rot`` angles per layer and qubit.
+    ``qml.Rot`` angles per layer and qubit (``(n_layers, n_qubits)``, the
+    ``RY`` angles, for ``entangler="hardware_efficient"``; see
+    :func:`~hqnn_forge.encoding.angle_embedding.variational_weight_shape`).
 
     Called inside a QNode it records one ``qml.expval(PauliZ)`` measurement per
     readout wire; the QNode turns them into the expectation values.
@@ -237,10 +240,16 @@ class IQPEncodingLayer(TrainingNoiseMixin, nn.Module):
         return self._run_circuit(x)
 
     def extra_repr(self) -> str:
+        options = ""
+        if self.entangler != "ring":
+            options += f", entangler={self.entangler!r}"
+        if self.readout != "all":
+            options += f", readout={self.readout!r}"
+        options += self._noise_repr()
         return (
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "
             f"n_repeats={self.n_repeats}, "
-            f"n_params={sum(p.numel() for p in self.parameters())}"
-            f"{self._noise_repr()}{shots_repr(self.shots, self.seed)}"
+            f"n_params={sum(p.numel() for p in self.parameters())}{options}"
+            f"{shots_repr(self.shots, self.seed)}{backend_repr(self.qlayer)}"
         )

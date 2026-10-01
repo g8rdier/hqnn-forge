@@ -13,13 +13,16 @@ Trainable parameters are 3·n·L for both.
 
 from __future__ import annotations
 
+import math
 from math import comb
 from types import MappingProxyType
 
+import pennylane as qml
 import pytest
 import torch
 
 from hqnn_forge.diagnostics import CircuitSummary, circuit_summary, draw_circuit
+from hqnn_forge.diagnostics.circuit import _logical_tape
 from hqnn_forge.encoding import QuantumEncodingLayer
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
@@ -29,8 +32,6 @@ CPU = {"device_name": "default.qubit", "diff_method": "backprop"}
 
 def _lightning_available() -> bool:
     try:
-        import pennylane as qml
-
         qml.device("lightning.qubit", wires=1)
         return True
     except Exception:  # noqa: BLE001
@@ -84,6 +85,203 @@ class TestIQPEncodingCounts:
         iqp = circuit_summary(IQPEncodingLayer(n_qubits=4, n_layers=2, **CPU))
         assert iqp.n_two_qubit_gates > angle.n_two_qubit_gates
         assert iqp.depth > angle.depth
+
+
+def _multirz_layer(n_wires: int, n_qubits: int = 4) -> torch.nn.Module:
+    """RX embedding, one trainable ``MultiRZ`` on wires 0 … n_wires-1, ⟨Z_0⟩."""
+    dev = qml.device("default.qubit", wires=n_qubits)
+
+    @qml.qnode(dev, interface="torch", diff_method="backprop")
+    def circuit(inputs, weights):  # type: ignore[no-untyped-def]
+        qml.AngleEmbedding(inputs, wires=range(n_qubits))
+        qml.MultiRZ(weights[0], wires=range(n_wires))
+        return [qml.expval(qml.PauliZ(0))]
+
+    class MultiRZLayer(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.n_qubits = n_qubits
+            self.qlayer = qml.qnn.TorchLayer(circuit, {"weights": (1,)})
+
+    return MultiRZLayer()
+
+
+class TestMultiWireGateCost:
+    """
+    #170: a gate on k > 2 wires counts at its two-qubit cost.  MultiRZ on k
+    wires is a CNOT ladder, 2(k-1) CNOTs around one RZ; on two wires it is a
+    ZZ rotation and stays a single two-qubit gate.
+    """
+
+    @pytest.mark.parametrize("n_wires", [3, 4])
+    def test_wide_multirz_counts_its_cnot_ladder(self, n_wires: int) -> None:
+        s = circuit_summary(_multirz_layer(n_wires))
+        assert s.n_two_qubit_gates == 2 * (n_wires - 1)
+        assert s.gate_counts.get("CNOT") == 2 * (n_wires - 1)
+        assert s.gate_counts.get("RZ") == 1
+        assert "MultiRZ" not in s.gate_counts
+
+    def test_two_wire_multirz_stays_one_gate(self) -> None:
+        s = circuit_summary(_multirz_layer(2))
+        assert s.n_two_qubit_gates == 1
+        assert s.gate_counts.get("MultiRZ") == 1
+        assert "CNOT" not in s.gate_counts
+
+    @pytest.mark.parametrize("n_wires", [2, 3, 4])
+    def test_the_decomposition_is_the_same_unitary(self, n_wires: int) -> None:
+        """
+        What is counted is the circuit that runs.  Compared as full unitaries:
+        the layer's own ⟨Z_0⟩ commutes with a diagonal MultiRZ, so its output
+        would not notice a dropped or mis-wired ladder.
+        """
+        layer = _multirz_layer(n_wires)
+        x = torch.tensor([0.3, -1.1, 0.7, 2.0], dtype=torch.float64)
+        with torch.no_grad():
+            layer.qlayer.weights.copy_(torch.tensor([0.9]))
+        qnode = layer.qlayer.qnode
+        weights = dict(layer.qlayer.qnode_weights.items())
+        written = qml.workflow.construct_tape(qnode, level="top")(x, **weights)
+        counted = _logical_tape(layer.qlayer, 4, inputs=x)
+        wires = list(range(4))
+        u_written = qml.matrix(written, wire_order=wires)
+        u_counted = qml.matrix(counted, wire_order=wires)
+        # The CNOT-ladder decomposition is exact, global phase included.
+        assert torch.allclose(torch.as_tensor(u_counted), torch.as_tensor(u_written), atol=1e-6)
+
+    def test_wide_gate_without_decomposition_still_counts(self) -> None:
+        """An opaque 3-wire gate survives decomposition; it counts once, not zero."""
+
+        class Opaque(qml.operation.Operation):
+            num_wires = 3
+            num_params = 0
+
+        dev = qml.device("default.qubit", wires=3)
+
+        @qml.qnode(dev, interface="torch")
+        def circuit(inputs, weights):  # type: ignore[no-untyped-def]
+            qml.AngleEmbedding(inputs, wires=range(3))
+            qml.RY(weights[0], wires=0)
+            qml.CNOT(wires=[0, 1])
+            Opaque(wires=[0, 1, 2])
+            return [qml.expval(qml.PauliZ(0))]
+
+        class OpaqueLayer(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.n_qubits = 3
+                self.qlayer = qml.qnn.TorchLayer(circuit, {"weights": (1,)})
+
+        with pytest.warns(UserWarning):
+            s = circuit_summary(OpaqueLayer())
+        assert s.gate_counts.get("Opaque") == 1
+        assert s.n_two_qubit_gates == 2
+
+    def test_wide_multirz_does_not_hide_inert_parameters(self) -> None:
+        """
+        Inert parameters are counted on the circuit as written, where a wide
+        MultiRZ is one diagonal gate.  Through its CNOT ladder, ⟨Z_1⟩ would
+        reach wire 2 and the RY there would stop counting as inert.
+        """
+        dev = qml.device("default.qubit", wires=3)
+
+        @qml.qnode(dev, interface="torch", diff_method="backprop")
+        def circuit(inputs, weights):  # type: ignore[no-untyped-def]
+            qml.AngleEmbedding(inputs, wires=range(3))
+            qml.RY(weights[1], wires=2)
+            qml.MultiRZ(weights[0], wires=[0, 1, 2])
+            return [qml.expval(qml.PauliZ(1))]
+
+        class Layer(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.n_qubits = 3
+                self.qlayer = qml.qnn.TorchLayer(circuit, {"weights": (2,)})
+
+        layer = Layer()
+        torch.manual_seed(0)
+        x = torch.rand(3, dtype=torch.float64) * 2 * math.pi
+        weights = layer.qlayer.qnode_weights["weights"]
+        with torch.no_grad():
+            weights.copy_(torch.tensor([0.7, 1.3]))
+        layer.qlayer(x).sum().backward()
+        assert weights.grad is not None
+        assert torch.all(weights.grad.abs() < 1e-12)  # both are inert
+        assert circuit_summary(layer).n_inert_params == 2
+
+
+class TestGraphDecomposition:
+    """
+    With PennyLane's graph-based decomposition enabled, ``decompose`` refuses
+    a call without ``gate_set``; the diagnostics must still work, and count
+    the same circuit whenever every gate but templates is in the gate set.
+    """
+
+    @pytest.fixture
+    def graph_enabled(self):  # type: ignore[no-untyped-def]
+        was_enabled = qml.decomposition.enabled_graph()
+        qml.decomposition.enable_graph()
+        try:
+            yield
+        finally:
+            if not was_enabled:
+                qml.decomposition.disable_graph()
+
+    @pytest.mark.parametrize(
+        "make",
+        [
+            lambda: QuantumEncodingLayer(n_qubits=3, n_layers=1, **CPU),
+            lambda: IQPEncodingLayer(n_qubits=3, n_layers=1, **CPU),
+            lambda: _multirz_layer(3),
+        ],
+        ids=["angle", "iqp", "multirz3"],
+    )
+    def test_same_summary_and_drawing(self, make, graph_enabled) -> None:  # type: ignore[no-untyped-def]
+        torch.manual_seed(0)
+        layer = make()
+        with_graph = (circuit_summary(layer), draw_circuit(layer))
+        qml.decomposition.disable_graph()
+        without_graph = (circuit_summary(layer), draw_circuit(layer))
+        assert with_graph == without_graph
+
+    # Without GlobalPhase in its gate set, the graph finds no decomposition
+    # for these ops and PennyLane falls back with a DecompositionWarning.
+    @pytest.mark.filterwarnings("error::pennylane.exceptions.DecompositionWarning")
+    @pytest.mark.parametrize("prepare", ["mottonen", "unitary"])
+    def test_global_phase_is_not_counted(self, prepare: str, graph_enabled) -> None:  # type: ignore[no-untyped-def]
+        """
+        Graph decomposition of state preparation and ``QubitUnitary`` emits
+        ``GlobalPhase``, which ``op.decomposition()`` does not; left in, a
+        two-wire one counted as a two-qubit gate and added to the depth.
+        """
+        state = torch.tensor([0.1, 0.5, -0.3, 0.8], dtype=torch.float64)
+        state = state / state.norm()
+        u = torch.as_tensor(qml.matrix(qml.QFT(wires=[0, 1])), dtype=torch.complex128)
+        dev = qml.device("default.qubit", wires=2)
+
+        @qml.qnode(dev, interface="torch")
+        def circuit(inputs, weights):  # type: ignore[no-untyped-def]
+            if prepare == "mottonen":
+                qml.MottonenStatePreparation(state, wires=[0, 1])
+            else:
+                qml.QubitUnitary(u, wires=[0, 1])
+            qml.RY(weights[0], wires=0)
+            return [qml.expval(qml.PauliZ(0))]
+
+        class Layer(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.n_qubits = 2
+                self.qlayer = qml.qnn.TorchLayer(circuit, {"weights": (1,)})
+
+        layer = Layer()
+        with_graph = circuit_summary(layer)
+        qml.decomposition.disable_graph()
+        without_graph = circuit_summary(layer)
+        assert "GlobalPhase" not in with_graph.gate_counts
+        assert with_graph.n_two_qubit_gates == without_graph.n_two_qubit_gates
+        if prepare == "mottonen":
+            # Same rules for every other gate here, so the same circuit.
+            assert with_graph == without_graph
 
 
 class TestDeviceIndependence:
