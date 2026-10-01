@@ -110,7 +110,8 @@ way a quantum device requires, on `default.qubit` standing in for one: `shots`, 
 gradients checked against backprop, SPSA, the circuit executions each step costs (counted
 with `qml.Tracker`), and test MCC under shot and depolarizing noise (`shot_sweep`,
 `noise_sweep`). One step on a batch of 32 costs 1568 circuits with parameter-shift and 64 with
-SPSA; SPSA trained with 1000 shots scored within 0.01 test MCC of exact training.
+SPSA; SPSA trained with 1000 shots and evaluated exactly scored within 0.01 test MCC
+of exact training.
 
 For a real device, change `DEVICE` to the plugin's device name (for example
 `"braket.aws.qubit"` or `"qiskit.remote"`) and set up its credentials as the plugin documents.
@@ -126,6 +127,7 @@ device_arn = "arn:aws:braket:::device/qpu/..."
 
 An option that must be a Python object rather than a string cannot be passed this way.
 `seed` reaches simulators only.
+
 ---
 
 ## Quick Start: your own data
