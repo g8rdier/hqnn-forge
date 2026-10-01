@@ -307,8 +307,10 @@ def build_encoding_qnode(
         layer would not depend on its inputs.
     device_name:
         PennyLane device string.  ``"lightning.qubit"`` is strongly preferred for
-        adjoint differentiation.  An unavailable backend falls back along
-        ``lightning.qubit → default.qubit`` with a warning per step.
+        adjoint differentiation.  An unavailable simulator falls back along
+        ``lightning.qubit → default.qubit`` with a warning per step; any name
+        outside :data:`~hqnn_forge.encoding._common.KNOWN_DEVICES` (a plugin
+        or hardware) is constructed as given.
     diff_method:
         Differentiation strategy:
 
@@ -432,9 +434,12 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
         Pauli axis for AngleEmbedding: ``"X"`` | ``"Y"``; ``"Z"`` raises, see
         :func:`build_encoding_qnode`.
     device_name:
-        PennyLane device, one of :data:`DeviceName`.  An unavailable backend
-        falls back along ``lightning.qubit → default.qubit`` with a warning
-        per step.
+        PennyLane device name.  The simulators in
+        :data:`~hqnn_forge.encoding._common.KNOWN_DEVICES` fall back along
+        ``lightning.qubit → default.qubit`` with a warning per step when
+        unavailable; any other name (a plugin or hardware) is constructed as
+        given, and PennyLane's error surfaces if it cannot be.  Hardware
+        needs ``shots`` and ``diff_method="parameter-shift"``.
     diff_method:
         Gradient method.  Use ``"adjoint"`` with ``lightning.qubit`` for
         exact, efficient gradients during state-vector simulation.
@@ -467,6 +472,14 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
     noise_trajectories:
         Draws averaged per sample with ``noise_method="trajectories"``.
         Default 1; must be 1 for ``"density"``.
+    shots:
+        ``None`` (default): exact expectation values.  An ``int``: every
+        readout is estimated from that many samples, as on hardware.  Needs
+        ``diff_method="parameter-shift"``; with training noise, only
+        ``noise_method="trajectories"``.  The samples come from the device's
+        own generator, which ``torch.manual_seed`` does not reach (#354).
+        The ``shots`` attribute reads the QNode the layer runs, so it follows
+        :func:`hqnn_forge.noise.apply_shots`.
 
     Attributes
     ----------
@@ -559,7 +572,6 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
             noise_trajectories,
             shots=shots,
         )
-        self.shots = shots
 
     # ------------------------------------------------------------------
     # Forward pass

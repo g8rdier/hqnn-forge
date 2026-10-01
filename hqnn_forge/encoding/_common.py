@@ -296,7 +296,7 @@ def _stacklevel_outside_package() -> int:
     return level
 
 
-SHOT_FREE_METHODS = ("adjoint", "backprop")
+SHOT_FREE_METHODS = ("adjoint", "backprop", "finite-diff")
 
 
 def validate_shots(shots: int | None, diff_method: str) -> None:
@@ -307,8 +307,13 @@ def validate_shots(shots: int | None, diff_method: str) -> None:
     ``shots=None`` gives exact expectation values.  A finite shot count samples
     them, as hardware does, and rules out ``adjoint`` and ``backprop``: both
     differentiate the simulator's state vector, which sampling does not give
-    (PennyLane refuses even the forward pass).  ``parameter-shift`` is the
-    method that runs on hardware; ``finite-diff`` also works.
+    (PennyLane refuses even the forward pass).  It rules out ``finite-diff``
+    too: a difference quotient with a step ``h`` near 1e-7 divides the shot
+    noise of each expectation value by ``h``, so its gradients are noise of
+    order ``1 / (h·sqrt(shots))`` -- about 1e6 at 1000 shots against an exact
+    value of order 1 -- and training silently diverges.  ``parameter-shift``
+    shifts by π/2 and stays unbiased; it is also the method that runs on
+    hardware.
     """
     if shots is None:
         return
@@ -317,8 +322,13 @@ def validate_shots(shots: int | None, diff_method: str) -> None:
     if diff_method in SHOT_FREE_METHODS:
         raise ValueError(
             f"shots={shots} samples the expectation values, and diff_method="
-            f"{diff_method!r} needs the exact state vector; use diff_method="
-            f"'parameter-shift', the method that also runs on hardware."
+            f"{diff_method!r} needs exact ones ("
+            + (
+                "its tiny step divides the shot noise into the gradient"
+                if diff_method == "finite-diff"
+                else "it differentiates the exact state vector"
+            )
+            + "); use diff_method='parameter-shift', the method that also runs on hardware."
         )
 
 

@@ -60,9 +60,18 @@ environment CI tests against, use the uv setup under [Development Setup](https:/
 
 ### Device backends
 
-Every encoding layer and classifier takes a `device_name`. If the requested backend is not
-installed or finds no usable hardware, the library falls back one step at a time, with a
-`RuntimeWarning` at each step, along `requested → lightning.qubit → default.qubit`.
+Every encoding layer and classifier takes a `device_name`. For the four simulators below, if
+the requested backend is not installed or finds no usable hardware, the library falls back one
+step at a time, with a `RuntimeWarning` at each step, along
+`requested → lightning.qubit → default.qubit`. Any other PennyLane device name (a plugin such
+as `qiskit.aer`, or hardware) is constructed exactly as given; a misspelt name raises instead
+of falling back.
+
+`shots=N` (default `None`, exact) samples every readout from `N` measurements, as hardware
+does, and needs `diff_method="parameter-shift"`; hardware devices need both.
+`hqnn_forge.noise.apply_shots` evaluates an exactly trained model under sampling, and
+`shot_sweep` repeats that across shot counts. Sampling is not yet seeded by
+`torch.manual_seed` (#354).
 
 | `device_name` | What it is | Prerequisites |
 |---|---|---|

@@ -337,9 +337,12 @@ class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
         Pauli axis of the embedding rotations.  Default: ``"X"``.
         ``"Z"`` requires ``n_layers ≥ 2``.
     device_name:
-        PennyLane device, one of :data:`DeviceName`.  An unavailable backend
-        falls back along ``lightning.qubit → default.qubit`` with a warning
-        per step.
+        PennyLane device name.  The simulators in
+        :data:`~hqnn_forge.encoding._common.KNOWN_DEVICES` fall back along
+        ``lightning.qubit → default.qubit`` with a warning per step when
+        unavailable; any other name (a plugin or hardware) is constructed as
+        given, and PennyLane's error surfaces if it cannot be.  Hardware
+        needs ``shots`` and ``diff_method="parameter-shift"``.
     diff_method:
         Gradient method.  Default: ``"adjoint"``.
     trainable_input_scaling:
@@ -362,6 +365,9 @@ class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
         in ``[0, 0.75]`` (default 0, noiseless) applied in train mode only,
         at ``"all"`` gates or at the ``"end"``, simulated exactly
         (``"density"``) or by Pauli trajectories.  See :mod:`hqnn_forge.noise`.
+    shots:
+        Finite-shot sampling, exactly as for
+        :class:`~hqnn_forge.encoding.QuantumEncodingLayer`.
 
     Attributes
     ----------
@@ -447,7 +453,6 @@ class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
             noise_trajectories,
             shots=shots,
         )
-        self.shots = shots
 
     # ------------------------------------------------------------------
     def prepare_inputs(self, x: torch.Tensor) -> torch.Tensor:

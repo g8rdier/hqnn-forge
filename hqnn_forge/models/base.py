@@ -210,7 +210,8 @@ class BinaryClassifierBase(ClassifierBase):
         Compute positive-class probabilities (inference mode, no gradients).
 
         Runs in eval mode whatever mode the model is in, so dropout is off and
-        repeated calls on the same input agree.  Every submodule's ``training``
+        repeated calls on the same input agree (except under finite ``shots``,
+        whose readouts are sampled afresh on every call).  Every submodule's ``training``
         flag is restored afterwards, so calling this mid-training leaves the
         model exactly as it was.
 

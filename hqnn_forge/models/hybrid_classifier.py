@@ -214,8 +214,11 @@ class HybridBinaryClassifier(QuantumTrunk, BinaryClassifierBase):
     shots:
         ``None`` (default): exact expectation values.  An ``int``: each circuit
         is sampled that many times, as on hardware, so predictions carry shot
-        noise.  Requires ``diff_method="parameter-shift"`` (or
-        ``"finite-diff"``); ``adjoint`` and ``backprop`` need the exact state.
+        noise.  Requires ``diff_method="parameter-shift"``: ``adjoint`` and
+        ``backprop`` need the exact state, and ``finite-diff``'s tiny step
+        turns the shot noise into gradients of order 1e6.  The samples come
+        from the device's own generator, which ``torch.manual_seed`` does not
+        reach, so a model with shots does not repeat run to run (#354).
         :func:`hqnn_forge.noise.apply_shots` evaluates a model with a finite
         shot count without rebuilding it.
 

@@ -216,7 +216,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   surfaces if it cannot be, so a typo still raises instead of falling back (#334)
 - `shots: int | None = None` on the four encoding layers, the three classifiers and
   checkpoints (weight-safe, `None` for older files): a finite count samples every readout,
-  needs `diff_method="parameter-shift"` (adjoint and backprop are refused at construction)
+  needs `diff_method="parameter-shift"` (adjoint, backprop and finite-diff are refused at construction)
   and trains with noise only under `noise_method="trajectories"`. `hqnn_forge.noise.apply_shots` evaluates a
   model at a shot count inside a block and `shot_sweep` repeats `predict_proba` across shot
   counts. `shots=None` is bit-identical to before. The scikit-learn estimator does not take

@@ -169,7 +169,8 @@ class IQPEncodingLayer(TrainingNoiseMixin, nn.Module):
     ``n_outputs`` (``n_qubits``, or 1 with ``readout="first"``), and the
     input width ``n_features`` is ``n_qubits``, one feature per qubit.
     ``noise_level`` / ``noise_position`` / ``noise_method`` /
-    ``noise_trajectories`` add training-time depolarizing noise exactly as in
+    ``noise_trajectories`` add training-time depolarizing noise, and
+    ``shots`` finite-shot sampling, exactly as in
     :class:`~hqnn_forge.encoding.QuantumEncodingLayer`.
     """
 
@@ -224,7 +225,6 @@ class IQPEncodingLayer(TrainingNoiseMixin, nn.Module):
             noise_trajectories,
             shots=shots,
         )
-        self.shots = shots
 
     def prepare_inputs(self, x: torch.Tensor) -> torch.Tensor:
         """
