@@ -265,3 +265,24 @@ def test_the_estimator_selects_the_new_encodings() -> None:
         ).fit(X, y)
         assert est.model_.get_config()["encoding_type"] == encoding_type
         assert est.predict_proba(X).shape == (40, 2)
+
+
+@pytest.mark.parametrize("cls, extra", CLASSIFIERS)
+@pytest.mark.parametrize(
+    "encoding, width", [("amplitude", 2**N_QUBITS), ("reuploading", N_QUBITS)]
+)
+def test_a_custom_encoder_maps_to_the_encoding_width(
+    cls: type, extra: dict[str, Any], encoding: str, width: int
+) -> None:
+    # The custom encoder (#298) feeds the circuit exactly as the built-in one
+    # does: amplitude takes 2**n_qubits features, the others n_qubits.
+    torch.manual_seed(3)
+    module = torch.nn.Sequential(torch.nn.Linear(6, 5), torch.nn.ReLU(), torch.nn.Linear(5, width))
+    model = _model(cls, extra, {"encoding_type": encoding}, classical_encoder=module).eval()
+    x = _x()
+    with torch.no_grad():
+        expected = model.quantum_layer(torch.tanh(module(x)) * torch.pi)
+        torch.testing.assert_close(model._quantum_features(x), expected, rtol=0, atol=0)
+    wrong = torch.nn.Linear(6, N_QUBITS if width != N_QUBITS else 2**N_QUBITS)
+    with pytest.raises(ValueError, match=f"to \\(batch, .*{width}\\)"):
+        _model(cls, extra, {"encoding_type": encoding}, classical_encoder=wrong)

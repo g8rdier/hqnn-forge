@@ -52,6 +52,7 @@ except ImportError as exc:  # pragma: no cover - exercised only without scikit-l
 from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
 from hqnn_forge.training import TrainingHistory, train_model
 from hqnn_forge.utils import FocalLoss
+from hqnn_forge.utils.rng import as_seed, seeded_rng
 
 ModelName = Literal["serial", "parallel"]
 LossName = Literal["focal", "bce"]
@@ -92,9 +93,12 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         falls back to 0.5 both without a validation split and under
         ``monitor="val_loss"``.
     random_state:
-        Seeds weight initialisation, the validation split and batch order.
-        Weight initialisation runs off the global torch RNG, so a seeded
-        ``fit`` reseeds it process-wide (see #175).
+        Seeds weight initialisation, dropout, the validation split and batch
+        order.  The initial weights are the model's ``init_seed=random_state``
+        draws; dropout and batch order use seeds spawned from it, so they are
+        independent of the init.  A seeded ``fit`` is reproducible and leaves
+        the global torch RNG exactly as it was; ``None`` draws everything from
+        the global RNG.
 
     Attributes
     ----------
@@ -151,7 +155,9 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         self.random_state = random_state
 
     # ------------------------------------------------------------------
-    def _build(self, n_features: int) -> HybridBinaryClassifier | ParallelHybridClassifier:
+    def _build(
+        self, n_features: int, init_seed: int | None = None
+    ) -> HybridBinaryClassifier | ParallelHybridClassifier:
         common: dict[str, Any] = dict(
             n_input_features=n_features,
             n_qubits=self.n_qubits,
@@ -162,6 +168,7 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
             diff_method=self.diff_method,
             init_strategy=self.init_strategy,
             encoding_type=self.encoding_type,
+            init_seed=init_seed,
         )
         if self.model == "serial":
             return HybridBinaryClassifier(**common)
@@ -216,9 +223,11 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         X_arr, y_arr = validate_data(self, X, y, dtype=np.float32)
         classes = unique_labels(y_arr)
         if classes.size != 2:
+            # The first sentence is scikit-learn's wording for a binary-only
+            # classifier, which its conformance checks match on.
             raise ValueError(
-                f"HybridClassifierEstimator is a binary classifier; got {classes.size} "
-                f"classes: {classes.tolist()}."
+                f"Only binary classification is supported.  HybridClassifierEstimator "
+                f"got {classes.size} classes: {classes.tolist()}."
             )
         if not 0.0 <= self.validation_fraction < 1.0:
             raise ValueError(
@@ -227,12 +236,25 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         self._check_threshold(self.threshold)
         y01 = (y_arr == classes[1]).astype(np.int64)
 
-        seed = self.random_state
+        # A NumPy integer, as scikit-learn tools pass, is taken as the int it is.
+        seed = as_seed(self.random_state, "random_state")
         rng = np.random.default_rng(seed)
-        if seed is not None:
-            torch.manual_seed(seed)
-        model = self._build(X_arr.shape[1])
+        # Three independent torch streams, none of them the caller's (#175):
+        # the model seeds its initial weights from random_state itself, and
+        # training -- the dropout masks and the batch order -- runs on seeds
+        # spawned from it, so neither replays the numbers the init drew.  The
+        # global RNG is restored afterwards, so a seeded fit leaves it exactly
+        # where it was.
+        model = self._build(X_arr.shape[1], init_seed=seed)
         loss_fn = self._loss()
+        if seed is None:
+            dropout_seed: int | None = None
+            generator = None
+        else:
+            dropout_seed, batch_seed = (
+                int(child.generate_state(1)[0]) for child in np.random.SeedSequence(seed).spawn(2)
+            )
+            generator = torch.Generator().manual_seed(batch_seed)
 
         X_t = torch.from_numpy(X_arr)
         if self.validation_fraction > 0:
@@ -245,21 +267,21 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
             tr = np.arange(y01.size)
             val = (None, None)
 
-        generator = torch.Generator().manual_seed(seed) if seed is not None else None
-        history = train_model(
-            model,
-            loss_fn,
-            torch.optim.Adam(model.parameters(), lr=self.lr),
-            X_t[tr],
-            torch.from_numpy(y01[tr]).float(),
-            val[0],
-            val[1],
-            max_epochs=self.max_epochs,
-            batch_size=self.batch_size,
-            monitor=self.monitor,
-            patience=self.patience,
-            generator=generator,
-        )
+        with seeded_rng(dropout_seed):
+            history = train_model(
+                model,
+                loss_fn,
+                torch.optim.Adam(model.parameters(), lr=self.lr),
+                X_t[tr],
+                torch.from_numpy(y01[tr]).float(),
+                val[0],
+                val[1],
+                max_epochs=self.max_epochs,
+                batch_size=self.batch_size,
+                monitor=self.monitor,
+                patience=self.patience,
+                generator=generator,
+            )
         if self.threshold == "optimal":
             best = history.best_threshold
             threshold = float(best) if best is not None else 0.5
@@ -287,6 +309,40 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         """Labels from ``classes_``, thresholding the positive probability at ``threshold_``."""
         positive = self.predict_proba(X)[:, 1]
         return self.classes_[(positive >= self.threshold_).astype(np.intp)]
+
+    # ------------------------------------------------------------------
+    # Pickling: the fitted model holds a PennyLane QNode built around a local
+    # function, which pickle cannot serialise.  The model is stored as its
+    # class, constructor arguments and weights instead, and rebuilt on load.
+    def __getstate__(self) -> dict[str, Any]:
+        # BaseEstimator returns the live __dict__ on Python 3.11+; copy it so
+        # pickling does not strip model_ from the estimator itself.
+        state = dict(super().__getstate__())
+        model = state.pop("model_", None)
+        if model is not None:
+            state["_model_state"] = {
+                "class_name": type(model).__name__,
+                "config": model.get_config(),
+                "state_dict": model.state_dict(),
+            }
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        state = dict(state)
+        saved = state.pop("_model_state", None)
+        super().__setstate__(state)
+        if saved is not None:
+            classes = {
+                cls.__name__: cls for cls in (HybridBinaryClassifier, ParallelHybridClassifier)
+            }
+            # Construction initialises weights from the global torch RNG before
+            # load_state_dict overwrites them; fork it so unpickling leaves the
+            # caller's random stream untouched.
+            with torch.random.fork_rng(devices=[]):
+                model = classes[saved["class_name"]](**saved["config"])
+            model.load_state_dict(saved["state_dict"])
+            model.eval()
+            self.model_ = model
 
     def __sklearn_tags__(self) -> Any:
         tags = super().__sklearn_tags__()

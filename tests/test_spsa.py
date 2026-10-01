@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+import pennylane as qml
 import pytest
 import torch
 
@@ -238,3 +239,141 @@ class TestTrainModel:
             )
             losses[name] = history.train_loss[-1]
         assert losses["spsa"] < 1.6 * losses["adam"]
+
+    def test_adam_on_the_head_beats_spsa_on_everything(self) -> None:
+        # #316's split: SPSA on the encoder and circuit, Adam on the head from
+        # the same two evaluations.  Measured at the final weights, seed 0:
+        # SPSA on all 19 parameters 0.473 after 1000 steps, the split 0.156,
+        # at the same two circuit evaluations per sample per step.
+        x, y = _data(64)
+        losses = {}
+        for name in ("spsa", "split"):
+            torch.manual_seed(0)
+            model = HybridBinaryClassifier(
+                n_input_features=4,
+                n_qubits=2,
+                n_layers=1,
+                device_name="default.qubit",
+                diff_method="backprop",
+            )
+            head = list(model.head.parameters())
+            rest = [p for n, p in model.named_parameters() if not n.startswith("head.")]
+            opt = (
+                SPSA(
+                    rest,
+                    lr=1.0,
+                    perturbation=0.1,
+                    stability=50,
+                    gradient_optimizer=torch.optim.Adam(head, lr=0.05),
+                )
+                if name == "split"
+                else SPSA(model.parameters(), lr=1.0, perturbation=0.1, stability=50)
+            )
+            train_model(
+                model, torch.nn.BCEWithLogitsLoss(), opt, x, y, max_epochs=1000, batch_size=64
+            )
+            with torch.no_grad():
+                losses[name] = float(torch.nn.BCEWithLogitsLoss()(model(x).squeeze(-1), y))
+        assert losses["split"] < 0.5 * losses["spsa"]
+
+    def test_the_head_split_costs_no_extra_circuit_executions_with_shots(self) -> None:
+        # Backpropagating to the head alone must not run the parameter-shift
+        # backward pass: the executions are those of SPSA on everything,
+        # 2 per sample per step.  Measured: 192 both ways.
+        x, y = _data()
+        counts = {}
+        for split in (False, True):
+            torch.manual_seed(0)
+            model = HybridBinaryClassifier(
+                n_input_features=4,
+                n_qubits=2,
+                n_layers=1,
+                device_name="default.qubit",
+                diff_method="parameter-shift",
+                shots=2000,
+            )
+            head = list(model.head.parameters())
+            head_before = [p.detach().clone() for p in head]
+            rest = [p for n, p in model.named_parameters() if not n.startswith("head.")]
+            opt = (
+                SPSA(rest, gradient_optimizer=torch.optim.Adam(head, lr=0.05))
+                if split
+                else SPSA(model.parameters())
+            )
+            with qml.Tracker(model.quantum_layer.qlayer.qnode.device) as tracker:
+                train_model(
+                    model, torch.nn.BCEWithLogitsLoss(), opt, x, y, max_epochs=3, batch_size=32
+                )
+            counts[split] = tracker.totals["executions"]
+            assert all(p.grad is None for p in rest)
+            if split:
+                assert all(p.grad is not None for p in head)
+                assert all(not torch.equal(p, b) for p, b in zip(head, head_before, strict=True))
+        assert counts[True] == counts[False] == 2 * 32 * 3
+
+
+class TestGradientOptimizer:
+    def test_the_head_gets_the_mean_gradient_of_the_two_evaluations(self) -> None:
+        # L = (w·θ)(v·h): the gradient in h at θ ± cΔ is (w·θ ± c w·Δ) v, whose
+        # mean is the gradient at θ, (w·θ) v, exactly.  SGD with lr 1 moves h
+        # by minus that.
+        theta = torch.nn.Parameter(torch.tensor([0.3, -0.7, 1.1], dtype=torch.float64))
+        h = torch.nn.Parameter(torch.tensor([0.5, 2.0], dtype=torch.float64))
+        w = torch.tensor([1.0, 2.0, -1.0], dtype=torch.float64)
+        v = torch.tensor([-3.0, 0.5], dtype=torch.float64)
+        expected = h.detach() - (w @ theta.detach()) * v
+        opt = SPSA([theta], perturbation=0.4, gradient_optimizer=torch.optim.SGD([h], lr=1.0))
+        opt.step(lambda: (w @ theta) * (v @ h))
+        torch.testing.assert_close(h.detach(), expected, rtol=1e-12, atol=1e-12)
+
+    def test_the_spsa_step_is_unchanged_and_still_two_evaluations(self) -> None:
+        # h enters additively and is not perturbed, so L+ − L− and with it
+        # the SPSA step are exactly those of SPSA without the split.
+        results = []
+        for split in (False, True):
+            theta, _, quadratic = _quadratic(4)
+            h = torch.nn.Parameter(torch.ones(2, dtype=torch.float64))
+            calls = {"n": 0}
+
+            def loss(
+                q: Any = quadratic, h: torch.nn.Parameter = h, calls: dict[str, int] = calls
+            ) -> torch.Tensor:
+                calls["n"] += 1
+                return q() + (h**2).sum()
+
+            opt = SPSA([theta], gradient_optimizer=torch.optim.SGD([h], lr=0.1) if split else None)
+            for _ in range(5):
+                opt.step(loss)
+            assert calls["n"] == 10
+            results.append(theta.detach().clone())
+            if split:
+                # dL/dh = 2h, so each SGD step with lr 0.1 scales h by 0.8.
+                torch.testing.assert_close(
+                    h.detach(), torch.full((2,), 0.8**5, dtype=torch.float64)
+                )
+        torch.testing.assert_close(results[0], results[1], rtol=0, atol=0)
+
+    def test_gradient_estimate_ignores_it(self) -> None:
+        theta, _, loss = _quadratic(3)
+        h = torch.nn.Parameter(torch.ones(1))
+        SPSA([theta], gradient_optimizer=torch.optim.SGD([h], lr=1.0)).gradient_estimate(loss)
+        assert h.grad is None
+
+    def test_shared_parameters_raise(self) -> None:
+        theta = torch.nn.Parameter(torch.zeros(2))
+        with pytest.raises(ValueError, match="shares parameters"):
+            SPSA([theta], gradient_optimizer=torch.optim.Adam([theta]))
+
+    def test_a_gradient_free_one_raises(self) -> None:
+        with pytest.raises(ValueError, match="must use gradients"):
+            SPSA(
+                [torch.nn.Parameter(torch.zeros(1))],
+                gradient_optimizer=SPSA([torch.nn.Parameter(torch.zeros(1))]),
+            )
+
+    def test_a_float_closure_raises(self) -> None:
+        theta = torch.nn.Parameter(torch.zeros(1))
+        h = torch.nn.Parameter(torch.zeros(1))
+        opt = SPSA([theta], gradient_optimizer=torch.optim.SGD([h], lr=1.0))
+        with pytest.raises(ValueError, match="loss tensor"):
+            opt.step(lambda: float((theta + h).sum().detach()))
