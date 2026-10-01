@@ -98,7 +98,19 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         draws; dropout and batch order use seeds spawned from it, so they are
         independent of the init.  A seeded ``fit`` is reproducible and leaves
         the global torch RNG exactly as it was; ``None`` draws everything from
-        the global RNG.
+        the global RNG.  The draws of ``noise_method="trajectories"`` share
+        the dropout stream, so a seeded noisy ``fit`` is reproducible too.
+    noise_level, noise_position, noise_method, noise_trajectories:
+        Noise-aware training, passed to the model: depolarizing noise of
+        probability ``noise_level`` (in ``[0, 0.75]``) applied to the circuit
+        in train mode only, so ``fit`` trains through the noisy circuit and
+        ``predict`` / ``predict_proba`` are noiseless.  ``noise_position`` is
+        ``"all"`` or ``"end"``; ``noise_method`` is ``"density"`` (exact,
+        practical up to about 6 qubits) or ``"trajectories"`` (sampled, at
+        pure-state cost), with ``noise_trajectories`` draws per sample.  The
+        defaults (no noise) train exactly as without these parameters.  Like
+        every other parameter they are validated in ``fit``, so they can be
+        tuned with ``GridSearchCV``.  See :mod:`hqnn_forge.noise`.
 
     Attributes
     ----------
@@ -133,6 +145,10 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         monitor: str = "mcc",
         threshold: float | Literal["optimal"] = "optimal",
         random_state: int | None = None,
+        noise_level: float = 0.0,
+        noise_position: str = "all",
+        noise_method: str = "density",
+        noise_trajectories: int = 1,
     ) -> None:
         self.model = model
         self.n_qubits = n_qubits
@@ -153,6 +169,10 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
         self.monitor = monitor
         self.threshold = threshold
         self.random_state = random_state
+        self.noise_level = noise_level
+        self.noise_position = noise_position
+        self.noise_method = noise_method
+        self.noise_trajectories = noise_trajectories
 
     # ------------------------------------------------------------------
     def _build(
@@ -168,6 +188,10 @@ class HybridClassifierEstimator(ClassifierMixin, BaseEstimator):
             diff_method=self.diff_method,
             init_strategy=self.init_strategy,
             encoding_type=self.encoding_type,
+            noise_level=self.noise_level,
+            noise_position=self.noise_position,
+            noise_method=self.noise_method,
+            noise_trajectories=self.noise_trajectories,
             init_seed=init_seed,
         )
         if self.model == "serial":
