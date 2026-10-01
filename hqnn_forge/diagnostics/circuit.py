@@ -44,6 +44,7 @@ import pennylane as qml
 import torch
 import torch.nn as nn
 
+from hqnn_forge._encoding_contract import CircuitLayer
 from hqnn_forge._resolve import resolve_encoding_layer
 
 #: Gate names a circuit is decomposed to before its resources are counted.
@@ -162,7 +163,7 @@ class CircuitSummary:
 # ---------------------------------------------------------------------------
 
 
-def input_width(layer: nn.Module) -> int:
+def input_width(layer: CircuitLayer) -> int:
     """
     Number of features ``layer`` takes per sample: ``n_features`` where the
     layer has one (the amplitude encoder, up to ``2**n_qubits``), else one
@@ -177,7 +178,7 @@ def input_width(layer: nn.Module) -> int:
     return n_qubits
 
 
-def _prepare(layer: nn.Module, x: torch.Tensor) -> torch.Tensor:
+def _prepare(layer: CircuitLayer, x: torch.Tensor) -> torch.Tensor:
     """
     ``layer.prepare_inputs(x)``, the classical step ``forward`` runs before the QNode.
 
@@ -193,7 +194,7 @@ def _prepare(layer: nn.Module, x: torch.Tensor) -> torch.Tensor:
     return out
 
 
-def sample_input(layer: nn.Module) -> torch.Tensor:
+def sample_input(layer: CircuitLayer) -> torch.Tensor:
     """
     One raw input for drawing and counting the layer's circuit.
 
@@ -224,7 +225,9 @@ def sample_input(layer: nn.Module) -> torch.Tensor:
     return zeros[0]
 
 
-def _written_tape(layer: nn.Module, inputs: torch.Tensor | None = None) -> qml.tape.QuantumScript:
+def _written_tape(
+    layer: CircuitLayer, inputs: torch.Tensor | None = None
+) -> qml.tape.QuantumScript:
     """
     The tape the layer executes for one sample, as written.
 
@@ -252,7 +255,9 @@ def _written_tape(layer: nn.Module, inputs: torch.Tensor | None = None) -> qml.t
     return qml.workflow.construct_tape(qlayer.qnode, level="top")(inputs, **weights)
 
 
-def _logical_tape(layer: nn.Module, inputs: torch.Tensor | None = None) -> qml.tape.QuantumScript:
+def _logical_tape(
+    layer: CircuitLayer, inputs: torch.Tensor | None = None
+) -> qml.tape.QuantumScript:
     """The tape the layer executes for one sample, decomposed by _decompose_logical."""
     return _decompose_logical(_written_tape(layer, inputs))
 

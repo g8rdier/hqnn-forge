@@ -30,7 +30,7 @@ from hqnn_forge.diagnostics import (
     gradient_variance,
 )
 from hqnn_forge.diagnostics.circuit import _logical_tape, _written_tape, sample_input
-from hqnn_forge.encoding import AmplitudeEncodingLayer, QuantumEncodingLayer
+from hqnn_forge.encoding import AmplitudeEncodingLayer, QuantumEncodingLayer, is_circuit_layer
 from hqnn_forge.encoding.angle_embedding import DeviceName, DiffMethod
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.models import HybridBinaryClassifier, ParallelHybridClassifier
@@ -141,8 +141,8 @@ class TestMultiWireGateCost:
         would not notice a dropped or mis-wired ladder.
         """
         layer = _multirz_layer(n_wires)
+        assert is_circuit_layer(layer)
         qlayer = layer.qlayer
-        assert isinstance(qlayer, qml.qnn.TorchLayer)
         x = torch.tensor([0.3, -1.1, 0.7, 2.0], dtype=torch.float64)
         with torch.no_grad():
             qlayer.weights.copy_(torch.tensor([0.9]))

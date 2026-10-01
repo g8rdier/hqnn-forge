@@ -52,6 +52,12 @@ dependencies = [
     "numpy>=2.3.2; python_version >= '3.14'",
 ]
 
+[project.urls]
+Homepage = "https://github.com/g8rdier/hqnn-forge"
+Repository = "https://github.com/g8rdier/hqnn-forge"
+Issues = "https://github.com/g8rdier/hqnn-forge/issues"
+Changelog = "https://github.com/g8rdier/hqnn-forge/blob/main/CHANGELOG.md"
+
 [project.optional-dependencies]
 lightning = [
     "pennylane-lightning>=0.45",  # enables adjoint diff on CPU
@@ -114,6 +120,11 @@ ignore = [
     # expected to raise
     "SIM117",
 ]
+
+[tool.pytest.ini_options]
+# A misspelled marker (@pytest.mark.slwo) would otherwise be a silent no-op,
+# and a slow test would stay in the quick local run.
+addopts = ["--strict-markers"]
 
 [tool.mypy]
 # 3.12, not the 3.11 floor: the numpy stubs use the PEP 695 `type` statement,

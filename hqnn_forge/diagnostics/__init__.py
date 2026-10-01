@@ -23,6 +23,10 @@ FisherSpectrum                Result of fisher_information_matrix.
 effective_dimension           Effective dimension (Abbas et al. 2021) over random draws.
 effective_dimension_from_spectra  The formula alone, from Fisher eigenvalues.
 EffectiveDimensionResult      Result of effective_dimension.
+expressibility                KL divergence of the fidelity distribution from Haar (Sim et al. 2019).
+entangling_capability         Mean Meyer–Wallach entanglement over sampled states.
+meyer_wallach                 Meyer–Wallach Q of given state vectors.
+ExpressibilityResult, EntanglingCapabilityResult  Their results.
 """
 
 from hqnn_forge.diagnostics.circuit import (
@@ -32,6 +36,13 @@ from hqnn_forge.diagnostics.circuit import (
     count_inert_parameters,
     count_inert_weights,
     draw_circuit,
+)
+from hqnn_forge.diagnostics.expressibility import (
+    EntanglingCapabilityResult,
+    ExpressibilityResult,
+    entangling_capability,
+    expressibility,
+    meyer_wallach,
 )
 from hqnn_forge.diagnostics.fisher import (
     EffectiveDimensionResult,
@@ -52,6 +63,8 @@ __all__: list[str] = [
     "LOGICAL_GATE_SET",
     "CircuitSummary",
     "EffectiveDimensionResult",
+    "EntanglingCapabilityResult",
+    "ExpressibilityResult",
     "FisherSpectrum",
     "GradientVarianceResult",
     "circuit_summary",
@@ -60,9 +73,12 @@ __all__: list[str] = [
     "draw_circuit",
     "effective_dimension",
     "effective_dimension_from_spectra",
+    "entangling_capability",
+    "expressibility",
     "fisher_information_matrix",
     "fisher_information_spectrum",
     "format_sweep",
     "gradient_variance",
     "gradient_variance_sweep",
+    "meyer_wallach",
 ]

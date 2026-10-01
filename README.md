@@ -1,7 +1,7 @@
-<h1><img src="assets/social-preview.png" alt="hqnn-forge" width="640"></h1>
+<h1><img src="https://raw.githubusercontent.com/g8rdier/hqnn-forge/main/assets/social-preview.png" alt="hqnn-forge" width="640"></h1>
 
 [![Tests](https://github.com/g8rdier/hqnn-forge/actions/workflows/tests.yml/badge.svg)](https://github.com/g8rdier/hqnn-forge/actions/workflows/tests.yml)
-[![License](https://img.shields.io/github/license/g8rdier/hqnn-forge)](LICENSE)
+[![License](https://img.shields.io/github/license/g8rdier/hqnn-forge)](https://github.com/g8rdier/hqnn-forge/blob/main/LICENSE)
 
 > **Test whether a small quantum layer earns its parameters on imbalanced binary tabular data.**
 
@@ -14,8 +14,9 @@ threshold search, MCC per thousand parameters, a paired Wilcoxon test, ablation 
 layer, and circuit diagnostics.
 
 **Scope.** Binary classification on imbalanced tabular data, or data made tabular by a
-pretrained embedding (see [Non-tabular data](#non-tabular-data-precomputed-embeddings)). The
-estimator, losses, thresholds and metrics are built for binary targets;
+pretrained embedding (see
+[Non-tabular data](https://github.com/g8rdier/hqnn-forge#non-tabular-data-precomputed-embeddings)).
+The estimator, losses, thresholds and metrics are built for binary targets;
 `MulticlassHybridClassifier` covers multiclass targets at the model level only. End-to-end
 image, text or time-series pipelines are out of scope.
 
@@ -27,7 +28,7 @@ image, text or time-series pipelines are out of scope.
 |---|---|
 | **Small-angle init** | Gaussian initialisation: global σ = π/√(n·L), or a per-layer schedule σ_ℓ = π/√(n·(L+ℓ)) that starts at the global σ and narrows by up to √2 towards the last layer (this library's own heuristics, in the spirit of Zhang et al. 2022). Measured with `hqnn_forge.diagnostics.gradient_variance` on a 2-layer circuit with a ⟨Z_0⟩ cost: no gain over uniform init for inputs spread over (−π, π), which is what both classifiers feed the circuit, and a gain growing from 1.1x to 1.75x between 4 and 8 qubits only near zero input. Over (−π, π) the variance falls ~3x per two qubits under either init — see the module docstring |
 | **Adjoint differentiation** | Exact gradients via `lightning.qubit` — no finite-difference approximation |
-| **Custom angle encoding** | Angle-embedding feature map (8 qubits by default) with a CNOT-ring VQC ansatz; strongly-entangling and brickwork entanglers are options |
+| **Custom angle encoding** | Angle-embedding feature map (8 qubits by default) with a CNOT-ring VQC ansatz; strongly-entangling, brickwork and hardware-efficient (CZ + RY) entanglers are options |
 | **Imbalance-robust losses** | Focal Loss & inverse-frequency weighted BCE |
 | **Pure-NumPy pre-processing** | PCA + standardisation without scikit-learn runtime dependency |
 | **Three hybrid topologies** | Serial `HybridBinaryClassifier`, parallel `ParallelHybridClassifier` (classical MLP branch ‖ quantum branch) and multiclass `MulticlassHybridClassifier` (softmax or one-vs-rest heads on a shared quantum layer), with angle or IQP encoding |
@@ -52,16 +53,25 @@ The extras add optional parts; combine them as needed, e.g. `".[lightning,sklear
 | `lightning` | `pennylane-lightning` | the `lightning.qubit` backend and adjoint differentiation, the library defaults |
 | `sklearn` | `scikit-learn` | the scikit-learn estimator in `hqnn_forge.sklearn` |
 | `examples` | `scikit-learn`, `matplotlib` | the scripts in `examples/` and the plots in `hqnn_forge.evaluation` |
-| `dev` | test and lint tools | development; see [Development Setup](#development-setup) |
+| `dev` | test and lint tools | development; see [Development Setup](https://github.com/g8rdier/hqnn-forge#development-setup) |
 
 pip installs the newest versions that `pyproject.toml` allows. To work on the project in the
-environment CI tests against, use the uv setup under [Development Setup](#development-setup).
+environment CI tests against, use the uv setup under [Development Setup](https://github.com/g8rdier/hqnn-forge#development-setup).
 
 ### Device backends
 
-Every encoding layer and classifier takes a `device_name`. If the requested backend is not
-installed or finds no usable hardware, the library falls back one step at a time, with a
-`RuntimeWarning` at each step, along `requested → lightning.qubit → default.qubit`.
+Every encoding layer and classifier takes a `device_name`. For the four simulators below, if
+the requested backend is not installed or finds no usable hardware, the library falls back one
+step at a time, with a `RuntimeWarning` at each step, along
+`requested → lightning.qubit → default.qubit`. Any other PennyLane device name (a plugin such
+as `qiskit.aer`, or hardware) is constructed exactly as given; a misspelt name raises instead
+of falling back.
+
+`shots=N` (default `None`, exact) samples every readout from `N` measurements, as hardware
+does, and needs `diff_method="parameter-shift"`; hardware devices need both.
+`hqnn_forge.noise.apply_shots` evaluates an exactly trained model under sampling, and
+`shot_sweep` repeats that across shot counts. Sampling is not yet seeded by
+`torch.manual_seed` (#354).
 
 | `device_name` | What it is | Prerequisites |
 |---|---|---|
@@ -254,19 +264,25 @@ binary `predict(x, threshold)` contract of `BinaryClassifierBase`, and it does n
 
 Options shared by both models:
 
-- `encoding_type="angle"` (default) or `"iqp"` (Havlíček-style feature map with pairwise
-  `x_i x_j` phases).
+- `encoding_type="angle"` (default), `"iqp"` (Havlíček-style feature map with pairwise
+  `x_i x_j` phases), `"reuploading"` (the angle embedding repeated before every variational
+  layer, with optional `trainable_input_scaling`) or `"amplitude"` (the classical encoder maps
+  to `2**n_qubits` amplitudes, which needs `diff_method="backprop"`; without the encoder, 1 to
+  `2**n_qubits` raw features are zero-padded).
 - `init_strategy="restricted"` (one σ for the whole circuit), `"block_local"` (the same σ in
   the first layer, narrowing by up to √2 towards the last) or `"normal"` (plain
   `N(0, init_std²)`, `init_std=0.1` by default); see `hqnn_forge.initializers`.
-- `embedding_rotation="X"` (default) or `"Y"`: the Pauli axis of the angle embedding
-  (angle encoding only). `"Z"` raises: a single `RZ` embedding on `|0⟩` is a global phase,
-  so the quantum layer would ignore its inputs.
+- `embedding_rotation="X"` (default), `"Y"` or `"Z"`: the Pauli axis of the angle embedding
+  (angle and re-uploading encodings only). `"Z"` raises under angle encoding: a single `RZ`
+  embedding on `|0⟩` is a global phase, so the quantum layer would ignore its inputs. Under
+  re-uploading it needs `n_layers ≥ 2`.
 - `entangler="ring"` (default: CNOT ring then per-qubit `Rot`), `"strongly_entangling"`
   (`qml.StronglyEntanglingLayers`: `Rot` first, then a CNOT ring whose range grows with the
-  layer index) or `"brickwork"` (nearest-neighbour CNOT pairs without wrap-around, so each
+  layer index), `"brickwork"` (nearest-neighbour CNOT pairs without wrap-around, so each
   ⟨Z_i⟩ readout depends on a few neighbouring qubits at shallow depth rather than on all of
-  them).
+  them) or `"hardware_efficient"` (a nearest-neighbour `CZ` ladder then `RY` on every qubit,
+  Kandala et al. 2017: one angle per qubit per layer, so the weights have shape
+  `(n_layers, n_qubits)` instead of `(n_layers, n_qubits, 3)`).
 - `readout="all"` (default: ⟨Z_i⟩ on every qubit) or `"first"` (⟨Z_0⟩ only, so the head reads
   a single number).
 - `encoder_activation="tanh"` (default: `tanh(·)·π`, in (-π, π)) or `"sigmoid"`
@@ -321,7 +337,7 @@ hqnn_forge/
 ├── utils/           Imbalance-robust losses, checkpoint save/load, quantum-layer ablation,
 │                    eval-mode context manager
 ├── kernels.py       Quantum kernel matrices from the encoding layers (QSVM)
-├── noise.py         Depolarizing noise, post hoc for robustness sweeps or during training
+├── noise.py         Noise channels (depolarizing, damping, flips), post hoc or during training
 └── sklearn.py       scikit-learn estimator wrapper (cross_val_score, GridSearchCV, Pipeline);
                      needs the `sklearn` extra
 ```
@@ -387,31 +403,45 @@ uv run --frozen --all-extras vermin --no-tips -t=3.11- --violations --eval-annot
     --exclude long hqnn_forge tests examples .github/scripts
 ```
 
-[`CONTRIBUTING.md`](CONTRIBUTING.md#linting) lists every command the lint job runs.
+[`CONTRIBUTING.md`](https://github.com/g8rdier/hqnn-forge/blob/main/CONTRIBUTING.md#linting) lists every command the lint job runs.
+
+The full test suite takes a few minutes. For the edit–test loop, leave out the tests marked
+`slow` (end-to-end training, the gradient-variance physics checks, parameter-shift batching,
+repeated fits and bootstraps), which account for most of that time; CI always runs everything
+(see [`CONTRIBUTING.md`](https://github.com/g8rdier/hqnn-forge/blob/main/CONTRIBUTING.md#testing)):
+
+```bash
+pytest -m "not slow"   # about a minute
+pytest                 # the full suite, as CI runs it
+```
 
 ---
 
 ## Methodology
 
-[`docs/methodology.md`](docs/methodology.md) states the rules the comparisons follow: how the
-classical control is matched, how folds, oversampling and thresholds are handled, which
-statistical test applies when, the equal tuning budget, what the noise sweep models, and what
-an experiment record captures.
+[`docs/methodology.md`](https://github.com/g8rdier/hqnn-forge/blob/main/docs/methodology.md)
+states the rules the comparisons follow: how the classical control is matched, how folds,
+oversampling and thresholds are handled, which statistical test applies when, the equal tuning
+budget, what the noise sweep models, and what an experiment record captures.
 
 ---
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the issue/branch/PR workflow, commit conventions,
-and versioning policy this project follows.
+See [`CONTRIBUTING.md`](https://github.com/g8rdier/hqnn-forge/blob/main/CONTRIBUTING.md) for the
+issue/branch/PR workflow, commit conventions, and versioning policy this project follows. To add
+a dataset loader, an encoding layer or a variational block, see
+[`docs/extending.md`](https://github.com/g8rdier/hqnn-forge/blob/main/docs/extending.md) for the
+conventions each must keep and the tests each must pass.
 
 ---
 
 ## Citing
 
-If you use hqnn-forge in research, please cite it. [`CITATION.cff`](CITATION.cff) holds the
-citation metadata, and GitHub's **Cite this repository** button in the sidebar turns it into
-BibTeX or APA.
+If you use hqnn-forge in research, please cite it.
+[`CITATION.cff`](https://github.com/g8rdier/hqnn-forge/blob/main/CITATION.cff) holds the citation
+metadata, and GitHub's **Cite this repository** button in the sidebar turns it into BibTeX or
+APA.
 
 ---
 
@@ -425,6 +455,9 @@ BibTeX or APA.
 - Berezniuk et al. (2020) — *A scale-dependent notion of effective dimension*
 - Schuld et al. (2020) — *Circuit-centric quantum classifiers*
 - Sim et al. (2019) — *Expressibility and entangling capability of parameterized quantum circuits for hybrid quantum-classical algorithms*
+- Meyer & Wallach (2002) — *Global entanglement in multiparticle systems*
+- Brennen (2003) — *An observable measure of entanglement for pure states of multi-qubit systems*
+- Scott (2004) — *Multipartite entanglement, quantum-error-correcting codes, and entangling power of quantum evolutions*
 - Jones & Gacon (2020) — *Efficient calculation of gradients in classical simulations of variational quantum algorithms*
 - Kandala et al. (2017) — *Hardware-efficient variational quantum eigensolver for small molecules and quantum magnets*
 - Havlíček et al. (2019) — *Supervised learning with quantum-enhanced feature spaces*
@@ -454,3 +487,5 @@ BibTeX or APA.
 - Naeini, Cooper & Hauskrecht (2015) — *Obtaining well calibrated probabilities using Bayesian binning*
 - Guo, Pleiss, Sun & Weinberger (2017) — *On calibration of modern neural networks*
 - Mukhoti et al. (2020) — *Calibrating deep neural networks using focal loss*
+- Spall (1992) — *Multivariate stochastic approximation using a simultaneous perturbation gradient approximation*
+- Spall (1998) — *Implementation of the simultaneous perturbation algorithm for stochastic optimization*

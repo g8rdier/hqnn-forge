@@ -110,13 +110,13 @@ References
 from __future__ import annotations
 
 import numbers
-from collections.abc import Callable
 
 import pennylane as qml
 import torch
 from torch import nn
 
-from hqnn_forge._resolve import resolve_encoding_layer
+from hqnn_forge._encoding_contract import EncodingLayer
+from hqnn_forge._resolve import require_prepare_inputs, resolve_encoding_layer
 from hqnn_forge.noise import Position, _noisy_qnode, validate_noise
 
 __all__ = [
@@ -132,24 +132,16 @@ __all__ = [
 ]
 
 
-PrepareInputs = Callable[[torch.Tensor], torch.Tensor]
-
-
-def _resolve_layer(layer: nn.Module, caller: str) -> tuple[qml.qnn.TorchLayer, int, PrepareInputs]:
+def _resolve_layer(layer: nn.Module, caller: str) -> EncodingLayer:
     """
-    ``(qlayer, n_qubits, prepare_inputs)`` of an encoding layer, or raise.
+    ``layer`` as an :class:`~hqnn_forge.encoding.EncodingLayer`, or raise.
 
     A hybrid classifier is refused, not unwrapped: the kernel is defined by the
     encoder alone, and the classifier's classical encoder would sit between
     ``X`` and the feature map (see ``resolve_encoding_layer``).
     """
-    _, qlayer, n_qubits = resolve_encoding_layer(layer, caller, allow_model=False)
-    prepare = getattr(layer, "prepare_inputs", None)
-    if not callable(prepare):
-        raise TypeError(
-            f"{caller} expects an encoding layer with a prepare_inputs method, which "
-            f"{type(layer).__name__} does not have."
-        )
+    found, qlayer, _ = resolve_encoding_layer(layer, caller, allow_model=False)
+    encoder = require_prepare_inputs(found, caller)
     # The level=0 tape drops every transform on the QNode and the replay runs
     # on default.qubit, so a transformed circuit (apply_depolarizing_noise's
     # qml.noise.insert, qml.add_noise, a compile pass) would silently give the
@@ -167,10 +159,10 @@ def _resolve_layer(layer: nn.Module, caller: str) -> tuple[qml.qnn.TorchLayer, i
             f"apply_depolarizing_noise, call it outside the block, and pass noise_level= "
             f"for the kernel under the same depolarising noise."
         )
-    return qlayer, n_qubits, prepare
+    return encoder
 
 
-def _prepare(X: torch.Tensor, prepare: PrepareInputs, name: str) -> torch.Tensor:
+def _prepare(X: torch.Tensor, encoder: EncodingLayer, name: str) -> torch.Tensor:
     """Check ``X`` is a non-empty 2-D tensor and apply the layer's ``prepare_inputs``."""
     if not isinstance(X, torch.Tensor):
         raise TypeError(f"{name} must be a torch.Tensor; got {type(X).__name__}.")
@@ -180,7 +172,7 @@ def _prepare(X: torch.Tensor, prepare: PrepareInputs, name: str) -> torch.Tensor
         raise ValueError(f"{name} has no samples.")
     # The same validation and transform forward applies (width and finiteness
     # checks, the amplitude encoder's padding and normalisation).
-    return prepare(X.detach().to(torch.float64))
+    return encoder.prepare_inputs(X.detach().to(torch.float64))
 
 
 def _check_batch_size(batch_size: int | None) -> None:
@@ -297,8 +289,9 @@ def encoded_states(
         drop it, so it refuses rather than return the untransformed states.
     """
     _check_batch_size(batch_size)
-    qlayer, n_qubits, prepare = _resolve_layer(layer, "encoded_states")
-    return _simulate(_prepare(X, prepare, "X"), qlayer, n_qubits, differentiable, batch_size)
+    encoder = _resolve_layer(layer, "encoded_states")
+    qlayer, n_qubits = encoder.qlayer, encoder.n_qubits
+    return _simulate(_prepare(X, encoder, "X"), qlayer, n_qubits, differentiable, batch_size)
 
 
 def kernel_from_states(
@@ -472,11 +465,12 @@ def quantum_kernel_matrix(
     validate_noise(
         noise_level, noise_position, p_name="noise_level", position_name="noise_position"
     )
-    qlayer, n_qubits, prepare = _resolve_layer(layer, "quantum_kernel_matrix")
+    encoder = _resolve_layer(layer, "quantum_kernel_matrix")
+    qlayer, n_qubits = encoder.qlayer, encoder.n_qubits
     # Validate both input sets before simulating either.
-    prepared_x = _prepare(X, prepare, "X")
+    prepared_x = _prepare(X, encoder, "X")
     if noise_level > 0.0:
-        prepared_y = None if Y is None else _prepare(Y, prepare, "Y")
+        prepared_y = None if Y is None else _prepare(Y, encoder, "Y")
         both = prepared_x if prepared_y is None else torch.cat([prepared_x, prepared_y])
         rho = _simulate_density(
             both, qlayer, n_qubits, noise_level, noise_position, differentiable, batch_size
@@ -489,7 +483,7 @@ def quantum_kernel_matrix(
         return kernel_from_states(
             _simulate(prepared_x, qlayer, n_qubits, differentiable, batch_size)
         )
-    prepared_y = _prepare(Y, prepare, "Y")
+    prepared_y = _prepare(Y, encoder, "Y")
     # One replay for both sets: same circuit and weights, one tape and device.
     states = _simulate(
         torch.cat([prepared_x, prepared_y]), qlayer, n_qubits, differentiable, batch_size
@@ -712,9 +706,10 @@ def overlap_kernel_matrix(
         raise ValueError(f"shots must be a positive integer or None; got {shots}.")
     if project_psd and Y is not None:
         raise ValueError("project_psd applies to the square matrix only; pass Y=None.")
-    qlayer, n_qubits, prepare = _resolve_layer(layer, "overlap_kernel_matrix")
-    prepared_x = _prepare(X, prepare, "X")
-    prepared_y = None if Y is None else _prepare(Y, prepare, "Y")
+    encoder = _resolve_layer(layer, "overlap_kernel_matrix")
+    qlayer, n_qubits = encoder.qlayer, encoder.n_qubits
+    prepared_x = _prepare(X, encoder, "X")
+    prepared_y = None if Y is None else _prepare(Y, encoder, "Y")
     ops_x = _operations(prepared_x, qlayer)
     ops_y = ops_x if prepared_y is None else _operations(prepared_y, qlayer)
 
@@ -796,7 +791,7 @@ def _simulate_density(
     # level so its inserted channels are on the tape; p = 0 inserts none, as
     # apply_depolarizing_noise leaves the circuit untouched at p = 0.
     if noise_level > 0.0:
-        qnode = _noisy_qnode(qlayer.qnode, n_qubits, noise_level, noise_position)
+        qnode = _noisy_qnode(qlayer.qnode, n_qubits, noise_level, noise_position, "depolarizing")
         tape = qml.workflow.construct_tape(qnode, level="user")(prepared, **weights)
     else:
         tape = qml.workflow.construct_tape(qlayer.qnode, level=0)(prepared, **weights)
@@ -851,9 +846,10 @@ def encoded_density_matrices(
         noise_level, noise_position, p_name="noise_level", position_name="noise_position"
     )
     _check_batch_size(batch_size)
-    qlayer, n_qubits, prepare = _resolve_layer(layer, "encoded_density_matrices")
+    encoder = _resolve_layer(layer, "encoded_density_matrices")
+    qlayer, n_qubits = encoder.qlayer, encoder.n_qubits
     return _simulate_density(
-        _prepare(X, prepare, "X"),
+        _prepare(X, encoder, "X"),
         qlayer,
         n_qubits,
         noise_level,

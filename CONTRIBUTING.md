@@ -15,6 +15,9 @@ background.
 Reduce complexity and increase clarity. A clean `main` branch, understandable commit history,
 and consistent processes lead to better software.
 
+Adding a dataset loader, an encoding layer or a variational block? The conventions and required
+tests for each are in [`docs/extending.md`](docs/extending.md).
+
 ## Git Workflow
 
 ### 1. Issue First
@@ -109,6 +112,21 @@ feat: add user authentication endpoint
 Keep commit bodies to at most 3 bullet points. If you need more, the work is probably better
 split into smaller, more atomic commits.
 
+## Testing
+
+CI runs the whole suite. For the local edit–test loop, leave out the tests marked `slow`
+(end-to-end training, the gradient-variance physics checks, parameter-shift batching, repeated
+fits and bootstraps), which take most of its run time:
+
+```bash
+uv run --frozen --all-extras pytest -m "not slow"   # about a minute
+uv run --frozen --all-extras pytest                 # the full suite, as CI runs it
+```
+
+Mark a test `@pytest.mark.slow` when it takes 1.2 s or more (`pytest --durations=50` finds
+them); `tests/conftest.py` records the rule. `--strict-markers` is on, so a misspelled marker
+fails collection instead of silently leaving a slow test in the quick run.
+
 ## Linting
 
 The `lint` job in `.github/workflows/tests.yml` runs four checks, and a PR must pass all of
@@ -178,13 +196,47 @@ it.
     `pyproject.toml`, so contributors only regenerate the lockfile when they change
     `pyproject.toml` by hand.
 
+*   **Upcoming PennyLane releases are tested weekly.** `.github/workflows/upstream.yml` runs
+    the suite against the newest PennyLane and pennylane-lightning pre-releases on PyPI and
+    against their nightly builds on TestPyPI. It never blocks a PR. When it fails, it opens
+    (or comments on) an issue titled `ci: test suite fails against PennyLane <source> builds`:
+    the library relies on PennyLane internals, and this is how a break shows up before users
+    upgrade. Trigger it by hand with `gh workflow run upstream.yml`.
+
 ## Versioning
 
 Releases follow [Semantic Versioning](https://semver.org/) (`MAJOR.MINOR.PATCH`), tagged (e.g.
 `v1.2.0`) on the `main` merge commit that encapsulates the release. `CHANGELOG.md` follows
-[Keep a Changelog](https://keepachangelog.com/) and is updated as part of the release PR.
-The release PR also bumps `version` in `CITATION.cff` to the new `pyproject.toml` version
-(`tests/test_citation.py` fails until it does) and, once released, can add a `date-released`.
+[Keep a Changelog](https://keepachangelog.com/).
+
+*   **Every user-facing PR adds its changelog line** under `## [Unreleased]`, in `Added`,
+    `Changed`, `Fixed` or `Removed`, ending with the PR number, e.g. `(#42)`. User-facing means
+    anything a user of the package can observe: the API, behaviour, results, dependencies,
+    supported Python versions. CI, tests, internal refactors and contributor docs don't need
+    one. A test checks that every entry names its PR.
+*   **A release PR** sets `version` in `pyproject.toml` (then `uv lock`), renames
+    `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` and opens a new empty `## [Unreleased]`
+    above it, and adds the compare link at the bottom. It also bumps `version` in
+    `CITATION.cff` to the new version (`tests/test_citation.py` fails until it does) and can
+    add a `date-released`.
+*   **Tagging publishes.** After the release PR is merged, tag its merge commit and push the
+    tag:
+
+    ```bash
+    git tag vX.Y.Z <merge-commit> && git push origin vX.Y.Z
+    ```
+
+    `.github/workflows/release.yml` then checks that the tag equals `v` + `project.version`,
+    that the tagged commit is on `main`, and that the changelog has a non-empty `[X.Y.Z]`
+    section (`.github/scripts/release_notes.py`). It builds and checks the sdist and wheel and
+    runs the locked test suite on that commit. Only then does the publish job, in the `pypi`
+    environment, wait for the owner's approval, publish to PyPI through trusted publishing (no
+    stored token), and create the GitHub release with that changelog section as its notes. A
+    manual run of the workflow on `main` is a dry run to TestPyPI; it refuses any other branch.
+*   **The `pypi` environment must be protected before the first tag**: required reviewer the
+    owner, deployments limited to `v*` tags. A job that names an environment the repository
+    does not have creates it unprotected, so without this setup a pushed tag publishes with
+    no approval step.
 
 ## Using AI Coding Assistants
 
