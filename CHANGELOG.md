@@ -229,6 +229,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a gradient-free optimiser's `step(closure)` without a backward pass. `gradient_optimizer=`
   trains the parameters after the circuit (the classical head) with a gradient optimiser such
   as Adam from the same two evaluations, at no extra circuit executions (#335)
+- Noise channels beside depolarizing: `channel=` on `apply_depolarizing_noise` and
+  `noise_sweep`, and `noise_channel` on the four encoding layers, the three classifiers and
+  checkpoints (weight-safe, `"depolarizing"` for older files), selecting
+  `"amplitude_damping"` (T1), `"phase_damping"` (T2 dephasing), `"bit_flip"` or
+  `"phase_flip"`, each with its own `p` range (`[0, 1]`; depolarizing stays `[0, 0.75]`). A
+  readout error is `"bit_flip"` at `position="end"`, the symmetric case only: an asymmetric
+  one (`p01 ≠ p10`) is not modelled. `noise_method="trajectories"` samples the Pauli channels
+  (depolarizing, bit flip, phase flip), including inside `apply_shots`; the damping channels
+  need `"density"` (#336)
 
 ### Changed
 - The package metadata links the repository, issue tracker and changelog, and the README's

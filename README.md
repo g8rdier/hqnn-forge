@@ -337,7 +337,7 @@ hqnn_forge/
 ├── utils/           Imbalance-robust losses, checkpoint save/load, quantum-layer ablation,
 │                    eval-mode context manager
 ├── kernels.py       Quantum kernel matrices from the encoding layers (QSVM)
-├── noise.py         Depolarizing noise, post hoc for robustness sweeps or during training
+├── noise.py         Noise channels (depolarizing, damping, flips), post hoc or during training
 └── sklearn.py       scikit-learn estimator wrapper (cross_val_score, GridSearchCV, Pipeline);
                      needs the `sklearn` extra
 ```

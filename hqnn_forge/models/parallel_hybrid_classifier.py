@@ -198,8 +198,10 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
     ``readout="first"``, ``encoder_activation="sigmoid"``,
     ``init_strategy="normal"``; see :meth:`published_shnn`.
     noise_level:
-        Training-time depolarizing probability for the quantum layer, in
-        ``[0, 0.75]``.  Default: ``0.0`` (noiseless).  Applied in train mode
+        Training-time strength of ``noise_channel`` for the quantum layer: the
+        depolarizing probability in ``[0, 0.75]``, or the damping or flip
+        probability in ``[0, 1]`` for the other channels.  Default: ``0.0``
+        (noiseless).  Applied in train mode
         only.  With the default ``noise_method`` it runs on ``default.mixed``
         with backprop, whose memory grows as ``batch × 4^n_qubits`` per
         operation: practical up to about 6 qubits.  See :mod:`hqnn_forge.noise`.

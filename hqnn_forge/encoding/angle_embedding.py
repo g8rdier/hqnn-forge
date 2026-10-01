@@ -451,12 +451,14 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
         ``"all"`` (default): the layer returns ``(batch, n_qubits)``.
         ``"first"``: ⟨Z_0⟩ only, ``(batch, 1)``, the published SHNN readout.
     noise_level:
-        Depolarizing probability applied to the circuit in **train mode**,
-        in ``[0, 0.75]``; ``0`` (default) is the plain noiseless layer.  With
-        ``noise_level > 0`` the train-mode forward pass runs the circuit on
-        ``default.mixed`` with a ``DepolarizingChannel`` inserted, so
-        gradients are computed through the noisy circuit (noise-aware
-        training); eval mode is always noiseless, like dropout.  With the
+        Strength of the ``noise_channel`` applied to the circuit in **train
+        mode**: the depolarizing probability in ``[0, 0.75]``, or the damping
+        or flip probability in ``[0, 1]`` for the other channels (the table in
+        :mod:`hqnn_forge.noise`); ``0`` (default) is the plain noiseless layer.
+        With ``noise_level > 0`` the train-mode forward pass runs the circuit
+        on ``default.mixed`` with that channel inserted, so gradients are
+        computed through the noisy circuit (noise-aware training); eval mode
+        is always noiseless, like dropout.  With the
         default ``noise_method``, backprop keeps a ``batch × 4^n`` density
         matrix per operation, so this is practical up to about 6 qubits.  See
         :mod:`hqnn_forge.noise`.
@@ -472,6 +474,12 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
     noise_trajectories:
         Draws averaged per sample with ``noise_method="trajectories"``.
         Default 1; must be 1 for ``"density"``.
+    noise_channel:
+        The channel ``noise_level`` is the strength of: ``"depolarizing"``
+        (default), ``"amplitude_damping"`` (T1), ``"phase_damping"`` (T2),
+        ``"bit_flip"`` (also a symmetric readout error at ``"end"``) or
+        ``"phase_flip"``; see :mod:`hqnn_forge.noise`.  The trajectory method
+        samples the Pauli ones only (depolarizing, bit flip, phase flip).
     shots:
         ``None`` (default): exact expectation values.  An ``int``: every
         readout is estimated from that many samples, as on hardware.  Needs
@@ -492,6 +500,7 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
     entangler : str
     readout : str
     noise_level : float
+    noise_channel : str
     noise_position : str
     noise_method : str
     noise_trajectories : int
@@ -563,7 +572,7 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
         # Wrap QNode as an nn.Module with registered Parameters ───────────
         self.qlayer = qml.qnn.TorchLayer(qnode, weight_shapes)
 
-        # Training-time depolarizing noise (see hqnn_forge.noise) ─────────
+        # Training-time noise (see hqnn_forge.noise) ──────────────────────
         self._init_training_noise(
             qnode,
             n_qubits,

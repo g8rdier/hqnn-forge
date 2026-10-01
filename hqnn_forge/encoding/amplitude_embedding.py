@@ -316,12 +316,15 @@ class AmplitudeEncodingLayer(TrainingNoiseMixin, nn.Module):
     readout:
         ``"all"`` (default): the layer returns ``(batch, n_qubits)``.
         ``"first"``: ⟨Z_0⟩ only, ``(batch, 1)``.
-    noise_level, noise_position, noise_method, noise_trajectories:
-        Training-time depolarizing noise, exactly as for
+    noise_level, noise_position, noise_method, noise_trajectories, noise_channel:
+        Training-time noise, exactly as for
         :class:`~hqnn_forge.encoding.QuantumEncodingLayer`: ``noise_level``
-        in ``[0, 0.75]`` (default 0, noiseless) applied in train mode only,
-        at ``"all"`` gates or at the ``"end"``, simulated exactly
-        (``"density"``) or by Pauli trajectories.  See :mod:`hqnn_forge.noise`.
+        is the strength of ``noise_channel`` (default ``"depolarizing"``), in
+        ``[0, 0.75]`` for depolarizing and ``[0, 1]`` for the damping and flip
+        channels (default 0, noiseless), applied in train mode only, at
+        ``"all"`` gates or at the ``"end"``, simulated exactly (``"density"``)
+        or by Pauli trajectories (the Pauli channels only).  See
+        :mod:`hqnn_forge.noise`.
     shots:
         Finite-shot sampling, exactly as for
         :class:`~hqnn_forge.encoding.QuantumEncodingLayer`.
