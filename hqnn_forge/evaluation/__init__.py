@@ -17,6 +17,9 @@ WilcoxonResult           Result of wilcoxon_signed_rank.
 rank_biserial_correlation  Effect size for the paired comparison.
 multiclass_matthews_corrcoef, macro_f1_score, multiclass_balanced_accuracy
                          The multiclass metrics, on hard labels; MULTICLASS_METRICS by name.
+bootstrap_ci             Class-stratified bootstrap interval (BCa or percentile) for a metric.
+paired_bootstrap_ci      The same for the difference between two models on the same samples.
+BootstrapResult          Result of both.
 friedman_test            Friedman / Iman–Davenport test of k models over N datasets.
 friedman_from_ranks      The same from published average ranks.
 FriedmanResult           Result of friedman_test.
@@ -30,6 +33,11 @@ plots                    Submodule: confusion matrix, fold boxplot, efficiency
                          ``from hqnn_forge.evaluation import plots``).
 """
 
+from hqnn_forge.evaluation.bootstrap import (
+    BootstrapResult,
+    bootstrap_ci,
+    paired_bootstrap_ci,
+)
 from hqnn_forge.evaluation.multiclass import (
     MULTICLASS_METRICS,
     macro_f1_score,
@@ -63,12 +71,14 @@ from hqnn_forge.evaluation.thresholds import (
 __all__: list[str] = [
     "METRICS",
     "MULTICLASS_METRICS",
+    "BootstrapResult",
     "ControlComparison",
     "FriedmanResult",
     "ThresholdSearchResult",
     "WilcoxonResult",
     "average_ranks",
     "balanced_accuracy",
+    "bootstrap_ci",
     "compare_to_control",
     "f1_score",
     "find_optimal_threshold",
@@ -80,6 +90,7 @@ __all__: list[str] = [
     "multiclass_balanced_accuracy",
     "multiclass_matthews_corrcoef",
     "nemenyi_critical_difference",
+    "paired_bootstrap_ci",
     "parameter_efficiency",
     "pr_auc",
     "rank_biserial_correlation",

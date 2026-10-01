@@ -60,6 +60,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   many more (12 of 24 for the ring ansatz at 4 qubits and 2 layers).  `n_effective_params`
   appears in `to_dict()` and the printed summary; templates are decomposed before counting
   and broadcast tapes are rejected
+- `bootstrap_ci` and `paired_bootstrap_ci` in `hqnn_forge.evaluation`: class-stratified
+  bootstrap intervals (BCa or percentile) for MCC, F1, balanced accuracy or any callable
+  metric, and for the difference between two models on the same samples; NumPy-only
 - `hqnn_forge.evaluation.pr_auc`: average precision (PR-AUC) in pure torch, with the step
   interpolation of scikit-learn's `average_precision_score` and tied probabilities as one
   operating point; threshold-free, so it stays out of `METRICS` and `find_optimal_threshold`
@@ -76,13 +79,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DatasetDownloadError` saying which (and repeating the command to run by hand), and removes
   the partial files a failed or interrupted download created. Both bounds are fixed; the
   loader's signature is unchanged
-
 - `ClassicalBaseline` (a plain MLP with the classifiers' interface) and
   `hqnn_forge.utils.classical_baseline(model)`, which builds the untrained classical control
-  of a hybrid model with its trainable parameter count matched to the hybrid's, every rotation
-  angle counted as one parameter. `ClassicalBaseline` takes `init_seed` like the other
+  of a hybrid model with its trainable parameter count matched to the hybrid's live count
+  (`count_parameters()` minus `circuit_summary(model).n_inert_params`, every other rotation
+  angle counted as one parameter). `ClassicalBaseline` takes `init_seed` like the other
   classifiers, and the builder carries the hybrid's `init_seed` over, so a seeded hybrid gets
   a seeded control
+- The published SHNN's live parameter count: 102 of its 122 trainable parameters can move
+  the output (autograd, pinned by a test); the 20 dead circuit weights are kept so published
+  checkpoints load unchanged, and both counts are documented (#234). The matched classical
+  control leaves the inert weights out of its target, so the published SHNN's control has 101
+  parameters, not 121 as matched on the total, and the parallel model's 523, not 571.
+  Efficiency figures (MCC/kParam) still divide by the total
 - `hqnn_forge.benchmark.run_benchmark`: a hybrid model against its matched classical control
   on identical folds of several datasets, one row per dataset and model (MCC, parameters,
   MCC per 1,000 parameters, training time, paired Wilcoxon test), with `write_csv` and
@@ -91,14 +100,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   seeds, fold indices, dependency versions, devices used, dataset fingerprints and metrics,
   written by `run_benchmark(record_path=...)`; `load_record` reports version differences from
   the current environment and `rerun_benchmark` repeats the run
+- `run_benchmark(n_seeds=...)`: each fold trained with several recorded initialisation seeds,
+  fold scores averaged over them for the paired test, and the across-seed spread reported as
+  `mcc_seed_std`
+- `run_benchmark(tuning=Tuning(...))`: random search over training settings with the same
+  trial budget and inner folds for the hybrid model and its control, inside each outer training
+  split; the chosen settings are recorded
+- `run_benchmark(noise_levels=...)`: each trained hybrid model also scored under
+  inference-time depolarising noise, compared per level with the noise-free control, with the
+  noise level at which it stops being significantly better
 - `hqnn_forge.utils.permute_quantum_layer`: the permutation null for quantum ablation, which
   runs the circuit and shuffles its readouts across the batch with a seedable generator, so
   they keep their distribution and lose only their link to the input
+- Trainable quantum kernels: `differentiable=True` on `encoded_states` and
+  `quantum_kernel_matrix`, `kernel_target_alignment` (centred) and `train_kernel_alignment`
+  to fit a `DataReuploadingLayer`'s weights to a task before the SVM
+- `hqnn_forge.kernels.overlap_kernel_matrix`: the kernel estimated entry by entry from the
+  compute-uncompute circuit with optional shots and any device, and `nearest_psd` to
+  project an estimate onto the positive semi-definite cone
 - Comparing several models over several datasets (Demšar 2006) in `hqnn_forge.evaluation`:
   `friedman_test` with the Iman–Davenport F, `nemenyi_critical_difference`,
   `compare_to_control` and `holm_correction`, NumPy-only
 - `examples/does_the_quantum_layer_help.py`: a step-by-step hybrid-versus-control comparison on
   one's own data, with a plain-words verdict from the paired Wilcoxon test
+- `batch_size` on `encoded_states` and `quantum_kernel_matrix`: the kernel states are simulated
+  that many rows at a time, bounding the simulator's working memory; results are unchanged
+- Quantum kernels under depolarising noise: `noise_level`/`noise_position` on
+  `quantum_kernel_matrix` give the Hilbert–Schmidt kernel `Tr[ρ(x)ρ(y)]` with the same channel
+  insertion as `hqnn_forge.noise`; `encoded_density_matrices` and `kernel_from_density_matrices`
+- The encoding layer contract, exported from `hqnn_forge.encoding`: the `EncodingLayer`
+  protocol (`qlayer`, `n_qubits`, `n_features`, `prepare_inputs`, with `forward(x)` equal to
+  `qlayer(prepare_inputs(x))` outside training noise), the weaker `CircuitLayer` (`qlayer`,
+  `n_qubits`) the diagnostics accept, and the `is_encoding_layer` / `is_circuit_layer` runtime
+  checks. `QuantumEncodingLayer`, `IQPEncodingLayer` and `DataReuploadingLayer` gain an
+  `n_features` attribute, their input width, equal to `n_qubits`
 - Multiclass in `HybridClassifierEstimator`: three or more classes train
   `MulticlassHybridClassifier` with a new `strategy` (`"softmax"` with cross-entropy or
   `SoftmaxFocalLoss`, `"one_vs_rest"` with BCE or focal loss on one-hot targets);
@@ -205,3 +240,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Python 3.10 support; `requires-python` is now `>=3.11`. 3.10 reaches end of life in
   October 2026 and current PennyLane releases no longer install on it, so CI tests 3.11
   (the floor) and 3.14 (the newest) instead
+- `rotation="Z"` on `QuantumEncodingLayer` and `build_encoding_qnode`, and
+  `embedding_rotation="Z"` on `HybridBinaryClassifier` and `ParallelHybridClassifier`, now
+  raise `ValueError`. The single `RZ` embedding acts on `|0…0⟩`, where it is a global phase, so
+  the quantum layer returned the same outputs for every input and a `"Z"` kernel was all ones.
+  A checkpoint saved with `"Z"` no longer loads; its quantum layer never depended on the input,
+  so retrain with `"X"` or `"Y"`. `DataReuploadingLayer(rotation="Z", n_layers >= 2)` is
+  unchanged
