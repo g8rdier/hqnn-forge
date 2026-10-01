@@ -88,8 +88,9 @@ that re-run is #414.
    (Fisher's exact test p = 0.002), and against k = 4, 0 against 6 (p = 0.03). Both p-values
    pool the five variants, which share seeds and are therefore not independent (k = 1 at
    6 qubits collapsed on seed 0 under every variant), so they overstate the evidence. Read them
-   as indicative. The pattern is consistent, though: collapses fall from k = 1 to k = 4 to
-   k = 8 at every size.
+   as indicative. The pattern is consistent, though: at neither size do collapses rise with k,
+   and both reach zero at k = 8 (2, 2 and 0 of 50 at k = 1, 4 and 8 on 4 qubits; 8, 4 and 0
+   of 50 on 6 qubits).
 2. **A lower learning rate does not help, and at k = 4 it hurts.** At 6 qubits, k = 4 went from
    0 collapses at lr 0.05 to 2 at lr 0.02 and 2 at lr 0.01. At k = 1 no learning rate brought
    the collapses to zero: 3, 1 and 2 of 20 at lr 0.05, 0.02 and 0.01. Collapse here is not
@@ -118,8 +119,8 @@ On the evidence above (breast-cancer proxy, 4 and 6 qubits, backprop; the benchm
   better alone, and adds no option.
 - **The default stays `noise_trajectories=1`.** On the adjoint path, which
   `device_name="auto"` picks above 12 qubits (#349), each sample runs separately, so k = 8
-  is expected to cost about 8× there (not measured). This study measured only 4 and 6 qubits on backprop, so it does not
-  justify that cost as a default. The recommendation is in the `hqnn_forge.noise` docstring.
+  is expected to cost about 8× there (not measured). This study measured only 4 and 6 qubits
+  on backprop, so it does not justify that cost as a default. The recommendation is in the `hqnn_forge.noise` docstring.
 - **`density` remains the default** noise method where it fits (up to about 6 qubits).
 
 ## Limits
