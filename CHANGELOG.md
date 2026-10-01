@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `examples/hardware_workflow.py` and a README section: shots, parameter-shift checked against
+  backprop, SPSA, per-step circuit counts with `qml.Tracker`, and shot and noise sweeps, with
+  how to point it at a real device (#356)
 - `seed` on the encoding layers and classifiers seeds the device's shot sampling, which
   `torch.manual_seed` does not reach, so seeded shot-based runs repeat exactly; the
   estimator passes its `random_state`, and `seed` is a weight-safe checkpoint argument.
