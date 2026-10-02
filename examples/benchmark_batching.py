@@ -46,7 +46,7 @@ inference time, split+batch_obs 1.0-1.1x the split's step, and backprop was
 lightning paths inference is about 40-50 % of the step.  It is only that cheap
 with the parameters frozen: PennyLane differentiates whenever a parameter
 requires grad, so a forward under ``torch.no_grad()`` alone still computes the
-adjoint Jacobian and costs about as much as the whole step.
+adjoint Jacobian and costs about as much as the whole step (#426).
 Native broadcasting is correct on lightning's adjoint path in this PennyLane
 version but is not faster than the split: lightning.qubit's own preprocessing
 applies ``broadcast_expand``, so ``native`` is the same per-sample split done
