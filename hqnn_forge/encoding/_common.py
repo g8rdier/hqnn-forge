@@ -454,9 +454,9 @@ def expand_batch_dimension(qnode: qml.QNode, diff_method: str) -> qml.QNode:
       0.45 it returns them correctly, but it has no vectorised path to gain:
       its own preprocessing applies ``broadcast_expand`` too, so a broadcast
       tape is split into one tape per sample on the device either way, and
-      measured no faster than splitting here (#312,
-      ``examples/benchmark_batching.py``).  So the split stays for every
-      method.
+      measured no faster than splitting here -- 1.1-1.3x the split's
+      training step at batch 1024 (#312, ``examples/benchmark_batching.py``).
+      So the split stays for every method.
 
     Either way the QNode's signature and results are unchanged: it returns
     ``n_qubits`` expectation values, each of shape ``(batch,)``.

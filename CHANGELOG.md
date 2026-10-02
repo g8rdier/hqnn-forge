@@ -249,6 +249,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TrainingHistory.temperature` for the returned weights, and per-fold `brier`/`ece` with
   `brier_mean`/`ece_mean` in `run_benchmark` (NaN for a fold whose probabilities are not
   finite) (#340)
+- `examples/benchmark_batching.py`: inference and training-step time of the per-sample split,
+  native broadcasting, `batch_obs` and `default.qubit`/backprop for every encoder, with a
+  correctness check, plus a crossover by qubit count with peak memory; the README now says
+  when to train with backprop instead of `lightning.qubit` (#341)
 
 ### Changed
 - The package metadata links the repository, issue tracker and changelog, and the README's

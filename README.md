@@ -87,17 +87,21 @@ the same `diff_method="adjoint"` as `lightning.qubit`.
 at a time; `default.qubit` with `diff_method="backprop"` vectorises it. Measured for one
 training step at batch 64 (`examples/benchmark_batching.py --crossover`):
 
-| qubits | `lightning.qubit` / adjoint | `default.qubit` / backprop |
-|---|---|---|
-| 8 | 0.59 s, +11 MB | 0.04 s, +11 MB |
-| 12 | 0.57 s, +18 MB | 0.30 s, +299 MB |
-| 14 | 1.42 s, +22 MB | 1.62 s, +1182 MB |
-| 16 | 10.1 s, +35 MB | 9.8 s, +3161 MB |
+| qubits | `lightning.qubit` / adjoint | `default.qubit` / backprop | backprop vs lightning |
+|---|---|---|---|
+| 8 | 0.36 s, +11 MB | 0.03 s, +10 MB | 12× faster, same memory |
+| 10 | 0.44 s, +14 MB | 0.08 s, +55 MB | 5.5× faster, 4× the memory |
+| 12 | 0.64 s, +18 MB | 0.25 s, +283 MB | 2.6× faster, 16× the memory |
+| 14 | 1.47 s, +21 MB | 1.66 s, +1125 MB | about as fast, 54× the memory |
+| 16 | 8.85 s, +31 MB | 10.42 s, +3129 MB | about as fast, 100× the memory |
 
-So for batched training at up to about 12 qubits, pass
-`device_name="default.qubit", diff_method="backprop"`: it is several times faster (15× at 8
-qubits). From about 14 qubits backprop's memory grows fourfold per two qubits while adjoint's
-stays flat, and lightning is the better choice. For single samples lightning is faster.
+Single runs, which vary by some tens of percent; at 14 and 16 qubits either path can come out
+ahead. So for batched training at 8 to 10 qubits, pass
+`device_name="default.qubit", diff_method="backprop"`: it is 5-12× faster for little memory.
+At 12 qubits it is still about 2.6× faster but takes 16× the memory. From about 14 qubits the
+speed advantage is gone, while backprop's memory keeps growing fourfold per two qubits and
+adjoint's stays flat, so lightning is the better choice there. For single samples lightning is
+faster.
 
 ---
 
