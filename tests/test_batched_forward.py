@@ -228,11 +228,14 @@ def test_lightning_runs_broadcast_tapes_correctly(
     x = torch.rand(BATCH, width, generator=torch.Generator().manual_seed(4)) * 2 - 1
     if amplitude:
         x = x.abs() + 0.05
+    # Weighted, not a plain sum, so a permutation of the Jacobian's rows across
+    # samples or wires (the old mis-shaping) changes the gradients.
+    weights = torch.linspace(0.1, 1.0, BATCH * N_QUBITS).reshape(BATCH, N_QUBITS)
     results = []
     for layer in (split, native):
         xi = x.clone().requires_grad_(not amplitude)
         out = layer(xi)
-        out.sum().backward()
+        (out * weights).sum().backward()
         # Every parameter, so input_scaling is checked where the layer has it.
         grads = {n: grad_of(p).clone() for n, p in layer.named_parameters()}
         if not amplitude:
@@ -242,4 +245,5 @@ def test_lightning_runs_broadcast_tapes_correctly(
     torch.testing.assert_close(native_out, split_out, atol=1e-5, rtol=1e-5)
     assert native_grads.keys() == split_grads.keys()
     for name, grad in split_grads.items():
+        assert grad.abs().sum() > 0, name
         torch.testing.assert_close(native_grads[name], grad, atol=1e-5, rtol=1e-5, msg=name)

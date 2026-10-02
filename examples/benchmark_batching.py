@@ -188,6 +188,8 @@ from hqnn_forge.encoding import QuantumEncodingLayer
 device, method, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
 torch.manual_seed(0)
 layer = QuantumEncodingLayer(n_qubits=n, n_layers=2, device_name=device, diff_method=method)
+# Warnings are off, so a silent fallback to another device has to be caught here.
+assert layer.qlayer.qnode.device.name == device, layer.qlayer.qnode.device.name
 x = torch.rand(64, n) * 2 - 1
 layer(x[:2]).sum().backward()
 base = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
