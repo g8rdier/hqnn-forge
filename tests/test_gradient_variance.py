@@ -465,18 +465,21 @@ class TestSeveralTensors:
             effective_dimension(layer, torch.zeros(80, 2))
 
 
-class TestDefaultDevice:
+class TestLightningDevice:
     @pytest.mark.requires_lightning
     @pytest.mark.parametrize("layer_cls", [QuantumEncodingLayer, IQPEncodingLayer])
-    def test_matches_default_qubit_on_the_library_default_device(self, layer_cls: type) -> None:
+    def test_matches_default_qubit_on_lightning_adjoint(self, layer_cls: type) -> None:
         """
-        Every other test pins default.qubit/backprop; the default is
-        lightning/adjoint.  The same draws on both must give the same
+        Every other test pins default.qubit/backprop, which is also what the
+        default "auto" picks at this size; lightning/adjoint is what it picks
+        above 12 qubits.  The same draws on both must give the same
         per-parameter variances, so wrong adjoint gradients or draws that are
         not reproduced on lightning fail here (they agree to about 3e-8).
         """
         torch.manual_seed(0)
-        layer = layer_cls(n_qubits=3, n_layers=2)
+        layer = layer_cls(
+            n_qubits=3, n_layers=2, device_name="lightning.qubit", diff_method="adjoint"
+        )
         qnode = layer.qlayer.qnode
         assert (qnode.device.name, qnode.diff_method) == ("lightning.qubit", "adjoint")
         reference = layer_cls(n_qubits=3, n_layers=2, **CPU)

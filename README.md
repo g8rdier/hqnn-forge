@@ -27,7 +27,7 @@ image, text or time-series pipelines are out of scope.
 | Feature | Detail |
 |---|---|
 | **Small-angle init** | Gaussian initialisation: global σ = π/√(n·L), or a per-layer schedule σ_ℓ = π/√(n·(L+ℓ)) that starts at the global σ and narrows by up to √2 towards the last layer (this library's own heuristics, in the spirit of Zhang et al. 2022). Measured with `hqnn_forge.diagnostics.gradient_variance` on a 2-layer circuit with a ⟨Z_0⟩ cost: no gain over uniform init for inputs spread over (−π, π), which is what both classifiers feed the circuit, and a gain growing from 1.1x to 1.75x between 4 and 8 qubits only near zero input. Over (−π, π) the variance falls ~3x per two qubits under either init — see the module docstring |
-| **Adjoint differentiation** | Exact gradients via `lightning.qubit` — no finite-difference approximation |
+| **Automatic backend choice** | `device_name="auto"` (the default) trains on `default.qubit` with backprop up to 12 qubits and on `lightning.qubit` with exact adjoint gradients above; see *Which to train with* |
 | **Custom angle encoding** | Angle-embedding feature map (8 qubits by default) with a CNOT-ring VQC ansatz; strongly-entangling, brickwork and hardware-efficient (CZ + RY) entanglers are options |
 | **Imbalance-robust losses** | Focal Loss & inverse-frequency weighted BCE |
 | **Pure-NumPy pre-processing** | PCA + standardisation without scikit-learn runtime dependency |
@@ -50,7 +50,7 @@ The extras add optional parts; combine them as needed, e.g. `".[lightning,sklear
 
 | Extra | Installs | Needed for |
 |---|---|---|
-| `lightning` | `pennylane-lightning` | the `lightning.qubit` backend and adjoint differentiation, the library defaults |
+| `lightning` | `pennylane-lightning` | the `lightning.qubit` backend and adjoint differentiation, which the default `"auto"` picks above 12 qubits |
 | `sklearn` | `scikit-learn` | the scikit-learn estimator in `hqnn_forge.sklearn` |
 | `examples` | `scikit-learn`, `matplotlib` | the scripts in `examples/` and the plots in `hqnn_forge.evaluation` |
 | `dev` | test and lint tools | development; see [Development Setup](https://github.com/g8rdier/hqnn-forge#development-setup) |
@@ -83,9 +83,9 @@ does, and needs `diff_method="parameter-shift"`; hardware devices need both.
 The GPU backends pay off at larger qubit counts or batch sizes. Both accelerated devices support
 the same `diff_method="adjoint"` as `lightning.qubit`.
 
-**Which to train with.** `lightning.qubit` with adjoint, the default, runs a batch one sample
-at a time; `default.qubit` with `diff_method="backprop"` vectorises it. Measured for one
-training step at batch 64 (`examples/benchmark_batching.py --crossover`):
+**Which to train with.** `lightning.qubit` with adjoint runs a batch one sample at a time;
+`default.qubit` with `diff_method="backprop"` vectorises it. Measured for one training step at
+batch 64 (`examples/benchmark_batching.py --crossover`):
 
 | qubits | `lightning.qubit` / adjoint | `default.qubit` / backprop | backprop vs lightning |
 |---|---|---|---|
@@ -96,12 +96,25 @@ training step at batch 64 (`examples/benchmark_batching.py --crossover`):
 | 16 | 8.85 s, +31 MB | 10.42 s, +3129 MB | about as fast, 100× the memory |
 
 Single runs, which vary by some tens of percent; at 14 and 16 qubits either path can come out
-ahead. So for batched training at 8 to 10 qubits, pass
-`device_name="default.qubit", diff_method="backprop"`: it is 5-12× faster for little memory.
-At 12 qubits it is still about 2.6× faster but takes 16× the memory. From about 14 qubits the
-speed advantage is gone, while backprop's memory keeps growing fourfold per two qubits and
-adjoint's stays flat, so lightning is the better choice there. For single samples lightning is
-faster.
+ahead. For batched training backprop is 5-12× faster at 8 to 10 qubits for little memory, and
+still about 2.6× faster at 12 qubits for 16× the memory. From about 14 qubits the speed
+advantage is gone, while backprop's memory keeps growing fourfold per two qubits and adjoint's
+stays flat, so lightning is the better choice there. For single samples lightning is faster.
+
+That is what the default, `device_name="auto", diff_method="auto"`, does:
+
+| | picks |
+|---|---|
+| up to 12 qubits | `default.qubit` / backprop |
+| above 12 qubits | `lightning.qubit` / adjoint (falling back to `default.qubit` / adjoint without the `lightning` extra) |
+| `shots` set | the size rule's device / parameter-shift |
+| amplitude encoding behind the classical encoder | `default.qubit` / backprop at any size, the only method whose input gradient is correct |
+| an explicit `device_name` | backprop on `default.qubit`, adjoint on lightning, parameter-shift on anything else |
+| an explicit `diff_method` | `default.qubit` for backprop, `lightning.qubit` for adjoint, else the size rule |
+
+`hqnn_forge.encoding.resolve_backend` shows the choice for given arguments. The model config,
+and so a checkpoint, records `"auto"`, so a model reloaded elsewhere picks for that machine.
+Pass both names explicitly to pin a backend.
 
 ---
 

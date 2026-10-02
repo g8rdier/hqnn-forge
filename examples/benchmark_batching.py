@@ -9,16 +9,20 @@ one tape per sample before the gradient transform sees it
 compares, for each encoder, inference time (a forward pass with the parameters
 frozen) and training-step time (forward+backward) of
 
-* ``split``           -- lightning.qubit / adjoint, one tape per sample (the library default);
+* ``split``           -- lightning.qubit / adjoint, one tape per sample (the default until
+  #349, and what ``"auto"`` picks above 12 qubits);
 * ``native``          -- lightning.qubit / adjoint on the broadcast tape, no library split
                          (the device splits it itself in its preprocessing);
 * ``split+batch_obs`` -- the split, on a lightning device built with ``batch_obs=True``;
-* ``backprop``        -- default.qubit / backprop, which vectorises the batch;
+* ``backprop``        -- default.qubit / backprop, which vectorises the batch (what
+  ``"auto"``, the default, picks up to 12 qubits);
 
 and checks that every variant's outputs and gradients agree with ``split`` (to a
 float32 relative tolerance).  ``--crossover`` then times one training step at
 batch 64 over a range of qubit counts for the two main paths and reports the
-peak memory of each, in a fresh interpreter per point.
+peak memory of each, in a fresh interpreter per point, next to the path
+``device_name="auto"`` takes at that size.  The crossover is where
+:data:`hqnn_forge.encoding.AUTO_BACKPROP_MAX_QUBITS` comes from.
 
 Run::
 
@@ -52,7 +56,8 @@ version but is not faster than the split: lightning.qubit's own preprocessing
 applies ``broadcast_expand``, so ``native`` is the same per-sample split done
 on the device, and the split stays.  backprop is the fast path for
 batches of small circuits (for a single sample lightning is faster), and loses
-on memory from about 14 qubits.
+on memory from about 14 qubits, which is why ``"auto"`` switches to lightning
+above 12.
 """
 
 from __future__ import annotations
@@ -206,7 +211,12 @@ print(json.dumps({"seconds": seconds, "mb": (peak - base) / per_mb}))
 def crossover(qubits: tuple[int, ...]) -> None:
     if sys.platform == "win32":
         sys.exit("--crossover reads peak memory with the resource module, which Windows lacks")
-    print(f"{'qubits':>6s}  {'lightning/adjoint':>22s}  {'default.qubit/backprop':>24s}")
+    from hqnn_forge.encoding import resolve_backend
+
+    print(
+        f"{'qubits':>6s}  {'lightning/adjoint':>22s}  {'default.qubit/backprop':>24s}  "
+        f"{'auto picks':>10s}"
+    )
     for n in qubits:
         cells = []
         for device, method in (("lightning.qubit", "adjoint"), ("default.qubit", "backprop")):
@@ -220,7 +230,8 @@ def crossover(qubits: tuple[int, ...]) -> None:
                 sys.exit(f"{device}/{method} at {n} qubits failed:\n{out.stderr}")
             point = json.loads(out.stdout.strip().splitlines()[-1])
             cells.append(f"{point['seconds']:7.2f} s {point['mb']:+7.0f} MB")
-        print(f"{n:6d}  {cells[0]:>22s}  {cells[1]:>24s}")
+        auto = resolve_backend("auto", "auto", n)[1]
+        print(f"{n:6d}  {cells[0]:>22s}  {cells[1]:>24s}  {auto:>10s}")
 
 
 def main() -> None:

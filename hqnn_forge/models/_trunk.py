@@ -22,6 +22,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from hqnn_forge.encoding._common import resolve_backend
 from hqnn_forge.encoding.amplitude_embedding import AmplitudeEncodingLayer
 from hqnn_forge.encoding.angle_embedding import (
     DeviceName,
@@ -85,6 +86,7 @@ def _check_encoding_options(
     diff_method: str,
     embedding_rotation: str,
     trainable_input_scaling: bool,
+    shots: int | None = None,
 ) -> int:
     """
     Raise ``ValueError`` for an option ``encoding_type`` cannot use; return the
@@ -119,7 +121,13 @@ def _check_encoding_options(
                 f"encoding_type='amplitude' with a classical encoder trains the encoder "
                 f"through the amplitude embedding, whose input gradient is only correct "
                 f"under diff_method='backprop' (on default.qubit); got "
-                f"diff_method={diff_method!r}."
+                f"diff_method={diff_method!r}"
+                + (
+                    ", which shots require: backprop cannot run on samples.  Use "
+                    "shots=None, or use_classical_encoder=False."
+                    if shots is not None
+                    else "."
+                )
             )
         if not use_classical_encoder and not 1 <= n_input_features <= width:
             raise ValueError(
@@ -206,6 +214,16 @@ class QuantumTrunk(nn.Module):
                 "use_classical_encoder=True; use_classical_encoder=False feeds the "
                 "input to the circuit directly, with no encoder at all."
             )
+        # "auto" is resolved here rather than in the layer: amplitude encoding
+        # behind the classical encoder needs backprop at any size, and the
+        # layer alone cannot know what feeds it.
+        device_name, diff_method = resolve_backend(
+            device_name,
+            diff_method,
+            n_qubits,
+            shots=shots,
+            require_backprop=encoding_type == "amplitude" and use_classical_encoder,
+        )
         width = _check_encoding_options(
             encoding_type,
             n_input_features=n_input_features,
@@ -214,6 +232,7 @@ class QuantumTrunk(nn.Module):
             diff_method=diff_method,
             embedding_rotation=embedding_rotation,
             trainable_input_scaling=trainable_input_scaling,
+            shots=shots,
         )
 
         self.n_input_features = n_input_features

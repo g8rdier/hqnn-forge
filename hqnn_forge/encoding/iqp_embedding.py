@@ -12,7 +12,8 @@ Design Rationale
   entangling operations. This is known to be classically hard to simulate.
 * **Strongly-Entangling Ansatz** — after embedding, L layers of a CNOT ring
   followed by per-qubit SU(2) Rot(φ, θ, ω) gates are applied.
-* **Adjoint Differentiation** — the QNode is configured for the `adjoint` method.
+* **Differentiation** — `diff_method="auto"` by default: backprop on `default.qubit` up to
+  12 qubits, adjoint on `lightning.qubit` above (see `hqnn_forge.encoding.resolve_backend`).
 * **Initialisation** — use `restricted_normal_init_` on the returned layer; see
   `hqnn_forge.initializers` for what the small-angle init does and does not guarantee.
 
@@ -39,10 +40,12 @@ from hqnn_forge.encoding._common import (
     Entangler,
     Readout,
     apply_variational_layers,
+    backend_repr,
     check_inputs,
     expand_batch_dimension,
     measure_z,
     readout_wires,
+    resolve_backend,
     resolve_device,
     shots_repr,
     validate_circuit_options,
@@ -135,8 +138,8 @@ def build_iqp_qnode(
     n_qubits: int = 8,
     n_layers: int = 2,
     n_repeats: int = 1,
-    device_name: DeviceName = "lightning.qubit",
-    diff_method: DiffMethod = "adjoint",
+    device_name: DeviceName = "auto",
+    diff_method: DiffMethod = "auto",
     entangler: Entangler = "ring",
     readout: Readout = "all",
     shots: int | None = None,
@@ -145,6 +148,7 @@ def build_iqp_qnode(
     if n_qubits < 2:
         raise ValueError(f"n_qubits must be ≥ 2; got {n_qubits}.")
 
+    device_name, diff_method = resolve_backend(device_name, diff_method, n_qubits, shots=shots)
     validate_shots(shots, diff_method)
     device = resolve_device(device_name, n_qubits)
     circuit_fn = _make_iqp_embedding_circuit(n_qubits, n_layers, n_repeats, entangler, readout)
@@ -181,8 +185,8 @@ class IQPEncodingLayer(TrainingNoiseMixin, nn.Module):
         n_qubits: int = 8,
         n_layers: int = 2,
         n_repeats: int = 1,
-        device_name: DeviceName = "lightning.qubit",
-        diff_method: DiffMethod = "adjoint",
+        device_name: DeviceName = "auto",
+        diff_method: DiffMethod = "auto",
         entangler: Entangler = "ring",
         readout: Readout = "all",
         noise_level: float = 0.0,
@@ -260,5 +264,5 @@ class IQPEncodingLayer(TrainingNoiseMixin, nn.Module):
             f"n_layers={self.n_layers}, "
             f"n_repeats={self.n_repeats}, "
             f"n_params={sum(p.numel() for p in self.parameters())}{options}"
-            f"{shots_repr(self.shots)}"
+            f"{shots_repr(self.shots)}{backend_repr(self.qlayer)}"
         )
