@@ -93,6 +93,19 @@ project conventions, are there obvious security issues, is test coverage adequat
 documentation updated. Changes that modify interfaces or break existing contracts benefit from
 review by affected stakeholders before merging.
 
+How a PR reaches review:
+
+*   **The first request is automatic.** `.github/CODEOWNERS` requests a review from
+    @g8rdier on every PR when it is opened, including PRs from forks.
+*   **After pushing changes that address review comments**, say so in a PR comment that
+    mentions @g8rdier (e.g. "@g8rdier ready for another look"). From a fork, GitHub doesn't
+    let the author re-request a review in the sidebar, so the mention is the hand-off.
+    Collaborators with write access use "Re-request review" in the sidebar instead.
+*   **On fork PRs, keep "Allow edits by maintainers" enabled**, so small fixes can be pushed
+    to the branch directly instead of going back and forth in comments.
+*   CI on a first-time contributor's fork PR waits for a maintainer to approve the workflow
+    run; that's expected and needs nothing from the contributor.
+
 ### 7. Hotfixes
 
 Critical production issues use a `hotfix/` branch. An issue is still recommended (can be
