@@ -16,7 +16,7 @@ from functools import partial
 import pytest
 import torch
 
-from hqnn_forge.encoding import DataReuploadingLayer, QuantumEncodingLayer
+from hqnn_forge.encoding import AmplitudeEncodingLayer, DataReuploadingLayer, QuantumEncodingLayer
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.initializers import restricted_normal_init_
 
@@ -197,9 +197,20 @@ class TestInputGradients:
         torch.testing.assert_close(grad_of(x_batched), grad_of(x_looped), rtol=1e-5, atol=1e-6)
 
 
-@pytest.mark.skipif(not _lightning_available(), reason="pennylane-lightning not installed")
-@pytest.mark.parametrize("layer_cls", LAYER_CLASSES)
-def test_lightning_runs_broadcast_tapes_correctly(layer_cls: type) -> None:
+LIGHTNING_BROADCAST_CASES = [
+    *LAYER_CLASSES,
+    # Broadcast state preparation, the gate most likely to be mis-shaped on the
+    # adjoint path.  Weight gradients only: the layer refuses input gradients
+    # outside backprop.
+    pytest.param(AmplitudeEncodingLayer, id="amplitude"),
+]
+
+
+@pytest.mark.requires_lightning
+@pytest.mark.parametrize("layer_cls", LIGHTNING_BROADCAST_CASES)
+def test_lightning_runs_broadcast_tapes_correctly(
+    layer_cls: type, grad_of: Callable[[torch.Tensor], torch.Tensor]
+) -> None:
     # #312: handing lightning's adjoint path the broadcast tape unsplit gives
     # the same outputs and gradients as the split (PennyLane 0.45; lightning's
     # own preprocessing splits it per sample).  If this starts failing, the
@@ -207,17 +218,28 @@ def test_lightning_runs_broadcast_tapes_correctly(layer_cls: type) -> None:
     # docstring is wrong.
     import pennylane as qml
 
+    amplitude = layer_cls is AmplitudeEncodingLayer
+    width = 2**N_QUBITS if amplitude else N_QUBITS
     split = _build(layer_cls, "lightning.qubit", "adjoint")
     native = _build(layer_cls, "lightning.qubit", "adjoint")
     native.load_state_dict(split.state_dict())
     q = native.qlayer.qnode
     native.qlayer.qnode = qml.QNode(q.func, q.device, interface="torch", diff_method="adjoint")
-    x = torch.rand(BATCH, N_QUBITS, generator=torch.Generator().manual_seed(4)) * 2 - 1
+    x = torch.rand(BATCH, width, generator=torch.Generator().manual_seed(4)) * 2 - 1
+    if amplitude:
+        x = x.abs() + 0.05
     results = []
     for layer in (split, native):
-        xi = x.clone().requires_grad_(True)
+        xi = x.clone().requires_grad_(not amplitude)
         out = layer(xi)
         out.sum().backward()
-        results.append((out.detach(), layer.qlayer.weights.grad, xi.grad))
-    for got, expected in zip(results[1], results[0], strict=True):
-        torch.testing.assert_close(got, expected, atol=1e-5, rtol=1e-5)
+        # Every parameter, so input_scaling is checked where the layer has it.
+        grads = {n: grad_of(p).clone() for n, p in layer.named_parameters()}
+        if not amplitude:
+            grads["inputs"] = grad_of(xi).clone()
+        results.append((out.detach(), grads))
+    (native_out, native_grads), (split_out, split_grads) = results[1], results[0]
+    torch.testing.assert_close(native_out, split_out, atol=1e-5, rtol=1e-5)
+    assert native_grads.keys() == split_grads.keys()
+    for name, grad in split_grads.items():
+        torch.testing.assert_close(native_grads[name], grad, atol=1e-5, rtol=1e-5, msg=name)
