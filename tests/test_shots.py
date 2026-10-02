@@ -40,6 +40,12 @@ LAYERS = [
 ]
 
 
+def _on_shot_lattice(values: torch.Tensor, shots: int) -> bool:
+    """Whether every ⟨Z⟩ in ``values`` is ``(2k − shots) / shots``: a sampled estimate."""
+    k = (values.detach().double() * shots + shots) / 2
+    return bool(torch.allclose(k, k.round(), rtol=0, atol=1e-6))
+
+
 def _pair(factory: Any, shots: int) -> tuple[Any, Any]:
     """A sampled layer and an exact one with the same weights."""
     torch.manual_seed(0)
@@ -85,9 +91,9 @@ def test_sampled_gradients_are_unbiased() -> None:
 
 
 class TestValidation:
-    @pytest.mark.parametrize("diff_method", ["adjoint", "backprop"])
+    @pytest.mark.parametrize("diff_method", ["adjoint", "backprop", "finite-diff"])
     @pytest.mark.parametrize("factory, width", LAYERS)
-    def test_state_vector_methods_are_refused(
+    def test_exact_value_methods_are_refused(
         self, diff_method: str, factory: Any, width: int
     ) -> None:
         with pytest.raises(ValueError, match="use diff_method='parameter-shift'"):
@@ -108,7 +114,7 @@ class TestValidation:
         "cls", [HybridBinaryClassifier, ParallelHybridClassifier, MulticlassHybridClassifier]
     )
     def test_classifiers_validate_too(self, cls: type) -> None:
-        with pytest.raises(ValueError, match="needs the exact state vector"):
+        with pytest.raises(ValueError, match="needs exact ones"):
             cls(n_input_features=4, n_qubits=3, shots=100, **EXACT)
 
     def test_density_training_noise_ignores_shots_and_is_refused(self) -> None:
@@ -116,16 +122,20 @@ class TestValidation:
             QuantumEncodingLayer(n_qubits=3, n_layers=1, shots=100, noise_level=0.1, **SHIFT)
 
     def test_trajectory_training_noise_samples_on_the_shot_qnode(self) -> None:
+        # Five shots put every sampled ⟨Z⟩ on a coarse lattice no exact value
+        # of random weights lands on.
         layer = QuantumEncodingLayer(
             n_qubits=3,
             n_layers=1,
-            shots=100,
+            shots=5,
             noise_level=0.1,
             noise_method="trajectories",
             **SHIFT,
         )
         layer.train()
-        layer(torch.rand(2, 3)).sum().backward()
+        out = layer(torch.rand(4, 3))
+        assert _on_shot_lattice(out, 5)
+        out.sum().backward()
         assert layer.qlayer.weights.grad is not None
 
 
@@ -227,6 +237,53 @@ class TestApplyShots:
         # p = 0 replaces nothing, so it stays allowed.
         with apply_depolarizing_noise(layer, 0.0):
             pass
+
+    def test_train_mode_trajectory_noise_samples_with_the_block_shots(self) -> None:
+        torch.manual_seed(0)
+        layer = QuantumEncodingLayer(
+            n_qubits=3, n_layers=1, noise_level=0.05, noise_method="trajectories", **EXACT
+        )
+        noise_qnode = layer._training_noise_qnode
+        x = torch.rand(4, 3)
+        layer.train()
+        assert not _on_shot_lattice(layer(x), 5)
+        with apply_shots(layer, 5):
+            out = layer(x)
+            assert _on_shot_lattice(out, 5)
+            out.sum().backward()
+            assert layer.qlayer.weights.grad is not None
+        assert layer._training_noise_qnode is noise_qnode
+
+    def test_train_mode_density_noise_is_refused_inside(self) -> None:
+        torch.manual_seed(0)
+        layer = QuantumEncodingLayer(n_qubits=3, n_layers=1, noise_level=0.05, **EXACT)
+        x = torch.rand(4, 3)
+        with apply_shots(layer, 5):
+            assert _on_shot_lattice(layer.eval()(x), 5)
+            with pytest.raises(RuntimeError, match="would ignore apply_shots"):
+                layer.train()(x)
+
+    def test_amplitude_input_gradients_stay_refused(self) -> None:
+        # Built under backprop, whose input gradient is exact; inside the
+        # block parameter-shift would differentiate the state preparation.
+        torch.manual_seed(0)
+        model = HybridBinaryClassifier(
+            n_input_features=4, n_qubits=2, n_layers=1, encoding_type="amplitude", **EXACT
+        )
+        x = torch.randn(4, 4)
+        with apply_shots(model, 50):
+            model.predict_proba(x)  # no input gradient: allowed
+            with pytest.raises(RuntimeError, match="cannot differentiate with respect"):
+                model(x)
+        model(x).sum().backward()  # backprop again outside
+
+    def test_shots_attribute_follows_the_block(self) -> None:
+        model = self._model()
+        assert model.quantum_layer.shots is None
+        with apply_shots(model, 40):
+            assert model.quantum_layer.shots == 40
+            assert "shots=40" in repr(model.quantum_layer)
+        assert model.quantum_layer.shots is None
 
     def test_errors_name_apply_shots(self) -> None:
         with (

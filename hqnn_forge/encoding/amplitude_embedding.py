@@ -86,7 +86,7 @@ from hqnn_forge.encoding._common import (
     validate_shots,
     variational_weight_shape,
 )
-from hqnn_forge.noise import NoiseMethod, Position, TrainingNoiseMixin
+from hqnn_forge.noise import Channel, NoiseMethod, Position, TrainingNoiseMixin
 
 logger = logging.getLogger(__name__)
 
@@ -310,32 +310,41 @@ class AmplitudeEncodingLayer(TrainingNoiseMixin, nn.Module):
     device_name:
         PennyLane device name.  Default ``"auto"``: ``default.qubit`` up to
         12 qubits, ``lightning.qubit`` above (see
-        :func:`~hqnn_forge.encoding.resolve_backend`).  The four simulators
-        fall back along ``lightning.qubit → default.qubit`` with a warning
-        when a backend cannot be initialised; any other name (a plugin or
-        hardware) is used as given.
+        :func:`~hqnn_forge.encoding.resolve_backend`).  The simulators in
+        :data:`~hqnn_forge.encoding._common.KNOWN_DEVICES` fall back along
+        ``lightning.qubit → default.qubit`` with a warning per step when
+        unavailable; any other name (a plugin or hardware) is constructed as
+        given, and PennyLane's error surfaces if it cannot be.  Hardware
+        needs ``shots`` and ``diff_method="parameter-shift"``.
     diff_method:
         Gradient method, ``"auto"`` by default.  See *Differentiation
         methods* above.
     entangler:
-        The variational block: ``"ring"`` (default), ``"strongly_entangling"``
-        or ``"hardware_efficient"``; see
+        The variational block: ``"ring"`` (default), ``"strongly_entangling"``,
+        ``"brickwork"`` or ``"hardware_efficient"``; see
         :func:`~hqnn_forge.encoding.angle_embedding.apply_variational_layers`.
     readout:
         ``"all"`` (default): the layer returns ``(batch, n_qubits)``.
         ``"first"``: ⟨Z_0⟩ only, ``(batch, 1)``.
-    noise_level, noise_position, noise_method, noise_trajectories:
-        Training-time depolarizing noise, exactly as for
+    noise_level, noise_position, noise_method, noise_trajectories, noise_channel:
+        Training-time noise, exactly as for
         :class:`~hqnn_forge.encoding.QuantumEncodingLayer`: ``noise_level``
-        in ``[0, 0.75]`` (default 0, noiseless) applied in train mode only,
-        at ``"all"`` gates or at the ``"end"``, simulated exactly
-        (``"density"``) or by Pauli trajectories.  See :mod:`hqnn_forge.noise`.
+        is the strength of ``noise_channel`` (default ``"depolarizing"``), in
+        ``[0, 0.75]`` for depolarizing and ``[0, 1]`` for the damping and flip
+        channels (default 0, noiseless), applied in train mode only, at
+        ``"all"`` gates or at the ``"end"``, simulated exactly (``"density"``)
+        or by Pauli trajectories (the Pauli channels only).  See
+        :mod:`hqnn_forge.noise`.
+    shots:
+        Finite-shot sampling, exactly as for
+        :class:`~hqnn_forge.encoding.QuantumEncodingLayer`.
 
     Attributes
     ----------
     n_qubits : int
     n_layers : int
     n_features : int
+        Width of the input, before padding to ``n_amplitudes``.
     n_amplitudes : int
         ``2**n_qubits``.
     qlayer : pennylane.qnn.TorchLayer
@@ -358,6 +367,12 @@ class AmplitudeEncodingLayer(TrainingNoiseMixin, nn.Module):
     torch.Size([4, 3])
     """
 
+    #: Re-applied by :func:`hqnn_forge.noise.apply_shots`, whose
+    #: parameter-shift QNode replays this circuit function: the check built
+    #: into it holds the construction-time ``diff_method``, which under
+    #: ``backprop`` would let parameter-shift differentiate the inputs.
+    _input_gradient_check = staticmethod(_check_input_gradient)
+
     def __init__(
         self,
         n_qubits: int = 8,
@@ -372,6 +387,7 @@ class AmplitudeEncodingLayer(TrainingNoiseMixin, nn.Module):
         noise_method: NoiseMethod = "density",
         noise_trajectories: int = 1,
         shots: int | None = None,
+        noise_channel: Channel = "depolarizing",
     ) -> None:
         super().__init__()
 
@@ -416,8 +432,8 @@ class AmplitudeEncodingLayer(TrainingNoiseMixin, nn.Module):
             noise_method,
             noise_trajectories,
             shots=shots,
+            noise_channel=noise_channel,
         )
-        self.shots = shots
 
     # ------------------------------------------------------------------
     def prepare_inputs(self, x: torch.Tensor) -> torch.Tensor:

@@ -103,7 +103,7 @@ from hqnn_forge.encoding._common import (
     validate_shots,
     variational_weight_shape,
 )
-from hqnn_forge.noise import NoiseMethod, Position, TrainingNoiseMixin
+from hqnn_forge.noise import Channel, NoiseMethod, Position, TrainingNoiseMixin
 
 logger = logging.getLogger(__name__)
 
@@ -342,10 +342,12 @@ class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
     device_name:
         PennyLane device name.  Default ``"auto"``: ``default.qubit`` up to
         12 qubits, ``lightning.qubit`` above (see
-        :func:`~hqnn_forge.encoding.resolve_backend`).  The four simulators
-        fall back along ``lightning.qubit → default.qubit`` with a warning
-        when a backend cannot be initialised; any other name (a plugin or
-        hardware) is used as given.
+        :func:`~hqnn_forge.encoding.resolve_backend`).  The simulators in
+        :data:`~hqnn_forge.encoding._common.KNOWN_DEVICES` fall back along
+        ``lightning.qubit → default.qubit`` with a warning per step when
+        unavailable; any other name (a plugin or hardware) is constructed as
+        given, and PennyLane's error surfaces if it cannot be.  Hardware
+        needs ``shots`` and ``diff_method="parameter-shift"``.
     diff_method:
         ``"auto"`` (default) picks by device: ``"backprop"`` on
         ``default.qubit``, ``"adjoint"`` on lightning, ``"parameter-shift"``
@@ -365,16 +367,24 @@ class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
     readout:
         ``"all"`` (default): the layer returns ``(batch, n_qubits)``.
         ``"first"``: ⟨Z_0⟩ only, ``(batch, 1)``.
-    noise_level, noise_position, noise_method, noise_trajectories:
-        Training-time depolarizing noise, exactly as for
+    noise_level, noise_position, noise_method, noise_trajectories, noise_channel:
+        Training-time noise, exactly as for
         :class:`~hqnn_forge.encoding.QuantumEncodingLayer`: ``noise_level``
-        in ``[0, 0.75]`` (default 0, noiseless) applied in train mode only,
-        at ``"all"`` gates or at the ``"end"``, simulated exactly
-        (``"density"``) or by Pauli trajectories.  See :mod:`hqnn_forge.noise`.
+        is the strength of ``noise_channel`` (default ``"depolarizing"``), in
+        ``[0, 0.75]`` for depolarizing and ``[0, 1]`` for the damping and flip
+        channels (default 0, noiseless), applied in train mode only, at
+        ``"all"`` gates or at the ``"end"``, simulated exactly (``"density"``)
+        or by Pauli trajectories (the Pauli channels only).  See
+        :mod:`hqnn_forge.noise`.
+    shots:
+        Finite-shot sampling, exactly as for
+        :class:`~hqnn_forge.encoding.QuantumEncodingLayer`.
 
     Attributes
     ----------
     n_qubits, n_layers : int
+    n_features : int
+        Width of the input, one feature per qubit: ``n_qubits``.
     n_outputs : int
         Width of the output: ``n_qubits`` or 1.
     rotation : str
@@ -409,10 +419,12 @@ class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
         noise_method: NoiseMethod = "density",
         noise_trajectories: int = 1,
         shots: int | None = None,
+        noise_channel: Channel = "depolarizing",
     ) -> None:
         super().__init__()
 
         self.n_qubits = n_qubits
+        self.n_features = n_qubits
         self.n_layers = n_layers
         self.rotation = rotation
         self.trainable_input_scaling = trainable_input_scaling
@@ -452,8 +464,8 @@ class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
             noise_method,
             noise_trajectories,
             shots=shots,
+            noise_channel=noise_channel,
         )
-        self.shots = shots
 
     # ------------------------------------------------------------------
     def prepare_inputs(self, x: torch.Tensor) -> torch.Tensor:

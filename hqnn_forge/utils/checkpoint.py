@@ -50,7 +50,11 @@ own mechanism:
   ``tests/test_checkpoint.py`` pins every constructor's arguments and fails
   when one appears without either entry.  A *removed* or *renamed* argument
   makes older files carry an unexpected key, which is refused; supporting
-  them needs a migration in ``load_checkpoint``.
+  them needs a migration in ``load_checkpoint``.  A *value* a constructor
+  stops accepting is refused the same way, by the constructor's own
+  ``ValueError`` when ``load_checkpoint`` rebuilds the model: a file saved
+  with ``embedding_rotation="Z"`` held a constant quantum layer (#212) and
+  no longer loads.
 
 ``known_args`` makes the added-argument case explicit.  A name missing from
 the config but absent from ``known_args`` too was added after the file was
@@ -106,6 +110,7 @@ WEIGHT_SAFE_ARGS: frozenset[str] = frozenset(
         "noise_method",
         "noise_trajectories",
         "shots",
+        "noise_channel",
     }
 )
 
@@ -132,6 +137,7 @@ _LEGACY_DEFAULTS: dict[str, Any] = {
     "classical_encoder": None,  # the built-in Linear encoder
     "trainable_input_scaling": False,  # added with encoding_type="reuploading"
     "shots": None,  # exact expectation values
+    "noise_channel": "depolarizing",  # the only channel before #313
 }
 
 #: Constructor arguments added deliberately without a legacy default: no value
@@ -264,7 +270,7 @@ def load_checkpoint(
     **overrides:
         Constructor arguments that replace the stored ones.  Without
         ``allow_architecture_override``, only :data:`WEIGHT_SAFE_ARGS`
-        (``device_name``, ``diff_method``, ``dropout_p``, the four
+        (``device_name``, ``diff_method``, ``dropout_p``, the five
         ``noise_*`` training-noise options and ``shots``) may be given --
         typically to run a saved model on a different simulator or with a
         finite shot count, or to fine-tune it at a different dropout rate or
