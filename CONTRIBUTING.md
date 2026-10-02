@@ -96,7 +96,8 @@ review by affected stakeholders before merging.
 How a PR reaches review:
 
 *   **The first request is automatic.** `.github/CODEOWNERS` requests a review from
-    @g8rdier on every PR when it is opened, including PRs from forks.
+    @g8rdier on every PR, including PRs from forks: when it is opened, or for a draft, when
+    it is marked ready for review.
 *   **After pushing changes that address review comments**, say so in a PR comment that
     mentions @g8rdier (e.g. "@g8rdier ready for another look"). From a fork, GitHub doesn't
     let the author re-request a review in the sidebar, so the mention is the hand-off.
