@@ -11,3 +11,17 @@ new one (see the contributor docs on extending the library).
 ::: hqnn_forge.encoding.angle_embedding.validate_circuit_options
 
 ::: hqnn_forge.encoding.angle_embedding.check_inputs
+
+## Devices and weight shapes
+
+Also not exported from `hqnn_forge.encoding`: the device a layer is built on,
+with its fallback chain, and the shape of the variational weights for each
+entangler.
+
+::: hqnn_forge.encoding.angle_embedding.resolve_device
+
+::: hqnn_forge.encoding.angle_embedding.FALLBACK_CHAIN
+
+::: hqnn_forge.encoding.angle_embedding.reset_device_fallback
+
+::: hqnn_forge.encoding.angle_embedding.variational_weight_shape

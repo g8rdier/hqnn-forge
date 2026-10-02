@@ -1,4 +1,4 @@
-"""Fail unless every public name of every documented package has an API entry.
+"""Fail unless every name in a documented module's ``__all__`` has an API entry.
 
 Run by the docs CI job after ``mkdocs build --strict`` (#322).  For each page
 under ``docs/api/`` that renders a package or module (``::: hqnn_forge.x``),
@@ -26,6 +26,19 @@ def inventory(site: Path) -> set[str]:
     return {line.split(" ", 1)[0] for line in body.splitlines() if line}
 
 
+def _shadowed(module: griffe.Object | griffe.Alias, name: str) -> set[str]:
+    """Where an export griffe sees as a submodule of the same name is rendered.
+
+    ``from hqnn_forge.diagnostics.expressibility import expressibility`` binds
+    the function, but griffe keeps the submodule under that name, so the page
+    renders the function at its own path instead (``docs/api/diagnostics.md``).
+    """
+    member = module.members.get(name)
+    if member is None or member.is_alias or not member.is_module or name not in member.members:
+        return set()
+    return {str(member.members[name].path)}
+
+
 def missing(docs: Path, site: Path) -> list[str]:
     package = griffe.load("hqnn_forge", search_paths=["."])
     documented = inventory(site)
@@ -48,7 +61,7 @@ def missing(docs: Path, site: Path) -> list[str]:
             if not obj.is_module:
                 continue
             for name in sorted(obj.exports or ()):
-                if f"{path}.{name}" not in documented:
+                if not {f"{path}.{name}", *_shadowed(obj, name)} & documented:
                     problems.append(f"{page.name}: {path}.{name} is exported but not documented")
     return problems
 

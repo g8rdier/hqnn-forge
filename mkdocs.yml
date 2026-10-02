@@ -60,6 +60,7 @@ plugins:
 
 nav:
   - Home: index.md
+  - Extending: extending.md
   - API reference:
       - Encoding layers: api/encoding.md
       - Models: api/models.md
