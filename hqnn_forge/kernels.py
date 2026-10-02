@@ -562,7 +562,7 @@ def train_kernel_alignment(
     one Adam step on ``-alignment``.
 
     Only the weights that sit *between* uploads and the ``input_scaling`` of a
-    :class:`DataReuploadingLayer` change the kernel.  For the single-upload
+    :class:`~hqnn_forge.encoding.DataReuploadingLayer` change the kernel.  For the single-upload
     encoders the ansatz cancels in the kernel, so their gradient is zero and
     this does nothing useful: see the module docstring.
 

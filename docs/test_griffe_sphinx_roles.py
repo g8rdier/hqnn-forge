@@ -35,9 +35,9 @@ def test_an_unqualified_name_resolves_in_the_enclosing_scopes(package: object) -
     fn = package["noise.noise_sweep"]  # type: ignore[index]
     # A sibling function of the same module.
     assert (
-        resolve("apply_depolarizing_noise", fn, package)
+        resolve("apply_depolarizing_noise", fn, package)  # type: ignore[arg-type]
         == "hqnn_forge.noise.apply_depolarizing_noise"
-    )  # type: ignore[arg-type]
+    )
     # A method from inside its class.
     cls = package["models.hybrid_classifier.HybridBinaryClassifier"]  # type: ignore[index]
     assert resolve("published_shnn", cls, package) == (  # type: ignore[arg-type]

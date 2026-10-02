@@ -74,7 +74,6 @@ class PCANormalizer:
         via ``tanh(x) * π`` before returning.  Ensures valid angle-embedding
         range without hard clipping.
 
-
     Attributes
     ----------
     mean_ : np.ndarray, shape (n_features,)

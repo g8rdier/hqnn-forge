@@ -54,10 +54,6 @@ def _canonical(package: griffe.Module, path: str) -> str | None:
         return None
 
 
-def _exists(package: griffe.Module, path: str) -> bool:
-    return _canonical(package, path) is not None
-
-
 def _scopes(obj: griffe.Object) -> list[str]:
     """``obj`` itself, then every enclosing object's path, innermost first."""
     scopes, current = [], obj
