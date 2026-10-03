@@ -411,6 +411,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AmplitudeEncodingLayer`, because they built their sample input with `n_qubits` features;
   they now use the layer's input width and `prepare_inputs`, and the default amplitude sample
   shows the full state preparation, an upper bound on the gate count for any input (#279)
+- `circuit_summary` raised `AttributeError` on PennyLane 0.46, whose `specs` resources drop
+  `num_gates`, `gate_types` and `gate_sizes`; it now counts depth and gates on the decomposed
+  tape itself and gives the same summary on 0.45 and 0.46 (#364)
 
 ### Removed
 - `PCANormalizer`'s `copy` option, which never had an effect (#77)
