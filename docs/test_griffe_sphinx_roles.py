@@ -7,6 +7,7 @@ The docs site's griffe extension (#322).  Run by the docs CI job
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -15,7 +16,7 @@ import pytest
 griffe = pytest.importorskip("griffe")
 
 sys.path.insert(0, str(Path(__file__).parent))
-from griffe_sphinx_roles import SphinxRoles, comment_docstring, convert, resolve
+from griffe_sphinx_roles import DOCSTRING_STYLE, SphinxRoles, comment_docstring, convert, resolve
 
 
 @pytest.fixture(scope="module")
@@ -84,3 +85,9 @@ def test_comment_docstrings_are_parsed_as_numpy_style() -> None:
     docstring = package["evaluation.METRICS"].docstring
     assert docstring is not None
     assert docstring.parser == griffe.Parser.numpy
+
+
+def test_the_docstring_style_matches_mkdocs_yml() -> None:
+    config = (Path(__file__).parents[1] / "mkdocs.yml").read_text()
+    styles = re.findall(r"^\s*docstring_style:\s*(\w+)", config, re.MULTILINE)
+    assert styles == [DOCSTRING_STYLE]

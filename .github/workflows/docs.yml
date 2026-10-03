@@ -121,7 +121,11 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
     # Deploy only main's current tip. A commit main has moved past is skipped;
-    # the newer commit's own run deploys its site.
+    # the newer commit's own run deploys its site. One gap remains: the group
+    # keeps a single pending job, so an older commit's deploy queued after the
+    # tip's replaces it and then skips, leaving the site one push behind until
+    # the next one. That takes three deploys inside one deploy's runtime,
+    # which merging one PR per green main run rules out in practice.
     - id: tip
       env:
         GH_TOKEN: ${{ github.token }}

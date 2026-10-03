@@ -83,6 +83,8 @@ logger = logging.getLogger(__name__)
 
 # QuantumEncodingLayer and build_encoding_qnode are defined here; the rest are
 # re-exported from hqnn_forge.encoding._common, where they live since #306.
+# KNOWN_DEVICES was always there; it is re-exported only so the API reference
+# can render it at a public path (docs/api/encoding.md).
 __all__ = [
     "FALLBACK_CHAIN",
     "KNOWN_DEVICES",
