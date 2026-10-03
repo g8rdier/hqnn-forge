@@ -36,8 +36,11 @@ DiffMethod = Literal["adjoint", "parameter-shift", "backprop", "finite-diff"]
 #: (a plugin such as ``"qiskit.aer"``, or hardware) is accepted too, and
 #: constructed exactly as given: see :func:`resolve_device`.
 KnownDevice = Literal["lightning.gpu", "lightning.kokkos", "lightning.qubit", "default.qubit"]
+#: The device names :func:`resolve_device` falls back from when the backend is
+#: unavailable: the simulators of ``KnownDevice``.  Every other name is
+#: constructed as given.
 KNOWN_DEVICES: tuple[str, ...] = get_args(KnownDevice)
-#: A PennyLane device name: one of ``KNOWN_DEVICES``, or any other.
+#: A PennyLane device name: one of :data:`KNOWN_DEVICES`, or any other.
 DeviceName = str
 Entangler = Literal["ring", "strongly_entangling", "brickwork", "hardware_efficient"]
 Readout = Literal["all", "first"]
@@ -250,7 +253,8 @@ def is_out_of_memory(exc: BaseException) -> bool:
     Every backend in the chain allocates the same ``2**n_qubits`` amplitudes,
     so falling back cannot help and would only move the allocation from GPU
     memory to host memory, where it can get the process killed instead of
-    raising.  PennyLane raises :class:`AllocationError`; the lightning plugins
+    raising.  PennyLane raises
+    :class:`~pennylane.exceptions.AllocationError`; the lightning plugins
     raise a bare ``RuntimeError`` naming memory.
     """
     return isinstance(exc, AllocationError) or (
@@ -371,7 +375,7 @@ def resolve_device(device_name: DeviceName, n_qubits: int) -> qml.devices.Device
     or before the requested device are skipped, so ``lightning.qubit`` falls
     straight to ``default.qubit`` and ``default.qubit`` has no fallback.
 
-    Only the four simulators in ``KNOWN_DEVICES`` fall back.  Any other
+    Only the four simulators in :data:`KNOWN_DEVICES` fall back.  Any other
     name -- a PennyLane plugin device or hardware -- is constructed exactly as
     given, and PennyLane's error surfaces if it cannot be: a typo such as
     ``"default.qbit"`` raises rather than quietly running on another
@@ -394,12 +398,18 @@ def resolve_device(device_name: DeviceName, n_qubits: int) -> qml.devices.Device
 
     Raises
     ------
-    The plugin's own exception for a name outside ``KNOWN_DEVICES`` that
-    cannot be constructed (``DeviceError`` for an unknown name).
-    The backend's own exception if the state vector does not fit in memory
-    (see :func:`is_out_of_memory`), or if every step of the chain fails,
-    which can only happen if PennyLane itself is broken (``default.qubit``
-    has no dependencies).
+    DeviceError
+        If ``device_name`` is outside :data:`KNOWN_DEVICES` and no installed
+        plugin registers it, e.g. a typo.  A plugin that registers the name
+        but cannot construct the device raises its own exception.
+    AllocationError, RuntimeError
+        If the state vector does not fit in memory (see
+        :func:`is_out_of_memory`): PennyLane raises ``AllocationError``, the
+        lightning plugins a ``RuntimeError`` naming memory.
+    Exception
+        The last backend's own exception if every step of the chain fails,
+        which can only happen if PennyLane itself is broken (``default.qubit``
+        has no dependencies).
     """
     if device_name not in KNOWN_DEVICES:
         dev = qml.device(device_name, wires=n_qubits)

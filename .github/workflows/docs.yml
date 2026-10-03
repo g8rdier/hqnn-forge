@@ -38,14 +38,14 @@ jobs:
         python-version: "3.12"
     # Only the documentation tools: griffe reads hqnn_forge's source
     # statically, so neither the package nor torch / PennyLane is installed.
-    # `uv sync --extra docs` would install the project's dependencies too, so
-    # the `docs` extra's requirements are read from pyproject.toml and pinned
+    # `uv sync --group docs` would install the project's dependencies too, so
+    # the `docs` group's requirements are read from pyproject.toml and pinned
     # to their uv.lock versions through a constraints file instead.
     - name: Install the docs tools
       run: |
         uv lock --check
-        uv export --frozen --all-extras --no-emit-project --no-hashes -o "$RUNNER_TEMP/constraints.txt"
-        python3 -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml', 'rb'))['project']['optional-dependencies']['docs']))" > "$RUNNER_TEMP/docs.txt"
+        uv export --frozen --all-extras --all-groups --no-emit-project --no-hashes -o "$RUNNER_TEMP/constraints.txt"
+        python3 -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml', 'rb'))['dependency-groups']['docs']))" > "$RUNNER_TEMP/docs.txt"
         uv venv
         uv pip install -c "$RUNNER_TEMP/constraints.txt" -r "$RUNNER_TEMP/docs.txt" pytest
     - name: Test the griffe extension
@@ -105,17 +105,34 @@ jobs:
     needs: [build, pages-status]
     if: github.event_name == 'push' && needs.pages-status.outputs.deploy == 'true'
     runs-on: ubuntu-latest
-    # One deploy at a time, in order, so an older commit's site never replaces
-    # a newer one.
+    # One deploy at a time. The group runs deploys in the order they are
+    # queued, not in commit order, so that alone does not stop an older
+    # commit's site from replacing a newer one: its build can finish later, or
+    # its run be re-run. The first step checks for that.
     concurrency:
       group: docs-pages
       cancel-in-progress: false
     permissions:
+      contents: read
       pages: write
       id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+    # Deploy only main's current tip. A commit main has moved past is skipped;
+    # the newer commit's own run deploys its site.
+    - id: tip
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        tip=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+        if [ "$tip" = "$GITHUB_SHA" ]; then
+          echo "current=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "::notice::main is at $tip, past $GITHUB_SHA. Skipping the deploy."
+          echo "current=false" >> "$GITHUB_OUTPUT"
+        fi
     - id: deployment
+      if: steps.tip.outputs.current == 'true'
       uses: actions/deploy-pages@v5.0.1

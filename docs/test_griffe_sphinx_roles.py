@@ -15,7 +15,7 @@ import pytest
 griffe = pytest.importorskip("griffe")
 
 sys.path.insert(0, str(Path(__file__).parent))
-from griffe_sphinx_roles import comment_docstring, convert, resolve
+from griffe_sphinx_roles import SphinxRoles, comment_docstring, convert, resolve
 
 
 @pytest.fixture(scope="module")
@@ -71,3 +71,16 @@ def test_comment_docstrings() -> None:
     assert comment_docstring(lines, 4) == "First line.\nSecond line."
     assert comment_docstring(lines, 6) == "not spaced"
     assert comment_docstring(lines, 1) is None
+
+
+def test_comment_docstrings_are_parsed_as_numpy_style() -> None:
+    # Rendered as a member of the evaluation page, METRICS never gets its parser
+    # from mkdocstrings, so the extension has to set it.
+    package = griffe.load(
+        "hqnn_forge",
+        search_paths=[str(Path(__file__).parents[1])],
+        extensions=griffe.load_extensions(SphinxRoles()),
+    )
+    docstring = package["evaluation.METRICS"].docstring
+    assert docstring is not None
+    assert docstring.parser == griffe.Parser.numpy

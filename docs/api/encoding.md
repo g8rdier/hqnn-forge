@@ -20,6 +20,10 @@ entangler.
 
 ::: hqnn_forge.encoding.angle_embedding.resolve_device
 
+::: hqnn_forge.encoding.angle_embedding.is_out_of_memory
+
+::: hqnn_forge.encoding.angle_embedding.KNOWN_DEVICES
+
 ::: hqnn_forge.encoding.angle_embedding.FALLBACK_CHAIN
 
 ::: hqnn_forge.encoding.angle_embedding.reset_device_fallback

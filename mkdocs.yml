@@ -10,6 +10,11 @@ strict: true
 exclude_docs: |
   *.py
   __pycache__/
+# A page left out of `nav` is only logged at INFO by default; as a warning it
+# fails the strict build, so every page is reachable from the navigation.
+validation:
+  nav:
+    omitted_files: warn
 
 theme:
   name: material
@@ -61,6 +66,7 @@ plugins:
 nav:
   - Home: index.md
   - Extending: extending.md
+  - Methodology: methodology.md
   - API reference:
       - Encoding layers: api/encoding.md
       - Models: api/models.md

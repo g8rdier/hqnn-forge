@@ -57,6 +57,7 @@ import torch.nn as nn
 from hqnn_forge.encoding._common import (
     DEVICE_FAILURES,
     FALLBACK_CHAIN,
+    KNOWN_DEVICES,
     DeviceName,
     DiffMethod,
     Entangler,
@@ -84,6 +85,7 @@ logger = logging.getLogger(__name__)
 # re-exported from hqnn_forge.encoding._common, where they live since #306.
 __all__ = [
     "FALLBACK_CHAIN",
+    "KNOWN_DEVICES",
     "AngleEmbeddingQNode",
     "DeviceName",
     "DiffMethod",
@@ -310,7 +312,7 @@ def build_encoding_qnode(
         PennyLane device string.  ``"lightning.qubit"`` is strongly preferred for
         adjoint differentiation.  An unavailable simulator falls back along
         ``lightning.qubit → default.qubit`` with a warning per step; any name
-        outside :data:`~hqnn_forge.encoding._common.KNOWN_DEVICES` (a plugin
+        outside :data:`~hqnn_forge.encoding.angle_embedding.KNOWN_DEVICES` (a plugin
         or hardware) is constructed as given.
     diff_method:
         Differentiation strategy:
@@ -437,7 +439,7 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
         :func:`build_encoding_qnode`.
     device_name:
         PennyLane device name.  The simulators in
-        :data:`~hqnn_forge.encoding._common.KNOWN_DEVICES` fall back along
+        :data:`~hqnn_forge.encoding.angle_embedding.KNOWN_DEVICES` fall back along
         ``lightning.qubit → default.qubit`` with a warning per step when
         unavailable; any other name (a plugin or hardware) is constructed as
         given, and PennyLane's error surfaces if it cannot be.  Hardware

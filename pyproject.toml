@@ -85,8 +85,11 @@ examples = [
     "scikit-learn>=1.7.2; python_version >= '3.14'",
     "matplotlib",
 ]
+
+[dependency-groups]
 docs = [
-    # The API reference site: mkdocs build --strict (docs/, mkdocs.yml)
+    # The API reference site: mkdocs build --strict (docs/, mkdocs.yml).  A group,
+    # not an extra: users never need it, and CI's `--all-extras` jobs stay without it.
     "mkdocs-material>=9.7",
     "mkdocstrings[python]>=1.0",
     # docs/griffe_sphinx_roles.py hooks griffe's on_package event (griffe 1.14+);

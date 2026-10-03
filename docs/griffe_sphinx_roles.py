@@ -39,6 +39,8 @@ import griffe
 
 ROLE = re.compile(r":(?:class|func|meth|mod|data|attr|exc|obj):`(~?)([^`<>]+)`")
 PACKAGE = "hqnn_forge"
+# As ``docstring_style`` in mkdocs.yml.
+DOCSTRING_STYLE = "numpy"
 
 
 def _canonical(package: griffe.Module, path: str) -> str | None:
@@ -116,7 +118,12 @@ class SphinxRoles(griffe.Extension):
             if obj.is_attribute and obj.docstring is None and obj.lineno is not None:
                 text = comment_docstring(obj.lines_collection[obj.filepath], obj.lineno)  # type: ignore[index]
                 if text is not None:
-                    obj.docstring = griffe.Docstring(text, lineno=obj.lineno, parent=obj)
+                    # mkdocstrings sets the parser only on the object a ``:::``
+                    # directive names, not on its members, so a constant rendered
+                    # on its module's page would otherwise not be parsed at all.
+                    obj.docstring = griffe.Docstring(
+                        text, lineno=obj.lineno, parent=obj, parser=DOCSTRING_STYLE
+                    )
             if obj.docstring is not None:
                 obj.docstring.value = convert(obj.docstring.value, obj, pkg)
             stack.extend(m for m in obj.members.values() if not m.is_alias)

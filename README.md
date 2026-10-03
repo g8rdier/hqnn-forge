@@ -452,7 +452,7 @@ The API reference, generated from the docstrings, is at
 **<https://g8rdier.github.io/hqnn-forge/>**. To build it locally:
 
 ```bash
-uv run --frozen --extra docs mkdocs serve   # or: mkdocs build --strict, as CI does
+uv run --frozen --group docs mkdocs serve   # or: mkdocs build --strict, as CI does
 ```
 
 ---

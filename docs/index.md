@@ -5,9 +5,12 @@ classification: quantum encoding layers, hybrid classifiers, training with
 early stopping and imbalance-aware losses, noise models, quantum kernels and
 the diagnostics to judge them, built on PennyLane and PyTorch.
 
+hqnn-forge is not on PyPI; install it from a clone of the repository:
+
 ```bash
-pip install hqnn-forge                 # the library
-pip install "hqnn-forge[lightning]"    # plus the fast C++ simulator
+git clone https://github.com/g8rdier/hqnn-forge.git
+cd hqnn-forge
+pip install -e ".[lightning]"    # the library, plus the fast C++ simulator
 ```
 
 ```python
@@ -28,9 +31,9 @@ reference, generated from the docstrings.
 |---|---|
 | [`hqnn_forge.encoding`](api/encoding.md) | Quantum feature maps (angle, IQP, amplitude, data re-uploading) and the circuit pieces they share |
 | [`hqnn_forge.models`](api/models.md) | The hybrid classifiers |
-| [`hqnn_forge.noise`](api/noise.md) | Depolarizing noise, post hoc and during training |
+| [`hqnn_forge.noise`](api/noise.md) | Noise channels (depolarizing, amplitude and phase damping, bit and phase flip), post hoc and during training |
 | [`hqnn_forge.kernels`](api/kernels.md) | Quantum fidelity kernels |
-| [`hqnn_forge.diagnostics`](api/diagnostics.md) | Circuit summaries, gradient variance, Fisher spectrum, effective dimension |
+| [`hqnn_forge.diagnostics`](api/diagnostics.md) | Circuit summaries, gradient variance, Fisher spectrum, effective dimension, expressibility, entangling capability |
 | [`hqnn_forge.evaluation`](api/evaluation.md) | Metrics, threshold search, statistical tests, [plots](api/evaluation.plots.md) |
 | [`hqnn_forge.training`](api/training.md) | The training loop |
 | [`hqnn_forge.data`](api/data.md) | Dataset loaders |
