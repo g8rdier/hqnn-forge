@@ -21,6 +21,10 @@ The estimator, losses, thresholds and metrics are built for binary targets;
 `MulticlassHybridClassifier` covers multiclass targets at the model level only. End-to-end
 image, text or time-series pipelines are out of scope.
 
+**Documentation.** The API reference, rendered from the docstrings, is at
+**<https://g8rdier.github.io/hqnn-forge/>**, together with the
+[methodology](https://g8rdier.github.io/hqnn-forge/methodology/) the comparisons follow.
+
 ---
 
 ## Key Features
@@ -209,7 +213,13 @@ loss = loss_fn(logits.squeeze(), y)
 loss.backward()
 ```
 
-See `examples/quick_start.py` for a full training loop on a synthetic imbalanced dataset.
+See `examples/quick_start.py` for a full training loop on a synthetic imbalanced dataset, and
+the API reference for every argument:
+[scikit-learn estimator](https://g8rdier.github.io/hqnn-forge/api/sklearn/),
+[evaluation](https://g8rdier.github.io/hqnn-forge/api/evaluation/),
+[models](https://g8rdier.github.io/hqnn-forge/api/models/),
+[losses and utilities](https://g8rdier.github.io/hqnn-forge/api/utils/),
+[training](https://g8rdier.github.io/hqnn-forge/api/training/).
 
 ---
 
@@ -337,6 +347,12 @@ total. A seeded hybrid (`init_seed`) gets a control seeded with the same seed.
 Switching a trained model's circuit off with `disable_quantum_layer` measures something
 else, how much that model depends on the circuit.
 
+The API reference documents each architecture's constructor and the pieces behind it:
+[models](https://g8rdier.github.io/hqnn-forge/api/models/),
+[encoding layers](https://g8rdier.github.io/hqnn-forge/api/encoding/),
+[circuit primitives](https://g8rdier.github.io/hqnn-forge/api/circuits/),
+[diagnostics](https://g8rdier.github.io/hqnn-forge/api/diagnostics/).
+
 ---
 
 ## Folder Structure
@@ -439,7 +455,8 @@ pytest                 # the full suite, as CI runs it
 
 ## Methodology
 
-[`docs/methodology.md`](https://github.com/g8rdier/hqnn-forge/blob/main/docs/methodology.md)
+The [methodology page](https://g8rdier.github.io/hqnn-forge/methodology/)
+([source](https://github.com/g8rdier/hqnn-forge/blob/main/docs/methodology.md))
 states the rules the comparisons follow: how the classical control is matched, how folds,
 oversampling and thresholds are handled, which statistical test applies when, the equal tuning
 budget, what the noise sweep models, and what an experiment record captures.

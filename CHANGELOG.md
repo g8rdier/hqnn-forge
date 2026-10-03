@@ -260,7 +260,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - The package metadata links the repository, issue tracker and changelog, and the README's
-  image and file links are absolute, so both work on PyPI (#327)
+  image and file links are absolute, so both work on PyPI (#327). The README and the package
+  metadata also link the API reference site (#453)
 - The quantum layers run a whole batch in one QNode call instead of looping over samples
   (#104)
 - `predict_proba` and `predict` run in eval mode whatever mode the model is in, restoring every

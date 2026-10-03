@@ -54,6 +54,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/g8rdier/hqnn-forge"
+Documentation = "https://g8rdier.github.io/hqnn-forge/"
 Repository = "https://github.com/g8rdier/hqnn-forge"
 Issues = "https://github.com/g8rdier/hqnn-forge/issues"
 Changelog = "https://github.com/g8rdier/hqnn-forge/blob/main/CHANGELOG.md"
