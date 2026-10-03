@@ -257,6 +257,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `mkdocs build --strict` on every PR so a broken cross-reference, or a name in a documented
   module's `__all__` with no entry, fails CI, and deployed to GitHub Pages from `main` once
   Pages is enabled; a `docs` dependency group installs the tools (#342)
+### Changed
+- Switched the package build backend from setuptools to uv_build and updated the
+  package metadata for PEP 639-compatible license handling (#449)
 
 ### Changed
 - The package metadata links the repository, issue tracker and changelog, and the README's
