@@ -25,10 +25,9 @@ image, text or time-series pipelines are out of scope.
 ## How a benchmark works
 
 `run_benchmark` trains the hybrid model and a classical control side by side on each dataset.
-The control is an MLP sized as close as its width allows to the hybrid's live parameter count
-(the weights that can move its output), and in every fold both models get the same data and the
-same treatment. A
-difference in their scores is therefore down to the quantum layer, not to extra capacity.
+The control is an MLP matched to the hybrid's live parameter count (see *Classical control*
+below), and in every fold both models get the same data and the same treatment. A difference in
+their scores is therefore down to the quantum layer, not to extra capacity.
 
 ```mermaid
 flowchart TD
@@ -44,21 +43,28 @@ flowchart TD
 
     folds --> hybrid
     folds --> control
-    rules --> scores["<b>Per dataset and model</b><br/>MCC and MCC per<br/>1,000 parameters<br/>paired Wilcoxon test<br/>over the folds"]
-    scores -.-> record[("Experiment record (JSON)<br/>seeds · fold indices<br/>versions → exact rerun")]
+    hybrid --> permodel["<b>Per model</b><br/>MCC per fold, mcc_mean<br/>MCC per 1,000 parameters"]
+    control --> permodel
+    permodel --> perdataset["<b>Per dataset</b><br/>paired Wilcoxon test<br/>over the folds<br/>(same on both rows)"]
+    perdataset -.-> record[("Experiment record (JSON)<br/>seeds · fold indices · versions<br/>→ the same per-fold scores<br/>on CPU with the same data")]
 
-    scores --> reach{"Can the test<br/>reach α with this<br/>many folds?<br/>(wilcoxon_min_p)"}
+    perdataset --> tied{"Every fold tied?<br/>(wilcoxon_p is NaN)"}
+    tied -->|yes| identical["<b>Identical scores</b><br/>the data cannot<br/>tell them apart"]
+    tied -->|no| reach{"Can the test<br/>reach α with this<br/>many untied folds?<br/>(wilcoxon_min_p < α)"}
     reach -->|no| inconclusive["<b>Inconclusive</b><br/>add folds,<br/>not a looser α"]
     reach -->|yes| significant{"wilcoxon_p < α?"}
     significant -->|no| nodiff["<b>No difference shown</b>"]
-    significant -->|"yes, hybrid higher"| earns["<b>The quantum layer<br/>earns its parameters</b>"]
-    significant -->|"yes, control higher"| loses["<b>The classical control<br/>does better</b>"]
+    significant -->|"yes, hybrid's<br/>mcc_mean higher"| earns["<b>The quantum layer<br/>earns its parameters</b>"]
+    significant -->|"yes, control's<br/>mcc_mean higher"| loses["<b>The classical control<br/>does better</b>"]
 ```
 
-Two further steps are separate calls, not part of `run_benchmark`: ablation of a trained model's
-quantum layer (`disable_quantum_layer`, `permute_quantum_layer`), and the comparison across
-datasets. [`docs/methodology.md`](https://github.com/g8rdier/hqnn-forge/blob/main/docs/methodology.md)
-states every rule the comparison follows.
+`run_benchmark` stops at the scores and the test columns (`wilcoxon_p`, `wilcoxon_min_p`,
+`rank_biserial`); the outcomes at the bottom are how to read those columns at the α you choose.
+Its own `alpha` argument only sets the significance level of the noise sweep's summary. Folds
+where both models score the same MCC drop out of the test, so they do not count towards reaching
+α. Two further steps are separate calls, not part of `run_benchmark`: ablation of a trained
+model's quantum layer (`disable_quantum_layer`, `permute_quantum_layer`), and the comparison
+across datasets.
 
 ---
 
