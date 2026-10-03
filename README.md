@@ -22,6 +22,46 @@ image, text or time-series pipelines are out of scope.
 
 ---
 
+## How a benchmark works
+
+`run_benchmark` trains the hybrid model and a classical control side by side on each dataset.
+The control is an MLP sized as close as its width allows to the hybrid's live parameter count
+(the weights that can move its output), and in every fold both models get the same data and the
+same treatment. A
+difference in their scores is therefore down to the quantum layer, not to extra capacity.
+
+```mermaid
+flowchart TD
+    data[("Your binary, imbalanced<br/>tabular dataset")] --> folds["Stratified outer folds"]
+
+    subgraph fold ["Every fold"]
+        hybrid["<b>Hybrid model</b><br/>classical layers<br/>+ quantum circuit"]
+        control["<b>Classical control</b><br/>MLP matched to the<br/>hybrid's live<br/>parameter count"]
+        rules["<b>Identical for both</b><br/>scaling · validation split<br/>SMOTE if enabled · seeds<br/>training budget<br/>threshold rule"]
+        hybrid -.- rules
+        control -.- rules
+    end
+
+    folds --> hybrid
+    folds --> control
+    rules --> scores["<b>Per dataset and model</b><br/>MCC and MCC per<br/>1,000 parameters<br/>paired Wilcoxon test<br/>over the folds"]
+    scores -.-> record[("Experiment record (JSON)<br/>seeds · fold indices<br/>versions → exact rerun")]
+
+    scores --> reach{"Can the test<br/>reach α with this<br/>many folds?<br/>(wilcoxon_min_p)"}
+    reach -->|no| inconclusive["<b>Inconclusive</b><br/>add folds,<br/>not a looser α"]
+    reach -->|yes| significant{"wilcoxon_p < α?"}
+    significant -->|no| nodiff["<b>No difference shown</b>"]
+    significant -->|"yes, hybrid higher"| earns["<b>The quantum layer<br/>earns its parameters</b>"]
+    significant -->|"yes, control higher"| loses["<b>The classical control<br/>does better</b>"]
+```
+
+Two further steps are separate calls, not part of `run_benchmark`: ablation of a trained model's
+quantum layer (`disable_quantum_layer`, `permute_quantum_layer`), and the comparison across
+datasets. [`docs/methodology.md`](https://github.com/g8rdier/hqnn-forge/blob/main/docs/methodology.md)
+states every rule the comparison follows.
+
+---
+
 ## Key Features
 
 | Feature | Detail |
@@ -220,45 +260,33 @@ logit of shape `(batch, 1)`: apply `torch.sigmoid` for a probability, or pass it
 
 ### `HybridBinaryClassifier` (serial)
 
+```mermaid
+flowchart TD
+    input["Input<br/>(batch, n_input_features)"]
+    encoder["<b>Classical encoder</b><br/>Linear(n_input_features<br/>→ n_qubits) + Tanh<br/>scaled by π into (−π, π)"]
+    circuit["<b>Quantum layer</b><br/>AngleEmbedding:<br/>RX(x_i) on qubit i<br/>(or IQP embedding)<br/>n_layers × [CNOT ring<br/>→ per-qubit Rot(φ, θ, ω)]<br/>⟨Z_i⟩ for every qubit<br/>→ (batch, n_qubits)"]
+    head["<b>Classical head</b><br/>Dropout(dropout_p)<br/>→ Linear(n_qubits → 1)"]
+    logit["Raw logit<br/>(batch, 1)"]
+    input --> encoder --> circuit --> head --> logit
 ```
-Input (batch, n_input_features)
-     │
-     ▼
-Classical encoder   Linear(n_input_features → n_qubits) + Tanh, scaled by π into (-π, π)
-     │
-     ▼
-Quantum layer       AngleEmbedding RX(x_i) on qubit i   (or IQP embedding)
-     │              n_layers × [ CNOT ring → per-qubit Rot(φ, θ, ω) ]
-     │              → ⟨Z_i⟩ for every qubit, shape (batch, n_qubits)
-     │              (the defaults; see the options below for the axis,
-     │               the entangler and the ⟨Z_0⟩-only readout)
-     ▼
-Classical head      Linear(n_qubits → 1)
-     │
-     ▼
-Raw logit (batch, 1)
-```
+
+The quantum layer shows the defaults; see the options below for the axis, the entangler and the
+⟨Z_0⟩-only readout. `dropout_p` is 0 by default.
 
 ### `ParallelHybridClassifier` (parallel)
 
-```
-Input (batch, n_input_features)
-     ├───────────────────────────────────┐
-     ▼                                   ▼
-Classical branch                    Classical encoder   Linear(→ n_qubits) + Tanh, × π
-Linear → ReLU → Linear → ReLU            │
-→ (batch, classical_hidden_dim)          ▼
-     │                              Quantum layer       same circuit as the serial model
-     │                                   │              → ⟨Z_i⟩, shape (batch, n_qubits)
-     └────────────────┬──────────────────┘
-                      ▼
-                Concatenate   (batch, classical_hidden_dim + n_qubits)
-                      │
-                      ▼
-                Classical head   Linear(→ 1)
-                      │
-                      ▼
-                Raw logit (batch, 1)
+```mermaid
+flowchart TD
+    input["Input<br/>(batch, n_input_features)"]
+    branch["<b>Classical branch</b><br/>Linear → ReLU<br/>→ Linear → ReLU<br/>→ (batch,<br/>classical_hidden_dim)"]
+    encoder["<b>Classical encoder</b><br/>Linear(→ n_qubits)<br/>+ Tanh, × π"]
+    circuit["<b>Quantum layer</b><br/>same circuit as<br/>the serial model<br/>⟨Z_i⟩ → (batch, n_qubits)"]
+    concat["<b>Concatenate</b><br/>(batch,<br/>classical_hidden_dim<br/>+ n_qubits)"]
+    head["<b>Classical head</b><br/>Dropout(dropout_p)<br/>→ Linear(→ 1)"]
+    logit["Raw logit<br/>(batch, 1)"]
+    input --> branch --> concat
+    input --> encoder --> circuit --> concat
+    concat --> head --> logit
 ```
 
 The parallel model asks whether added classical capacity can substitute for, or extend, what
