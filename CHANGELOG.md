@@ -352,6 +352,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gate-parameter slots, so `n_effective_params` can no longer go negative; the new
   `count_inert_weights` gives the per-entry count for any tape. The built-in layers report the
   same numbers as before (#292)
+- The README shows how a benchmark runs as a Mermaid diagram (matched control, shared per-fold
+  rules, the reading of the Wilcoxon result), and its architecture diagrams are Mermaid
+  instead of ASCII (#451)
 
 ### Fixed
 - Encoding layers raise a construction-time `ValueError` when a resolved device has finite
