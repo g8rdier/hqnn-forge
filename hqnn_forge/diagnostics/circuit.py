@@ -293,7 +293,7 @@ def _is_two_wire_multirz(op: qml.operation.Operator) -> bool:
     return op.name == "MultiRZ" and len(op.wires) <= 2
 
 
-class TapeResources(NamedTuple):
+class _TapeResources(NamedTuple):
     """Depth and gate counts of a tape's operations (measurements excluded)."""
 
     depth: int
@@ -302,18 +302,25 @@ class TapeResources(NamedTuple):
     gate_counts: dict[str, int]
 
 
-def tape_resources(tape: qml.tape.QuantumScript) -> TapeResources:
+def _tape_resources(tape: qml.tape.QuantumScript) -> _TapeResources:
     """
-    Depth and gate counts of ``tape``, computed from its operations.
+    Depth and gate counts of a tape from _decompose_logical, computed from
+    its operations.
 
     Counted here rather than read from ``tape.specs["resources"]``, whose
     layout PennyLane changes between releases: 0.46 drops ``num_gates``,
     ``gate_types`` and ``gate_sizes`` (#344).  The depth is the usual one, the
-    number of layers when every gate starts as soon as all its wires are free,
-    which is what ``specs`` reports as ``depth`` in both 0.45 and 0.46.  A gate
-    on two or more wires counts once towards ``n_two_qubit_gates``: after
-    _decompose_logical only a gate with no decomposition can still act on more
-    than two, and it counts once rather than dropping out of the count.
+    number of layers when every gate starts as soon as all its wires are free.
+    A gate on two or more wires counts once towards ``n_two_qubit_gates``:
+    after _decompose_logical only a gate with no decomposition can still act
+    on more than two, and it counts once rather than dropping out of the count.
+
+    On a tape from _decompose_logical these are the numbers ``specs`` reports
+    in both 0.45 and 0.46.  On other tapes they can differ: ``specs`` prefixes
+    a gate with several control wires with their number (``2C(RX)``, here
+    ``C(RX)``), expands a ``ResourcesOperation`` into its declared resources,
+    and gives an operation without wires (``Barrier()``, ``Snapshot``) or one
+    conditioned on a mid-circuit measurement a different layer.
     """
     free_at: dict[object, int] = {}
     depth = 0
@@ -323,7 +330,7 @@ def tape_resources(tape: qml.tape.QuantumScript) -> TapeResources:
             free_at[w] = layer
         depth = max(depth, layer)
     names = Counter(op.name for op in tape.operations)
-    return TapeResources(
+    return _TapeResources(
         depth=depth,
         n_gates=len(tape.operations),
         n_two_qubit_gates=sum(1 for op in tape.operations if len(op.wires) >= 2),
@@ -661,7 +668,7 @@ def circuit_summary(target: nn.Module) -> CircuitSummary:
     layer, qlayer, n_qubits = resolve_encoding_layer(target, "circuit_summary")
     written = _written_tape(layer)
     tape = _decompose_logical(written)
-    resources = tape_resources(tape)
+    resources = _tape_resources(tape)
     qnode = qlayer.qnode
     # Counted on the tape as written, which count_inert_parameters decomposes
     # to LOGICAL_GATE_SET itself: a wide MultiRZ stays one diagonal gate there.
