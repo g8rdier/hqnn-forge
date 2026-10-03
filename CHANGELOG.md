@@ -253,6 +253,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   native broadcasting, `batch_obs` and `default.qubit`/backprop for every encoder, with a
   correctness check, plus a crossover by qubit count with peak memory; the README now says
   when to train with backprop instead of `lightning.qubit` (#341)
+- A rendered API reference (mkdocs-material + mkdocstrings, one page per public module), built
+  with `mkdocs build --strict` on every PR so a broken cross-reference, or a name in a documented
+  module's `__all__` with no entry, fails CI, and deployed to GitHub Pages from `main` once
+  Pages is enabled; a `docs` dependency group installs the tools (#342)
 
 ### Changed
 - The package metadata links the repository, issue tracker and changelog, and the README's

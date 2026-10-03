@@ -304,7 +304,7 @@ class AmplitudeEncodingLayer(TrainingNoiseMixin, nn.Module):
         Default: ``2**n_qubits`` (no padding).
     device_name:
         PennyLane device name.  The simulators in
-        :data:`~hqnn_forge.encoding._common.KNOWN_DEVICES` fall back along
+        :data:`~hqnn_forge.encoding.angle_embedding.KNOWN_DEVICES` fall back along
         ``lightning.qubit → default.qubit`` with a warning per step when
         unavailable; any other name (a plugin or hardware) is constructed as
         given, and PennyLane's error surfaces if it cannot be.  Hardware

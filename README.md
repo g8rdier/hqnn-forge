@@ -2,6 +2,7 @@
 
 [![Tests](https://github.com/g8rdier/hqnn-forge/actions/workflows/tests.yml/badge.svg)](https://github.com/g8rdier/hqnn-forge/actions/workflows/tests.yml)
 [![License](https://img.shields.io/github/license/g8rdier/hqnn-forge)](https://github.com/g8rdier/hqnn-forge/blob/main/LICENSE)
+[![Docs](https://github.com/g8rdier/hqnn-forge/actions/workflows/docs.yml/badge.svg)](https://g8rdier.github.io/hqnn-forge/)
 
 > **Test whether a small quantum layer earns its parameters on imbalanced binary tabular data.**
 
@@ -476,6 +477,17 @@ pytest                 # the full suite, as CI runs it
 states the rules the comparisons follow: how the classical control is matched, how folds,
 oversampling and thresholds are handled, which statistical test applies when, the equal tuning
 budget, what the noise sweep models, and what an experiment record captures.
+
+---
+
+## Documentation
+
+The API reference, generated from the docstrings, is at
+**<https://g8rdier.github.io/hqnn-forge/>**. To build it locally:
+
+```bash
+uv run --frozen --group docs mkdocs serve   # or: mkdocs build --strict, as CI does
+```
 
 ---
 

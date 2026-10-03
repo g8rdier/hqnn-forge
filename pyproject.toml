@@ -86,6 +86,19 @@ examples = [
     "matplotlib",
 ]
 
+[dependency-groups]
+docs = [
+    # The API reference site: mkdocs build --strict (docs/, mkdocs.yml).  A group,
+    # not an extra: users never need it, and CI's `--all-extras` jobs stay without it.
+    "mkdocs-material>=9.7",
+    "mkdocstrings[python]>=1.0",
+    # docs/griffe_sphinx_roles.py hooks griffe's on_package event (griffe 1.14+);
+    # an older griffe never fires it, and the roles then render as literal text
+    # without failing the strict build.  2.0.3 is the first mkdocstrings-python
+    # to require griffelib>=2.0 (earlier ones allow griffe 1.13).
+    "mkdocstrings-python>=2.0.3",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["hqnn_forge*"]
